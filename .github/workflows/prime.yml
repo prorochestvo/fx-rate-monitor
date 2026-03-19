@@ -1,0 +1,168 @@
+name: Stage
+
+# CI runs on every push to r_* branches.
+# Deployment fires only when an r_* tag is pushed (version cut).
+on:
+  push:
+    branches:
+      - r_*
+    tags:
+      - 'r_*'
+
+env:
+  INSTRUCTION_ID: 5716aaf924b24831891638411c8b3a63
+
+jobs:
+  examine:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+      - name: Download dependencies
+        run: go mod download
+        env:
+          CGO_ENABLED: 0
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+
+  deploy:
+    environment: STAGE
+    runs-on: ubuntu-latest
+    needs: examine
+    env:
+      REMOTE_DIR: ${{ vars.REMOTE_DIR }}
+      SSH_HOSTNAME: ${{ vars.SSH_HOSTNAME }}
+      SSH_HOSTPORT: ${{ vars.SSH_HOSTPORT }}
+      SSH_USERNAME: ${{ vars.SSH_USERNAME }}
+      BINARY_COLLECTOR_NAME: stage_monitor_collector
+      BINARY_WEBAPP_NAME: stage_monitor_webapp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+      - name: Set variables
+        id: vars
+        run: |
+          BINARY_TMP_COLLECTOR_NAME="${BINARY_COLLECTOR_NAME}_${INSTRUCTION_ID}"
+          BINARY_TMP_WEBAPP_NAME="${BINARY_WEBAPP_NAME}_${INSTRUCTION_ID}"
+          echo "BINARY_TMP_COLLECTOR_NAME=${BINARY_TMP_COLLECTOR_NAME}" >> $GITHUB_ENV
+          echo "BINARY_TMP_WEBAPP_NAME=${BINARY_TMP_WEBAPP_NAME}" >> $GITHUB_ENV
+          echo "commit_hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+      - name: Build (linux/amd64)
+        env:
+          APP_BUILD_OPTIONS: "-s -w -X 'main.BuildVersion=${{ github.ref_name }} -X main.BuildTime=${{ steps.vars.outputs.build_time }} -X main.BuildHash=${{ steps.vars.outputs.commit_hash }}'"
+        run: |
+          mkdir -p ./cmd/web/static
+          cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" ./cmd/web/static/wasm_exec.js
+          CGO_ENABLED=0 GOOS=js GOARCH=wasm go build -o ./cmd/web/static/app.wasm ./cmd/wasm/main.go
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="${APP_BUILD_OPTIONS}" -o "${BINARY_TMP_COLLECTOR_NAME}" ./cmd/collector/main.go
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="${APP_BUILD_OPTIONS}" -o "${BINARY_TMP_WEBAPP_NAME}" ./cmd/web/main.go
+      - name: Setup SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATEKEY }}
+        run: |
+          install -m 600 /dev/null /tmp/deploy_key
+          echo "$SSH_PRIVATE_KEY" > /tmp/deploy_key
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "$SSH_HOSTPORT" "$SSH_HOSTNAME" >> ~/.ssh/known_hosts
+
+      - name: Upload binary
+        run: |
+          WEB_STATIC_SOURCE="prime_static"
+          SCP="scp -P $SSH_HOSTPORT -i /tmp/deploy_key"
+          $SCP "$BINARY_TMP_COLLECTOR_NAME" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME"
+          $SCP "$BINARY_TMP_WEBAPP_NAME" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME"
+          $SCP -r "./cmd/web/static/." "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$WEB_STATIC_SOURCE"
+
+      - name: Verify binary
+        run: |
+          SCP="scp -P $SSH_HOSTPORT -i /tmp/deploy_key"
+          SSH="ssh -p $SSH_HOSTPORT -i /tmp/deploy_key $SSH_USERNAME@$SSH_HOSTNAME"
+          
+          # compute sha256 of local binary
+          sha256sum "$BINARY_TMP_COLLECTOR_NAME" > "$BINARY_TMP_COLLECTOR_NAME.sha256"
+          sha256sum "$BINARY_TMP_WEBAPP_NAME" > "$BINARY_TMP_WEBAPP_NAME.sha256"
+
+          # upload checksum file next to binary
+          $SCP "$BINARY_TMP_COLLECTOR_NAME.sha256" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME.sha256"
+          $SCP "$BINARY_TMP_WEBAPP_NAME.sha256" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME.sha256"
+
+          # verify checksum on remote — abort if mismatch
+          $SSH "cd $REMOTE_DIR && sha256sum -c $BINARY_TMP_COLLECTOR_NAME.sha256 || (echo 'checksum mismatch, aborting'; exit 1)"
+          $SSH "cd $REMOTE_DIR && sha256sum -c $BINARY_TMP_WEBAPP_NAME.sha256 || (echo 'checksum mismatch, aborting'; exit 1)"
+
+          # cleanup checksum file on remote
+          $SSH "rm -f $REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME.sha256"
+          $SSH "rm -f $REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME.sha256"
+
+          rm -f "$BINARY_TMP_COLLECTOR_NAME.sha256"
+          rm -f "$BINARY_TMP_WEBAPP_NAME.sha256"
+
+      - name: Swap and restart
+        run: |
+          SERVICE_NAME="prime_monitor"
+          SSH="ssh -p $SSH_HOSTPORT -i /tmp/deploy_key $SSH_USERNAME@$SSH_HOSTNAME"
+
+          # abort if uploaded binary is missing — do not touch running service
+          $SSH "test -f $REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME || (echo 'binary not found, aborting'; exit 1)"
+          $SSH "test -f $REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME || (echo 'binary not found, aborting'; exit 1)"
+
+          $SSH "chmod +x $REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME && \
+                mv $REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME $REMOTE_DIR/$BINARY_COLLECTOR_NAME"
+
+          $SSH "chmod +x $REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME && \
+                sudo systemctl stop $SERVICE_NAME && \
+                mv $REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME $REMOTE_DIR/$BINARY_WEBAPP_NAME && \
+                sudo systemctl start $SERVICE_NAME"
+
+          $SSH "sudo systemctl is-active --quiet $SERVICE_NAME && \
+                echo 'service is running' || \
+                (journalctl -u $SERVICE_NAME -n 20 --no-pager; exit 1)"
+
+      - name: Cleanup SSH
+        if: always()
+        run: rm -f /tmp/deploy_key
+
+      - name: Notify success
+        if: success()
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_ROOT_CHAT_ID: ${{ vars.TELEGRAM_ROOT_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_ROOT_CHAT_ID}" \
+            -d text="[PRIME] Deploy succeeded. Ref: ${GITHUB_REF_NAME}" \
+            -d parse_mode="Markdown" || true
+
+      - name: Notify failure
+        if: failure()
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_ROOT_CHAT_ID: ${{ vars.TELEGRAM_ROOT_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_ROOT_CHAT_ID}" \
+            -d text="[PRIME] Deploy FAILED. Ref: ${GITHUB_REF_NAME}. Check: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            -d parse_mode="Markdown" || true

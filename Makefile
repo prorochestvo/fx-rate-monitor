@@ -1,0 +1,103 @@
+-include .env
+
+SHELL := /bin/bash
+
+ROOT_DIRECTORY := $(shell pwd)
+PROJECT_NAME := $(shell basename "$(PWD)")
+VERSION := $(shell git describe --tags --always)
+BRANCH := $(shell git rev-parse --abbrev-ref HEAD)
+BUILD := $(shell git rev-parse --short HEAD)
+TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+BUILD_OPTIONS := "-s -w -X main.BuildVersion=${BRANCH} -X main.BuildTime=${TIME} -X main.BuildHash=${BUILD}"
+
+.PHONY: all claude_task claude_evaluates_project claude_auto_fix_tests run build build-collector build-web build-wasm test lint format swagger clean deploy_environment
+
+
+deploy_environment:
+	scp -r ./configs/nginx.kz_behappy.conf be-happy.kz:/etc/nginx/sites-available/kz.be-happy
+	scp -r ./configs/nginx.kz_behappy_balancer_prime.conf be-happy.kz:/etc/nginx/configurations/kz.be-happy.balancer_prime.conf
+	scp -r ./configs/nginx.kz_behappy_balancer_stage.conf be-happy.kz:/etc/nginx/configurations/kz.be-happy.balancer_stage.conf
+	scp -r ./configs/nginx.kz_behappy_services_prime.conf be-happy.kz:/etc/nginx/configurations/kz.be-happy.services_prime.conf
+	scp -r ./configs/nginx.kz_behappy_services_stage.conf be-happy.kz:/etc/nginx/configurations/kz.be-happy.services_stage.conf
+	scp -r ./configs/nginx.kz_behappy_common_settings.conf be-happy.kz:/etc/nginx/snippets/kz.be-happy.common_settings.conf
+	scp -r ./configs/nginx.kz_behappy_certificates.conf be-happy.kz:/etc/nginx/certificates/kz.be-happy.conf
+	scp -r ./configs/certbot.com_lingocrm.sh be-happy.kz:/opt/letsencrypt/kz.be-happy
+	scp -r ./configs/srv.prime_monitor.service be-happy.kz:/tmp/service.prime_monitor
+	scp -r ./configs/srv.stage_monitor.service be-happy.kz:/tmp/service.stage_monitor
+	#ssh -t be-happy.kz "sudo mv /tmp/service.prime_monitor /etc/systemd/system/prime_monitor.service"
+	#ssh -t be-happy.kz "sudo mv /tmp/service.stage_monitor /etc/systemd/system/stage_monitor.service"
+	ssh be-happy.kz "sudo nginx -s reload"
+	echo "done"
+
+
+
+claude_dev_test:
+	claude ./.claude/logs/task_20260329232102.s02.plan.md --allowedTools "Edit,Write" --system-prompt "$$(cat ./.claude/prompts/developer.md)" 2>&1 | tee -a ./.claude/logs/task_20260329232102.s03.implementation.md
+
+## claude_task:
+claude_task:
+	$(eval TIME_NUM := $(shell date -u +%Y%m%d%H%M%S))
+	vi ./.claude/logs/task_$(TIME_NUM).design.md
+	echo "Implement this plan. step by step, following the order of tasks and phases. Do not skip any steps. Do not change the task descriptions or acceptance criteria. Do not add any new tasks. Focus on correctness and completeness for each task before moving to the next one. " | tee ./.claude/plans/task_$(TIME_NUM).md
+	claude ./.claude/logs/task_$(TIME_NUM).design.md --allowedTools "Read" --system-prompt "$$(cat ./.claude/prompts/architect.md)" 2>&1 | tee -a ./.claude/plans/task_$(TIME_NUM).md
+	claude ./.claude/plans/task_$(TIME_NUM).md --allowedTools "Edit,Write" --system-prompt "$$(cat ./.claude/prompts/developer.md)" 2>&1 | tee -a ./.claude/logs/task_$(TIME_NUM).implementation.md
+
+## claude_task:
+claude_evaluates_project:
+	$(eval TIME_NUM := $(shell date -u +%Y%m%d%H%M%S))
+	claude "you need to evaluate the project. pros and cons." --allowedTools "Read" --system-prompt "$$(cat ./.claude/prompts/architect.md)" 2>&1 | tee -a ./.claude/logs/task_$(TIME_NUM).evaluation.md
+
+## claude_auto_fix_tests:
+claude_auto_fix_tests:
+	$(eval TIME_NUM := $(shell date -u +%Y%m%d%H%M%S))
+	go clean -cache
+	CGO_ENABLED=0 go vet ./... 2>&1 | tee ./.claude/logs/issues_$(TIME_NUM).s01.logs.md
+	CGO_ENABLED=0 go test -race -timeout 5m ./... 2>&1 | tee -a ./.claude/logs/issues_$(TIME_NUM).s01.logs.md
+	claude ./.claude/logs/issues_$(TIME_NUM).s01.logs.md --allowedTools "Edit,Write" --system-prompt "$$(cat ./.claude/prompts/tester.md)" 2>&1 | tee -a ./.claude/logs/issues_$(TIME_NUM).s02.fixes.md
+
+
+
+## run:
+run:
+	@#set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/web/main.go --static-dir ./cmd/web/static --logs-dir ./build/logs
+	@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/collector/main.go --logs-dir ./build/logs
+
+
+
+## build:
+build:
+	cp -R ./cmd/web/static ./build
+	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" ./build/static/wasm_exec.js
+	CGO_ENABLED=0 GOOS=js GOARCH=wasm go build -o ./build/static/app.wasm ./cmd/wasm/main.go
+	CGO_ENABLED=0 go build -o ./build/collector -ldflags ${BUILD_OPTIONS} ./cmd/collector/main.go
+	CGO_ENABLED=0 go build -o ./build/web -ldflags ${BUILD_OPTIONS} ./cmd/web/main.go
+
+
+
+## test:
+test:
+	go clean -cache
+	CGO_ENABLED=0 go vet ./...
+	CGO_ENABLED=0 go test -race ./...
+
+## lint: run go vet across all packages
+lint:
+	CGO_ENABLED=0 go vet ./...
+
+## swagger: regenerate Swagger/OpenAPI documentation
+swagger:
+	swag init -g cmd/web/main.go -o internal/gateway/swagger
+
+
+
+## format:
+format:
+	go fmt ./...
+
+
+
+## clean:
+clean:
+	rm -f ./build/monitor ./build/collector ./build/web ./build/monitor.db
+	go mod tidy

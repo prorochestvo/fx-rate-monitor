@@ -1,0 +1,14 @@
+certbot certonly \
+  --cert-name be-happy.kz \
+  --manual \
+  --non-interactive \
+  --force-renewal \
+  --preferred-challenges=http \
+  --manual-auth-hook /etc/nginx/certificates/letsencrypt/authenticator \
+  --manual-cleanup-hook /etc/nginx/certificates/letsencrypt/cleanup \
+  -d be-happy.kz \
+  -d www.be-happy.kz \
+  -d api.be-happy.kz \
+  -d stage.be-happy.kz \
+  -d www.stage.be-happy.kz \
+  -d api.stage.be-happy.kz

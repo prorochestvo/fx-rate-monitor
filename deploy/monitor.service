@@ -1,0 +1,28 @@
+[Unit]
+Description=Monitor — rate change alerting service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=monitor
+Group=monitor
+WorkingDirectory=/var/lib/monitor
+
+ExecStart=/usr/local/bin/monitor \
+  --config /etc/monitor/sources.json \
+  --db     /var/lib/monitor/rates.db \
+  --interval 10m \
+  --log-format json
+
+EnvironmentFile=/etc/monitor/env
+
+Restart=on-failure
+RestartSec=10s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=monitor
+
+[Install]
+WantedBy=multi-user.target

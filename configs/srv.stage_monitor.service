@@ -1,0 +1,19 @@
+[Unit]
+Description=Prorochestvo Stage Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/monitor
+EnvironmentFile=/opt/monitor/.stage_monitor.env
+ExecStart=/opt/monitor/stage_monitor_webapp --port 8010 --logs-dir /opt/monitor/logs/stage --static-dir /opt/monitor/stage_static
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+# graceful shutdown timeout before SIGKILL
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

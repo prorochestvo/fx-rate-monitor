@@ -1,0 +1,19 @@
+[Unit]
+Description=Prorochestvo Prime Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/monitor
+EnvironmentFile=/opt/monitor/.prime_monitor.env
+ExecStart=/opt/monitor/prime_monitor_webapp --port 8000 --logs-dir /opt/monitor/logs/prime --static-dir /opt/monitor/prime_static
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+# graceful shutdown timeout before SIGKILL
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

@@ -25,9 +25,12 @@ Thumbs.db
 *.so
 *.dylib
 
-# Logs and localy databases
+# Logs and local databases
 *.log
 *.sqlite
+*.db
+logs/
+/build/
 
 # Test binary, built with `go test -c`
 *.test
@@ -50,3 +53,6 @@ dist
 
 # AI workspace files
 .claude
+
+*.logs
+*.log.md
