@@ -107,6 +107,45 @@ func (tbot *TelegramBotClient) SendDocument(_ context.Context, chatID TelegramCh
 	return nil
 }
 
+// SendHTMLMessageWithKeyboard sends an HTML-formatted message with an inline keyboard to chatID.
+func (tbot *TelegramBotClient) SendHTMLMessageWithKeyboard(
+	_ context.Context, chatID TelegramChatID,
+	text string, keyboard tgbotapi.InlineKeyboardMarkup,
+) error {
+	m := tgbotapi.NewMessage(int64(chatID), text)
+	m.ParseMode = tgbotapi.ModeHTML
+	m.ReplyMarkup = keyboard
+	if _, err := tbot.bot.Send(m); err != nil {
+		return errors.Join(err, internal.NewTraceError())
+	}
+	return nil
+}
+
+// AnswerCallbackQuery acknowledges a button press, clearing the loading spinner.
+func (tbot *TelegramBotClient) AnswerCallbackQuery(_ context.Context, callbackQueryID, text string) error {
+	cfg := tgbotapi.NewCallback(callbackQueryID, text)
+	if _, err := tbot.bot.Request(cfg); err != nil {
+		return errors.Join(err, internal.NewTraceError())
+	}
+	return nil
+}
+
+// EditMessageText replaces the text of an existing message in place.
+// "message is not modified" errors from Telegram are silently ignored.
+func (tbot *TelegramBotClient) EditMessageText(
+	_ context.Context, chatID TelegramChatID, messageID int, text string,
+) error {
+	edit := tgbotapi.NewEditMessageText(int64(chatID), messageID, text)
+	edit.ParseMode = tgbotapi.ModeHTML
+	if _, err := tbot.bot.Send(edit); err != nil {
+		if strings.Contains(err.Error(), "message is not modified") {
+			return nil
+		}
+		return errors.Join(err, internal.NewTraceError())
+	}
+	return nil
+}
+
 // Listen starts long-polling and dispatches every incoming update to handler.
 // Blocks until ctx is cancelled — run it in a goroutine.
 func (tbot *TelegramBotClient) Listen(ctx context.Context, handler UpdateHandler) {

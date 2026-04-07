@@ -1,6 +1,8 @@
 // Package dto defines the HTTP response Data Transfer Objects for the v1 API.
 package dto
 
+import "time"
+
 // SourceResponse is the JSON representation of a configured rate source,
 // decorated with its most recent execution status.
 type SourceResponse struct {
@@ -28,4 +30,16 @@ type HistoryResponse struct {
 	Success   bool   `json:"success"`
 	Error     string `json:"error,omitempty"`
 	Timestamp string `json:"timestamp"`
+}
+
+// NotificationResponse is the JSON representation of a notification pool record.
+// The message body is intentionally omitted to avoid leaking rate content through the API.
+type NotificationResponse struct {
+	ID        string    `json:"id"`
+	UserType  string    `json:"user_type"`
+	UserID    string    `json:"user_id"`
+	Status    string    `json:"status"`
+	LastError string    `json:"last_error,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	SentAt    time.Time `json:"sent_at"`
 }

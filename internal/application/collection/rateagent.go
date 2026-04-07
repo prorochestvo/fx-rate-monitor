@@ -1,4 +1,4 @@
-package rate
+package collection
 
 import (
 	"context"
@@ -7,53 +7,69 @@ import (
 	"io"
 	"log"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
-	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
 	"github.com/seilbekskindirov/monitor/internal/service/rateextractor"
 )
 
-func NewAgent(
+func NewRateAgent(
 	proxyURL string,
-	cltTelegram telegramClient,
 	rRateSource rateSourceRepository,
 	rExecutionHistory executionHistoryRepository,
 	rRateValue rateValueRepository,
 	rRateUserSubscription rateUserSubscriptionRepository,
+	rRateUserEvent rateUserEventRepository,
 	logger io.Writer,
-) (*Agent, error) {
+) (*RateAgent, error) {
 	extractor, err := rateextractor.NewRateExtractor(rRateValue, proxyURL, time.Minute)
 	if err != nil {
 		return nil, err
 	}
 
-	a := &Agent{
-		telegramClient:                 cltTelegram,
+	a := &RateAgent{
 		rateValueRepository:            rRateValue,
 		rateSourceRepository:           rRateSource,
 		executionHistoryRepository:     rExecutionHistory,
 		rateUserSubscriptionRepository: rRateUserSubscription,
+		rateUserEventRepository:        rRateUserEvent,
 		rateExtractor:                  extractor,
 		logger:                         logger,
 	}
+
 	return a, nil
 }
 
-type Agent struct {
-	telegramClient                 telegramClient
+type RateAgent struct {
 	rateValueRepository            rateValueRepository
 	rateSourceRepository           rateSourceRepository
 	executionHistoryRepository     executionHistoryRepository
 	rateUserSubscriptionRepository rateUserSubscriptionRepository
+	rateUserEventRepository        rateUserEventRepository
 	rateExtractor                  rateExtractor
 	logger                         io.Writer
 }
 
-func (a *Agent) Run(ctx context.Context) (err error) {
+func (a *RateAgent) Run(ctx context.Context) (err error) {
+	// isDue returns true if the source should run in this invocation.
+	// A 30-second grace period accounts for cron scheduling jitter.
+	// If no successful execution history exists, the source is always considered due.
+	isDue := func(
+		ctx context.Context,
+		repository executionHistoryRepository,
+		sourceName string,
+		interval time.Duration,
+		now time.Time,
+	) bool {
+		records, err := repository.ObtainLastNExecutionHistoryBySourceName(ctx, sourceName, 1, true)
+		if err != nil || len(records) == 0 {
+			return true
+		}
+		return now.Sub(records[0].Timestamp) >= interval-30*time.Second
+	}
+
 	var sources []domain.RateSource
 	if s, errSource := a.rateSourceRepository.ObtainAllRateSources(ctx); errSource != nil {
 		errSource = errors.Join(errSource, internal.NewTraceError())
@@ -117,7 +133,7 @@ func (a *Agent) Run(ctx context.Context) (err error) {
 	return
 }
 
-func (a *Agent) execution(ctx context.Context, sources []domain.RateSource) map[string]error {
+func (a *RateAgent) execution(ctx context.Context, sources []domain.RateSource) map[string]error {
 	now := time.Now().UTC()
 	errs := make(map[string]error, len(sources))
 
@@ -143,11 +159,11 @@ func (a *Agent) execution(ctx context.Context, sources []domain.RateSource) map[
 	return errs
 }
 
-func (a *Agent) notification(ctx context.Context, sources []domain.RateSource) map[string]error {
+func (a *RateAgent) notification(ctx context.Context, sources []domain.RateSource) map[string]error {
 	now := time.Now().UTC()
 	errs := make(map[string]error, len(sources))
 
-	telegramBotAlerts := make(map[int64][]alert, len(sources))
+	telegramBotAlerts := make(map[string][]alert, len(sources))
 
 	for _, source := range sources {
 		var newValue float64
@@ -179,18 +195,11 @@ func (a *Agent) notification(ctx context.Context, sources []domain.RateSource) m
 		for _, subscription := range subscriptions {
 			switch subscription.UserType {
 			case domain.UserTypeTelegram:
-				chatID, errChatID := strconv.ParseInt(subscription.UserID, 10, 64)
-				if errChatID != nil {
-					errChatID = errors.Join(errChatID, internal.NewTraceError())
-					errChatID = errors.Join(fmt.Errorf("ChatID %s is invalid", subscription.UserID), errChatID)
-					errs[source.Name] = errChatID
-					continue
-				}
-				items, ok := telegramBotAlerts[chatID]
+				items, ok := telegramBotAlerts[subscription.UserID]
 				if !ok || items == nil {
 					items = make([]alert, 0)
 				}
-				telegramBotAlerts[chatID] = append(items, alert{
+				telegramBotAlerts[subscription.UserID] = append(items, alert{
 					SourceName:     source.Name,
 					SourceTitle:    source.Title,
 					BaseCurrency:   source.BaseCurrency,
@@ -208,11 +217,30 @@ func (a *Agent) notification(ctx context.Context, sources []domain.RateSource) m
 	}
 
 	for tbotChatID, tbotAlerts := range telegramBotAlerts {
-		res := "OK"
-		if err := tbotSendHTMLMessage(a.telegramClient, ctx, integration.TelegramChatID(tbotChatID), tbotAlerts); err != nil {
-			res = err.Error()
+		var errMessages []error
+
+		msgs, err := buildAlertMessage(tbotAlerts...)
+		if err == nil {
+			errMessages = make([]error, 0, len(msgs))
+			for _, msg := range msgs {
+				err = a.rateUserEventRepository.RetainRateUserEvent(ctx, &domain.RateUserEvent{
+					UserType: domain.UserTypeTelegram,
+					UserID:   tbotChatID,
+					Message:  msg,
+				})
+				if err != nil {
+					errMessages = append(errMessages, err)
+				}
+			}
+			err = errors.Join(errMessages...)
 		}
-		log.Printf("notification: telegrambot %d: %s\n", tbotChatID, res)
+
+		res := ""
+		if err != nil {
+			res = " " + err.Error()
+		}
+
+		log.Printf("notification: telegram chat_id=%s queued: %d/%d%s", tbotChatID, len(msgs)-len(errMessages), len(msgs), res)
 	}
 
 	return errs
@@ -224,7 +252,7 @@ type rateExtractor interface {
 
 type executionHistoryRepository interface {
 	RetainExecutionHistory(context.Context, *domain.ExecutionHistory) error
-	ObtainLastNExecutionHistoryBySourceName(context.Context, string, int, bool) ([]domain.ExecutionHistory, error)
+	ObtainLastNExecutionHistoryBySourceName(context.Context, string, int64, bool) ([]domain.ExecutionHistory, error)
 }
 
 type rateSourceRepository interface {
@@ -233,7 +261,7 @@ type rateSourceRepository interface {
 }
 
 type rateValueRepository interface {
-	ObtainLastNRateValuesBySourceName(context.Context, string, int) ([]domain.RateValue, error)
+	ObtainLastNRateValuesBySourceName(context.Context, string, int64) ([]domain.RateValue, error)
 	RetainRateValue(context.Context, *domain.RateValue) error
 }
 
@@ -241,10 +269,8 @@ type rateUserSubscriptionRepository interface {
 	ObtainRateUserSubscriptionsBySource(context.Context, string) ([]domain.RateUserSubscription, error)
 }
 
-type telegramClient interface {
-	SendHTMLMessageToAdmin(context.Context, string) error
-	SendDocumentToAdmin(context.Context, string, []byte) error
-	SendHTMLMessage(context.Context, integration.TelegramChatID, string) error
+type rateUserEventRepository interface {
+	RetainRateUserEvent(ctx context.Context, record *domain.RateUserEvent) error
 }
 
 type alert struct {
@@ -269,24 +295,8 @@ const (
 	telegramMaxMessageLen = 2048
 )
 
-// isDue returns true if the source should run in this invocation.
-// A 30-second grace period accounts for cron scheduling jitter.
-// If no successful execution history exists, the source is always considered due.
-func isDue(
-	ctx context.Context,
-	repository executionHistoryRepository,
-	sourceName string,
-	interval time.Duration,
-	now time.Time,
-) bool {
-	records, err := repository.ObtainLastNExecutionHistoryBySourceName(ctx, sourceName, 1, true)
-	if err != nil || len(records) == 0 {
-		return true
-	}
-	return now.Sub(records[0].Timestamp) >= interval-30*time.Second
-}
-
-func tbotSendHTMLMessage(tbot telegramClient, ctx context.Context, chatID integration.TelegramChatID, alerts []alert) error {
+// buildAlertMessage renders alerts into the builder as a single HTML Telegram message.
+func buildAlertMessage(alerts ...alert) ([]string, error) {
 	rates := make(map[string][]string, len(alerts))
 	for _, alertItem := range alerts {
 		key := strings.TrimSpace(alertItem.SourceTitle)
@@ -301,56 +311,34 @@ func tbotSendHTMLMessage(tbot telegramClient, ctx context.Context, chatID integr
 		if alertItem.ForecastMethod != "" && alertItem.ForecastPrice != 0.0 {
 			val += fmt.Sprintf(" | %s %.2f <i>%s</i>", telegramBotForecast, alertItem.ForecastPrice, alertItem.ForecastMethod)
 		}
-
-		values, ok := rates[key]
-		if !ok {
-			values = make([]string, 0)
-		}
+		values := rates[key]
 		values = append(values, val)
 		sort.Strings(values)
 		rates[key] = values
 	}
 
-	messages := make([]string, 0, len(rates))
+	sources := make([]string, 0, len(rates))
 	for title, values := range rates {
-		messages = append(messages, fmt.Sprintf("%s:\n%s\n", title, strings.Join(values, "\n\n")))
+		sources = append(sources, fmt.Sprintf("%s:\n%s\n", title, strings.Join(values, "\n\n")))
 	}
-	sort.Strings(messages)
+	sort.Strings(sources)
 
 	now := time.Now().UTC().Format(time.RFC850)
-	errs := make([]error, 0)
 
-	var b strings.Builder
-
-	for _, message := range messages {
-		if l := b.Len() + len(message); l < telegramMaxMessageLen {
-			b.WriteString(message)
+	var buffer strings.Builder
+	messages := make([]string, 0, len(sources))
+	for _, message := range sources {
+		if l := buffer.Len() + len(message); l < telegramMaxMessageLen {
+			buffer.WriteString(message)
 			continue
 		}
-
-		msg := b.String()
-		b.Reset()
-
-		err := tbot.SendHTMLMessage(ctx, chatID, fmt.Sprintf("#COLLECTOR %s\n%s", now, msg))
-		if err != nil {
-			errs = append(errs, err)
-		}
+		messages = append(messages, fmt.Sprintf("#COLLECTOR %s\n%s", now, buffer.String()))
+		buffer.Reset()
+	}
+	if buffer.Len() > 0 {
+		messages = append(messages, fmt.Sprintf("#COLLECTOR %s\n%s", now, buffer.String()))
+		buffer.Reset()
 	}
 
-	msg := b.String()
-	b.Reset()
-
-	if len(msg) > 0 {
-		err := tbot.SendHTMLMessage(ctx, chatID, fmt.Sprintf("#COLLECTOR %s\n%s", now, msg))
-		if err != nil {
-			errs = append(errs, err)
-		}
-	}
-
-	if err := errors.Join(errs...); err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return err
-	}
-
-	return nil
+	return messages, nil
 }

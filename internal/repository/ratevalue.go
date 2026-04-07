@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/seilbekskindirov/monitor/internal"
@@ -43,8 +42,8 @@ func (r *RateValueRepository) CheckUP(ctx context.Context) error {
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	var count int
-	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM"+" "+rateValueTableName+";").Scan(&count); err != nil {
+	count, err := rateValueCount(tx, ctx, ";")
+	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
@@ -85,41 +84,11 @@ func (r *RateValueRepository) ObtainAllRateValueBySourceName(ctx context.Context
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	fields := []string{
-		rateValueIdFieldName,
-		rateValueSourceNameFieldName,
-		rateValueBaseCurrencyFieldName,
-		rateValueQuoteCurrencyFieldName,
-		rateValuePriceFieldName,
-		rateValueTimestampFieldName,
-	}
-
-	sqlCommand := "SELECT" + " " + strings.Join(fields, ", ") + " FROM " + rateValueTableName + " WHERE " + rateValueSourceNameFieldName + " = ?;"
-
-	rows, err := tx.QueryContext(ctx, sqlCommand, sourceName)
+	sqlCommand := "WHERE " + rateValueSourceNameFieldName + " = ?;"
+	rates, err := rateValueQueryContext(tx, ctx, sqlCommand, sourceName)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return nil, err
-	}
-	defer func(rows io.Closer) { _ = rows.Close() }(rows)
-
-	var rates []domain.RateValue
-	for rows.Next() {
-		var rate domain.RateValue
-		var timestamp string
-		if err = rows.Scan(&rate.ID, &rate.SourceName, &rate.BaseCurrency, &rate.QuoteCurrency, &rate.Price, &timestamp); err != nil {
-			err = errors.Join(err, internal.NewTraceError())
-			return nil, err
-		}
-
-		rate.Timestamp, err = time.Parse(time.RFC3339, timestamp)
-		if err != nil {
-			err = fmt.Errorf("rate %s has invalid timestamp %s: %w", rate.ID, timestamp, err)
-			err = errors.Join(err, internal.NewTraceError())
-			return nil, err
-		}
-
-		rates = append(rates, rate)
 	}
 
 	if err = tx.Rollback(); err != nil {
@@ -130,7 +99,7 @@ func (r *RateValueRepository) ObtainAllRateValueBySourceName(ctx context.Context
 	return rates, nil
 }
 
-func (r *RateValueRepository) ObtainLastNRateValuesBySourceName(ctx context.Context, sourceName string, limit int) ([]domain.RateValue, error) {
+func (r *RateValueRepository) ObtainLastNRateValuesBySourceName(ctx context.Context, sourceName string, limit int64) ([]domain.RateValue, error) {
 	tx, err := r.db.Transaction(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
@@ -140,41 +109,11 @@ func (r *RateValueRepository) ObtainLastNRateValuesBySourceName(ctx context.Cont
 
 	// Secondary sort by rowid DESC ensures deterministic newest-first ordering when
 	// multiple rows share the same RFC3339 timestamp string (second precision).
-	sqlCommand := "SELECT" + " " +
-		rateValueIdFieldName + ", " +
-		rateValueSourceNameFieldName + ", " +
-		rateValueBaseCurrencyFieldName + ", " +
-		rateValueQuoteCurrencyFieldName + ", " +
-		rateValuePriceFieldName + ", " +
-		rateValueTimestampFieldName +
-		" FROM " + rateValueTableName +
-		" WHERE " + rateValueSourceNameFieldName + " = ?" +
-		" ORDER BY " + rateValueTimestampFieldName + " DESC, " + rateValueIdFieldName + " DESC LIMIT ?;"
-
-	rows, err := tx.QueryContext(ctx, sqlCommand, sourceName, limit)
+	sqlCommand := " WHERE " + rateValueSourceNameFieldName + " = ?" + " ORDER BY " + rateValueTimestampFieldName + " DESC, " + rateValueIdFieldName + " DESC LIMIT ?;"
+	rates, err := rateValueQueryContext(tx, ctx, sqlCommand, sourceName, limit)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return nil, err
-	}
-	defer func(rows io.Closer) { _ = rows.Close() }(rows)
-
-	rates := make([]domain.RateValue, 0)
-	for rows.Next() {
-		var rate domain.RateValue
-		var timestamp string
-		if err = rows.Scan(&rate.ID, &rate.SourceName, &rate.BaseCurrency, &rate.QuoteCurrency, &rate.Price, &timestamp); err != nil {
-			err = errors.Join(err, internal.NewTraceError())
-			return nil, err
-		}
-
-		rate.Timestamp, err = time.Parse(time.RFC3339, timestamp)
-		if err != nil {
-			err = fmt.Errorf("rate %s has invalid timestamp %s: %w", rate.ID, timestamp, err)
-			err = errors.Join(err, internal.NewTraceError())
-			return nil, err
-		}
-
-		rates = append(rates, rate)
 	}
 
 	if err = tx.Rollback(); err != nil {
@@ -185,17 +124,17 @@ func (r *RateValueRepository) ObtainLastNRateValuesBySourceName(ctx context.Cont
 	return rates, nil
 }
 
-func (r *RateValueRepository) RetainRateValue(ctx context.Context, rateValue *domain.RateValue) error {
-	if rateValue == nil {
+func (r *RateValueRepository) RetainRateValue(ctx context.Context, record *domain.RateValue) error {
+	if record == nil {
 		err := errors.New("rate value is nil")
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
 
-	if rateValue.ID == "" {
-		rateValue.ID = generateRateValueID()
+	if record.ID == "" {
+		record.ID = generateRateValueID()
 	}
-	rateValue.Timestamp = time.Now().UTC()
+	record.Timestamp = time.Now().UTC()
 
 	tx, err := r.db.Transaction(ctx)
 	if err != nil {
@@ -204,32 +143,35 @@ func (r *RateValueRepository) RetainRateValue(ctx context.Context, rateValue *do
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	cmd := "SELECT" + " COUNT(*) FROM " + rateValueTableName + " WHERE " + rateValueIdFieldName + " = ?;"
-	var count int64
-	err = tx.QueryRowContext(ctx, cmd, rateValue.ID).Scan(&count)
+	count, err := rateValueCount(tx, ctx, " WHERE "+rateValueIdFieldName+" = ?;", record.ID)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
 
-	fields := []string{
-		rateValueSourceNameFieldName,
-		rateValueBaseCurrencyFieldName,
-		rateValueQuoteCurrencyFieldName,
-		rateValuePriceFieldName,
-		rateValueTimestampFieldName,
-	}
-
 	if count > 0 {
-		cmd = "UPDATE" + " " + rateValueTableName + " SET " + strings.Join(fields, " = ?, ") + " = ? WHERE " + rateValueIdFieldName + " = ?;"
-		_, err = tx.ExecContext(ctx, cmd, rateValue.SourceName, rateValue.BaseCurrency, rateValue.QuoteCurrency, rateValue.Price, rateValue.Timestamp.Format(time.RFC3339), rateValue.ID)
+		cmd := "UPDATE" + " " + rateValueTableName + " SET " +
+			rateValueSourceNameFieldName + " = ?, " +
+			rateValueBaseCurrencyFieldName + " = ?, " +
+			rateValueQuoteCurrencyFieldName + " = ?, " +
+			rateValuePriceFieldName + " = ?, " +
+			rateValueTimestampFieldName + " = ? " +
+			"WHERE " + rateValueIdFieldName + " = ?;"
+		_, err = tx.ExecContext(ctx, cmd, record.SourceName, record.BaseCurrency, record.QuoteCurrency, record.Price, record.Timestamp.Format(time.RFC3339), record.ID)
 		if err != nil {
 			err = errors.Join(err, internal.NewTraceError())
 			return err
 		}
 	} else {
-		cmd = "INSERT INTO" + " " + rateValueTableName + " (" + rateValueIdFieldName + ", " + strings.Join(fields, ", ") + ") VALUES (?" + strings.Repeat(",?", len(fields)) + ");"
-		_, err = tx.ExecContext(ctx, cmd, rateValue.ID, rateValue.SourceName, rateValue.BaseCurrency, rateValue.QuoteCurrency, rateValue.Price, rateValue.Timestamp.Format(time.RFC3339))
+		cmd := "INSERT INTO" + " " + rateValueTableName + " (" +
+			rateValueIdFieldName + ", " +
+			rateValueSourceNameFieldName + ", " +
+			rateValueBaseCurrencyFieldName + ", " +
+			rateValueQuoteCurrencyFieldName + ", " +
+			rateValuePriceFieldName + ", " +
+			rateValueTimestampFieldName +
+			") VALUES (?, ?, ?, ?, ?, ?);"
+		_, err = tx.ExecContext(ctx, cmd, record.ID, record.SourceName, record.BaseCurrency, record.QuoteCurrency, record.Price, record.Timestamp.Format(time.RFC3339))
 		if err != nil {
 			err = errors.Join(err, internal.NewTraceError())
 			return err
@@ -244,8 +186,8 @@ func (r *RateValueRepository) RetainRateValue(ctx context.Context, rateValue *do
 	return nil
 }
 
-func (r *RateValueRepository) RemoveRateValue(ctx context.Context, rateValue *domain.RateValue) error {
-	if rateValue == nil {
+func (r *RateValueRepository) RemoveRateValue(ctx context.Context, record *domain.RateValue) error {
+	if record == nil {
 		err := errors.New("rate value is nil")
 		err = errors.Join(err, internal.NewTraceError())
 		return err
@@ -258,9 +200,10 @@ func (r *RateValueRepository) RemoveRateValue(ctx context.Context, rateValue *do
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	cmd := "DELETE FROM" + " " + rateValueTableName + " WHERE id = ?;"
-	_, err = tx.ExecContext(ctx, cmd, rateValue.ID)
+	cmd := "DELETE FROM" + " " + rateValueTableName + " WHERE " + rateValueIdFieldName + " = ?;"
+	_, err = tx.ExecContext(ctx, cmd, record.ID)
 	if err != nil {
+		err = errors.Join(err, fmt.Errorf("SQL: %s", cmd))
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
@@ -285,9 +228,120 @@ const (
 	rateValueQuoteCurrencyFieldName = "quote_currency"
 	rateValuePriceFieldName         = "price"
 	rateValueTimestampFieldName     = "timestamp"
+
+	rateValueSqlSelect = "SELECT\n" +
+		rateValueIdFieldName + ", " +
+		rateValueSourceNameFieldName + ", " +
+		rateValueBaseCurrencyFieldName + ", " +
+		rateValueQuoteCurrencyFieldName + ", " +
+		rateValuePriceFieldName + ", " +
+		rateValueTimestampFieldName +
+		"\nFROM " + rateValueTableName
 )
 
 func generateRateValueID() string {
 	now := time.Now().UTC()
 	return fmt.Sprintf("RV%04d%02d%02d%02d%02d%02dZ%dT%X", now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), now.Second(), now.Nanosecond(), uuid.NewV4().Bytes())
+}
+
+func rateValueCount(tx *sql.Tx, ctx context.Context, condition string, args ...any) (int64, error) {
+	query := "SELECT\n" +
+		" COUNT(*)\n" +
+		"FROM " + rateValueTableName + "\n" + condition
+
+	var count int64
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&count)
+	if err != nil && errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	} else if err != nil {
+		err = errors.Join(err, fmt.Errorf("SQL: %s", query))
+		err = errors.Join(err, internal.NewTraceError())
+		return 0, err
+	}
+
+	return count, nil
+}
+
+func rateValueQueryContext(tx *sql.Tx, ctx context.Context, condition string, args ...any) (items []domain.RateValue, err error) {
+	count, err := rateValueCount(tx, ctx, condition, args...)
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return
+	}
+	if count == 0 {
+		items = []domain.RateValue{}
+		return
+	}
+
+	query := rateValueSqlSelect + "\n" + condition
+
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		err = errors.Join(err, fmt.Errorf("SQL: %s", query))
+		err = errors.Join(err, internal.NewTraceError())
+		return
+	}
+	defer func(rows io.Closer) { err = errors.Join(err, rows.Close()) }(rows)
+
+	items = make([]domain.RateValue, 0, count)
+
+	for rows.Next() {
+		var item domain.RateValue
+		var timestamp string
+
+		err = rows.Scan(
+			&item.ID,
+			&item.SourceName,
+			&item.BaseCurrency,
+			&item.QuoteCurrency,
+			&item.Price,
+			&timestamp,
+		)
+		if err != nil {
+			err = errors.Join(err, internal.NewTraceError())
+			return
+		}
+
+		item.Timestamp, err = time.Parse(time.RFC3339, timestamp)
+		if err != nil {
+			err = fmt.Errorf("rate %s has invalid timestamp %s: %w", item.ID, timestamp, err)
+			err = errors.Join(err, internal.NewTraceError())
+			return
+		}
+
+		items = append(items, item)
+	}
+
+	return
+}
+
+func rateValueQueryRowContext(tx *sql.Tx, ctx context.Context, condition string, args ...any) (*domain.RateValue, error) {
+	query := rateValueSqlSelect + "\n" + condition
+
+	var item domain.RateValue
+	var timestamp string
+	err := tx.QueryRowContext(ctx, query, args...).Scan(
+		&item.ID,
+		&item.SourceName,
+		&item.BaseCurrency,
+		&item.QuoteCurrency,
+		&item.Price,
+		&timestamp,
+	)
+	if err != nil && errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	} else if err != nil {
+		err = errors.Join(err, fmt.Errorf("SQL: %s", query))
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+
+	item.Timestamp, err = time.Parse(time.RFC3339, timestamp)
+	if err != nil {
+		err = fmt.Errorf("rate %s has invalid timestamp %s: %w", item.ID, timestamp, err)
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+
+	return &item, nil
 }

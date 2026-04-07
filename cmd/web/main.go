@@ -16,8 +16,8 @@ import (
 
 	"github.com/prorochestvo/dsninjector"
 	"github.com/seilbekskindirov/monitor/internal"
+	"github.com/seilbekskindirov/monitor/internal/application/api"
 	"github.com/seilbekskindirov/monitor/internal/gateway"
-	"github.com/seilbekskindirov/monitor/internal/gateway/httpV1/handlers"
 	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
 	"github.com/seilbekskindirov/monitor/internal/repository"
 	_ "modernc.org/sqlite"
@@ -81,23 +81,38 @@ func main() {
 	if err != nil {
 		log.Fatalf("rate value repo: %s", err)
 	}
-	rUserSubscription, err := repository.NewRateUserSubscriptionRepository(db)
+	rRateUserSubscription, err := repository.NewRateUserSubscriptionRepository(db)
 	if err != nil {
 		log.Fatalf("repositories: user subscription build is failed, %s", err.Error())
 		return
 	}
+	rRateUserEvent, err := repository.NewRateUserEventRepository(db)
+	if err != nil {
+		log.Fatalf("repositories: notification pool build is failed, %s", err.Error())
+		return
+	}
 	log.Println("repositories: initiated")
 
-	h := &handlers.Handler{
-		SourceRepo:       rRateSource,
-		RateValueRepo:    rRateValue,
-		ExecHistoryRepo:  rExecutionHistory,
-		UserSubscription: rUserSubscription,
+	restAPI, err := api.NewWebRestAPI(
+		rExecutionHistory,
+		rRateSource,
+		rRateValue,
+		rRateUserSubscription,
+		rRateUserEvent,
+	)
+	if err != nil {
+		log.Fatalf("services: rest api is failed, %s", err.Error())
+		return
 	}
+	mux, err := gateway.NewGateway(restAPI)
+	if err != nil {
+		log.Fatalf("services: mux api is failed, %s", err.Error())
+		return
+	}
+	mux.Handle("/", http.FileServer(http.Dir(StaticDir)))
+	log.Println("services: initiated")
 
 	// run http server
-	mux := gateway.New(h).Mux()
-	mux.Handle("/", http.FileServer(http.Dir(StaticDir)))
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", HttpPort),
 		Handler:      mux,

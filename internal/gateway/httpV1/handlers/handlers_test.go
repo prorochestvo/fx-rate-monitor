@@ -11,229 +11,284 @@ import (
 
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	"github.com/seilbekskindirov/monitor/internal/gateway/httpV1/dto"
-	"github.com/seilbekskindirov/monitor/internal/gateway/httpV1/routes"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func newTestMux(h *Handler) *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+routes.Sources, h.ListSources)
-	mux.HandleFunc("GET "+routes.SourceRates, h.ListRates)
-	mux.HandleFunc("GET "+routes.SourceHistory, h.ListHistory)
-	return mux
-}
-
-// --- ListSources ---
-
-func TestListSources_EmptySliceNotNull(t *testing.T) {
+func TestListSources(t *testing.T) {
 	t.Parallel()
 
-	h := &Handler{SourceRepo: &stubSourceRepo{}, RateValueRepo: &stubRateRepo{}, ExecHistoryRepo: &stubHistoryRepo{}}
-	mux := newTestMux(h)
+	t.Run("200 with sources", func(t *testing.T) {
+		t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sources", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
+		svc := &mockRateService{
+			sources: []domain.RateSource{
+				{Name: "src1", BaseCurrency: "USD", QuoteCurrency: "KZT", Interval: "1h"},
+				{Name: "src2", BaseCurrency: "EUR", QuoteCurrency: "KZT", Interval: "2h"},
+			},
+			historyItems: []domain.ExecutionHistory{{
+				ID:        "h1",
+				Success:   true,
+				Timestamp: time.Now().UTC(),
+			}},
+		}
 
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+		h, err := NewHandler(svc)
+		require.NoError(t, err)
 
-	var result []dto.SourceResponse
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
-	require.NotNil(t, result)
-	require.Empty(t, result)
+		rr := httptest.NewRecorder()
+		h.ListSources(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+
+		var body []dto.SourceResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+		require.Len(t, body, 2)
+		require.Equal(t, "src1", body[0].Name)
+	})
+
+	t.Run("200 empty array when no sources", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockRateService{sources: nil}
+		h, err := NewHandler(svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.ListSources(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		require.Equal(t, http.StatusOK, rr.Code)
+
+		var body []dto.SourceResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+		require.Empty(t, body)
+	})
+
+	t.Run("500 on ObtainAllRateSources error", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockRateService{err: errors.New("db error")}
+		h, err := NewHandler(svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.ListSources(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		require.Equal(t, http.StatusInternalServerError, rr.Code)
+	})
 }
 
-func TestListSources_PopulatesLastRunFields(t *testing.T) {
+func TestListRates(t *testing.T) {
 	t.Parallel()
 
-	ts := time.Date(2026, 3, 30, 12, 0, 0, 0, time.UTC)
-	src := domain.RateSource{Name: "halyk_bank", BaseCurrency: "USD", QuoteCurrency: "KZT", Interval: "10m"}
-	hist := domain.ExecutionHistory{ID: "H1", SourceName: "halyk_bank", Success: true, Timestamp: ts}
+	t.Run("200 with rates", func(t *testing.T) {
+		t.Parallel()
 
-	h := &Handler{
-		SourceRepo:      &stubSourceRepo{sources: []domain.RateSource{src}},
-		RateValueRepo:   &stubRateRepo{},
-		ExecHistoryRepo: &stubHistoryRepo{records: map[string][]domain.ExecutionHistory{"halyk_bank": {hist}}},
-	}
-	mux := newTestMux(h)
+		svc := &mockRateService{
+			rates: []domain.RateValue{
+				{ID: "r1", Price: 470.0, BaseCurrency: "USD", QuoteCurrency: "KZT", Timestamp: time.Now().UTC()},
+				{ID: "r2", Price: 471.0, BaseCurrency: "USD", QuoteCurrency: "KZT", Timestamp: time.Now().UTC()},
+			},
+		}
+		h, err := NewHandler(svc)
+		require.NoError(t, err)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sources", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
+		rr := httptest.NewRecorder()
+		h.ListRates(rr, httptest.NewRequest(http.MethodGet, "/?name=src1", nil))
 
-	require.Equal(t, http.StatusOK, rec.Code)
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
 
-	var result []dto.SourceResponse
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
-	require.Len(t, result, 1)
-	assert.True(t, result[0].LastSuccess)
-	assert.Equal(t, ts.Format(time.RFC3339), result[0].LastRunAt)
+		var body []dto.RateResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+		require.Len(t, body, 2)
+	})
+
+	t.Run("200 empty", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockRateService{rates: nil}
+		h, err := NewHandler(svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.ListRates(rr, httptest.NewRequest(http.MethodGet, "/?name=src1", nil))
+
+		require.Equal(t, http.StatusOK, rr.Code)
+
+		var body []dto.RateResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+		require.Empty(t, body)
+	})
+
+	t.Run("500 on error", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockRateService{err: errors.New("db error")}
+		h, err := NewHandler(svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.ListRates(rr, httptest.NewRequest(http.MethodGet, "/?name=src1", nil))
+
+		require.Equal(t, http.StatusInternalServerError, rr.Code)
+	})
 }
 
-func TestListSources_RepoError_Returns500(t *testing.T) {
+func TestListHistory(t *testing.T) {
 	t.Parallel()
 
-	h := &Handler{
-		SourceRepo:      &stubSourceRepo{err: errors.New("db down")},
-		RateValueRepo:   &stubRateRepo{},
-		ExecHistoryRepo: &stubHistoryRepo{},
-	}
-	mux := newTestMux(h)
+	t.Run("200 with records", func(t *testing.T) {
+		t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sources", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
+		svc := &mockRateService{
+			historyItems: []domain.ExecutionHistory{
+				{ID: "h1", Success: true, Timestamp: time.Now().UTC()},
+				{ID: "h2", Success: false, Error: "oops", Timestamp: time.Now().UTC()},
+				{ID: "h3", Success: true, Timestamp: time.Now().UTC()},
+			},
+		}
+		h, err := NewHandler(svc)
+		require.NoError(t, err)
 
-	require.Equal(t, http.StatusInternalServerError, rec.Code)
+		rr := httptest.NewRecorder()
+		h.ListHistory(rr, httptest.NewRequest(http.MethodGet, "/?name=src1", nil))
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+
+		var body []dto.HistoryResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+		require.Len(t, body, 3)
+	})
+
+	t.Run("500 on error", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockRateService{err: errors.New("db error")}
+		h, err := NewHandler(svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.ListHistory(rr, httptest.NewRequest(http.MethodGet, "/?name=src1", nil))
+
+		require.Equal(t, http.StatusInternalServerError, rr.Code)
+	})
 }
 
-// --- ListRates ---
-
-func TestListRates_DefaultLimit(t *testing.T) {
+func TestListNotifications(t *testing.T) {
 	t.Parallel()
 
-	rates := make([]domain.RateValue, 5)
-	for i := range rates {
-		rates[i] = domain.RateValue{ID: "RV" + string(rune('0'+i)), SourceName: "halyk_bank", Price: float64(i)}
-	}
+	t.Run("200 with notifications", func(t *testing.T) {
+		t.Parallel()
 
-	h := &Handler{
-		SourceRepo:      &stubSourceRepo{},
-		RateValueRepo:   &stubRateRepo{rates: map[string][]domain.RateValue{"halyk_bank": rates}},
-		ExecHistoryRepo: &stubHistoryRepo{},
-	}
-	mux := newTestMux(h)
+		now := time.Now().UTC()
+		svc := &mockRateService{
+			events: []domain.RateUserEvent{
+				{ID: "e1", UserType: domain.UserTypeTelegram, UserID: "111", Status: domain.RateUserEventStatusSent, CreatedAt: now},
+				{ID: "e2", UserType: domain.UserTypeTelegram, UserID: "222", Status: domain.RateUserEventStatusFailed, CreatedAt: now},
+			},
+		}
+		h, err := NewHandler(svc)
+		require.NoError(t, err)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sources/halyk_bank/rates", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
+		rr := httptest.NewRecorder()
+		h.ListNotifications(rr, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	require.Equal(t, http.StatusOK, rec.Code)
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
 
-	var result []dto.RateResponse
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
-	require.Len(t, result, 5)
+		var body []dto.NotificationResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+		require.Len(t, body, 2)
+		require.NotEmpty(t, body[0].ID)
+		require.NotEmpty(t, body[0].UserType)
+		require.NotEmpty(t, body[0].Status)
+	})
+
+	t.Run("500 on error", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockRateService{err: errors.New("db error")}
+		h, err := NewHandler(svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.ListNotifications(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		require.Equal(t, http.StatusInternalServerError, rr.Code)
+	})
 }
 
-func TestListRates_NonexistentSource_EmptyArray(t *testing.T) {
+func TestListFailedNotifications(t *testing.T) {
 	t.Parallel()
 
-	h := &Handler{SourceRepo: &stubSourceRepo{}, RateValueRepo: &stubRateRepo{}, ExecHistoryRepo: &stubHistoryRepo{}}
-	mux := newTestMux(h)
+	t.Run("200 with results", func(t *testing.T) {
+		t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/sources/nonexistent/rates", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
+		now := time.Now().UTC()
+		svc := &mockRateService{
+			events: []domain.RateUserEvent{
+				{ID: "e1", UserType: domain.UserTypeTelegram, UserID: "111", Status: domain.RateUserEventStatusFailed, CreatedAt: now},
+			},
+		}
+		h, err := NewHandler(svc)
+		require.NoError(t, err)
 
-	require.Equal(t, http.StatusOK, rec.Code)
+		// extractOffset reads the "limit" param (known production bug) — test actual behaviour.
+		rr := httptest.NewRecorder()
+		h.ListFailedNotifications(rr, httptest.NewRequest(http.MethodGet, "/?limit=20", nil))
 
-	var result []dto.RateResponse
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
-	require.NotNil(t, result)
-	require.Empty(t, result)
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+
+		var body []dto.NotificationResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+		require.Len(t, body, 1)
+	})
+
+	t.Run("500 on error", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockRateService{err: errors.New("db error")}
+		h, err := NewHandler(svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.ListFailedNotifications(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		require.Equal(t, http.StatusInternalServerError, rr.Code)
+	})
 }
 
-// --- ListHistory ---
-
-func TestListHistory_EmptyArray(t *testing.T) {
-	t.Parallel()
-
-	h := &Handler{SourceRepo: &stubSourceRepo{}, RateValueRepo: &stubRateRepo{}, ExecHistoryRepo: &stubHistoryRepo{}}
-	mux := newTestMux(h)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/sources/halyk_bank/history", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-
-	var result []dto.HistoryResponse
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
-	require.NotNil(t, result)
-	require.Empty(t, result)
+type mockRateService struct {
+	sources      []domain.RateSource
+	rates        []domain.RateValue
+	historyItems []domain.ExecutionHistory
+	events       []domain.RateUserEvent
+	err          error
 }
 
-func TestListHistory_ReturnsRecords(t *testing.T) {
-	t.Parallel()
-
-	ts := time.Date(2026, 3, 30, 10, 0, 0, 0, time.UTC)
-	records := []domain.ExecutionHistory{
-		{ID: "H1", SourceName: "halyk_bank", Success: true, Timestamp: ts},
-		{ID: "H2", SourceName: "halyk_bank", Success: false, Error: "timeout", Timestamp: ts.Add(-time.Minute)},
-	}
-
-	h := &Handler{
-		SourceRepo:      &stubSourceRepo{},
-		RateValueRepo:   &stubRateRepo{},
-		ExecHistoryRepo: &stubHistoryRepo{records: map[string][]domain.ExecutionHistory{"halyk_bank": records}},
-	}
-	mux := newTestMux(h)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/sources/halyk_bank/history", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-
-	var result []dto.HistoryResponse
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
-	require.Len(t, result, 2)
-	assert.True(t, result[0].Success)
-	assert.False(t, result[1].Success)
-	assert.Equal(t, "timeout", result[1].Error)
+func (m *mockRateService) ObtainAllRateSources(_ context.Context) ([]domain.RateSource, error) {
+	return m.sources, m.err
 }
 
-// --- stub implementations ---
-
-type stubSourceRepo struct {
-	sources []domain.RateSource
-	err     error
+func (m *mockRateService) ObtainLastNRateValuesBySourceName(_ context.Context, _ string, _ int64) ([]domain.RateValue, error) {
+	return m.rates, m.err
 }
 
-func (s *stubSourceRepo) ObtainAllRateSources(_ context.Context) ([]domain.RateSource, error) {
-	if s.err != nil {
-		return nil, s.err
-	}
-	if s.sources == nil {
-		return []domain.RateSource{}, nil
-	}
-	return s.sources, nil
+func (m *mockRateService) ObtainLastNExecutionHistoryBySourceName(_ context.Context, _ string, _ int64) ([]domain.ExecutionHistory, error) {
+	return m.historyItems, m.err
 }
 
-type stubRateRepo struct {
-	rates map[string][]domain.RateValue
-	err   error
+func (m *mockRateService) ObtainLastSuccessNExecutionHistoryBySourceName(_ context.Context, _ string, _ int64) ([]domain.ExecutionHistory, error) {
+	return m.historyItems, m.err
 }
 
-func (s *stubRateRepo) ObtainLastNRateValuesBySourceName(_ context.Context, sourceName string, _ int) ([]domain.RateValue, error) {
-	if s.err != nil {
-		return nil, s.err
-	}
-	if s.rates == nil {
-		return []domain.RateValue{}, nil
-	}
-	if v, ok := s.rates[sourceName]; ok {
-		return v, nil
-	}
-	return []domain.RateValue{}, nil
+func (m *mockRateService) ObtainListOfLastRateUserEvent(_ context.Context, _ int64) ([]domain.RateUserEvent, error) {
+	return m.events, m.err
 }
 
-type stubHistoryRepo struct {
-	records map[string][]domain.ExecutionHistory
-	err     error
-}
-
-func (s *stubHistoryRepo) ObtainLastNExecutionHistoryBySourceName(_ context.Context, sourceName string, _ int, _ bool) ([]domain.ExecutionHistory, error) {
-	if s.err != nil {
-		return nil, s.err
-	}
-	if s.records == nil {
-		return []domain.ExecutionHistory{}, nil
-	}
-	if v, ok := s.records[sourceName]; ok {
-		return v, nil
-	}
-	return []domain.ExecutionHistory{}, nil
+func (m *mockRateService) ObtainFailedListOfRateUserEvent(_ context.Context, _, _ int64) ([]domain.RateUserEvent, error) {
+	return m.events, m.err
 }

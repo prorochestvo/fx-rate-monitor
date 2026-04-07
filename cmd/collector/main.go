@@ -11,7 +11,8 @@ import (
 
 	"github.com/prorochestvo/dsninjector"
 	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/application/rate"
+	"github.com/seilbekskindirov/monitor/internal/application/collection"
+	"github.com/seilbekskindirov/monitor/internal/application/notification"
 	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
 	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
 	"github.com/seilbekskindirov/monitor/internal/repository"
@@ -95,25 +96,21 @@ func main() {
 		log.Fatalf("repositories: subscription build is failed, %s", err.Error())
 		return
 	}
+	rRateUserEvent, err := repository.NewRateUserEventRepository(db)
+	if err != nil {
+		log.Fatalf("repositories: notification pool build is failed, %s", err.Error())
+		return
+	}
 	log.Println("repositories: initiated")
 
-	// init services
-	//forecaster, err := rateforecaster.NewCompositeForecaster(
-	//	rateforecaster.NewMovingAverageForecaster(),
-	//	rateforecaster.NewLinearRegressionForecaster(),
-	//)
-	//if err != nil {
-	//	log.Fatalf("services: forecaster build is failed: %s", err)
-	//	return
-	//}
-	//log.Println("services: initiated")
-
 	runners, err := buildRunners(
+		context.Background(),
 		tbot,
 		rRateSource,
 		rExecutionHistory,
 		rRateValue,
 		rRateUserSubscription,
+		rRateUserEvent,
 		l.WriterAs(internal.LogLevelWarning),
 	)
 	if err != nil {
@@ -123,8 +120,23 @@ func main() {
 	log.Println("runners: initiated")
 
 	ctx := context.Background()
-	//ctx, cancel := context.WithTimeout(ctx, 7*time.Minute)
-	//defer cancel()
+
+	//// Start the Telegram bot subscription handler (long-polling) in a background goroutine.
+	//subHandler := apptelegram.NewSubscriptionHandler(tbot, rRateUserSubscription, rRateSource)
+	//go func() {
+	//	tbot.Listen(ctx, subHandler.Handle)
+	//	log.Println("telegram: bot listener stopped")
+	//}()
+	////ctx, cancel := context.WithTimeout(ctx, 7*time.Minute)
+	////defer cancel()
+	//
+	////// Dispatch pending/failed notifications and vacuum old records at the start of each cycle.
+	////if dispatchErr := a.notificationPool.Dispatch(ctx); dispatchErr != nil {
+	////	log.Printf("notification pool: dispatch error: %s\n", dispatchErr)
+	////}
+	////if vacuumErr := a.notificationPool.Vacuum(ctx); vacuumErr != nil {
+	////	log.Printf("notification pool: vacuum error: %s\n", vacuumErr)
+	////}
 
 	errs := make([]error, 0, len(runners))
 	for _, r := range runners {
@@ -159,25 +171,43 @@ type runner interface {
 }
 
 func buildRunners(
+	ctx context.Context,
 	tbot *integration.TelegramBotClient,
 	rRateSource *repository.RateSourceRepository,
 	rExecutionHistory *repository.ExecutionHistoryRepository,
 	rRateValue *repository.RateValueRepository,
 	rRateUserSubscription *repository.RateUserSubscriptionRepository,
+	rRateUserEvent *repository.RateUserEventRepository,
 	logger io.Writer,
 ) ([]runner, error) {
-	rateAgent, err := rate.NewAgent(
+	collectionRateAgent, err := collection.NewRateAgent(
 		ProxyURL,
-		tbot,
 		rRateSource,
 		rExecutionHistory,
 		rRateValue,
 		rRateUserSubscription,
+		rRateUserEvent,
 		logger,
 	)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return nil, err
 	}
-	return []runner{rateAgent}, nil
+
+	notificationRateAgent, err := notification.NewRateAgent(
+		tbot,
+		rRateUserEvent,
+	)
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+
+	err = notificationRateAgent.Vacuum(ctx)
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+
+	return []runner{collectionRateAgent, notificationRateAgent}, nil
 }

@@ -74,7 +74,7 @@ func TestSourceRepository_RetainSource(t *testing.T) {
 		src := &domain.RateSource{
 			Name:          "src-update",
 			Title:         "src-update-title",
-			URL:           "https://example.com/v1",
+			URL:           "https://example.com/update/v1",
 			Interval:      "10m",
 			BaseCurrency:  "USD",
 			QuoteCurrency: "EUR",
@@ -83,7 +83,7 @@ func TestSourceRepository_RetainSource(t *testing.T) {
 
 		require.NoError(t, r.RetainRateSource(t.Context(), src))
 
-		src.URL = "https://example.com/v2"
+		src.URL = "https://example.com/update/v2"
 		src.Interval = "1h"
 		require.NoError(t, r.RetainRateSource(t.Context(), src))
 
@@ -91,13 +91,17 @@ func TestSourceRepository_RetainSource(t *testing.T) {
 		require.NoError(t, err)
 		defer func(tx *sql.Tx) { require.NoError(t, tx.Rollback()) }(tx)
 
+		//count, err := rateSourceCount(tx, t.Context(), ";")
+		//require.NoError(t, err)
+		//require.Equal(t, count, 1)
+
 		var url, interval string
 		require.NoError(t, tx.QueryRow(
 			"SELECT "+rateSourceURLFieldName+", "+reteSourceIntervalFieldName+
 				" FROM "+rateSourceTableName+" WHERE "+rateSourceNameFieldName+" = ?",
 			src.Name,
 		).Scan(&url, &interval))
-		require.Equal(t, "https://example.com/v2", url)
+		require.Equal(t, "https://example.com/update/v2", url)
 		require.Equal(t, "1h", interval)
 	})
 }

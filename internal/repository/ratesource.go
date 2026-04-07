@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
+	"github.com/twinj/uuid"
 )
 
 func NewRateSourceRepository(db db) (*RateSourceRepository, error) {
@@ -41,8 +43,8 @@ func (r *RateSourceRepository) CheckUP(ctx context.Context) error {
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	var count int
-	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM"+" "+rateSourceTableName+";").Scan(&count); err != nil {
+	count, err := rateSourceCount(tx, ctx, ";")
+	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
@@ -77,23 +79,67 @@ CREATE INDEX IF NOT EXISTS idx_` + rateSourceTableName + `_name ON ` + rateSourc
 	}, nil
 }
 
-func (r *RateSourceRepository) RetainRateSource(ctx context.Context, rateSource *domain.RateSource) error {
-	if rateSource == nil {
+func (r *RateSourceRepository) ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error) {
+	tx, err := r.db.Transaction(ctx)
+	if err != nil {
+		err = errors.Join(err, internal.NewStackTraceError())
+		return nil, err
+	}
+	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+
+	rows, err := rateSourceQueryRowContext(tx, ctx, "WHERE "+rateSourceNameFieldName+" = ?;", name)
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+
+	if err = tx.Rollback(); err != nil {
+		err = errors.Join(err, internal.NewStackTraceError())
+		return nil, err
+	}
+
+	return rows, nil
+}
+
+func (r *RateSourceRepository) ObtainAllRateSources(ctx context.Context) ([]domain.RateSource, error) {
+	tx, err := r.db.Transaction(ctx)
+	if err != nil {
+		err = errors.Join(err, internal.NewStackTraceError())
+		return nil, err
+	}
+	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+
+	rows, err := rateSourceQueryContext(tx, ctx, "ORDER BY "+rateSourceNameFieldName+" DESC;")
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+
+	if err = tx.Rollback(); err != nil {
+		err = errors.Join(err, internal.NewStackTraceError())
+		return nil, err
+	}
+
+	return rows, nil
+}
+
+func (r *RateSourceRepository) RetainRateSource(ctx context.Context, record *domain.RateSource) error {
+	if record == nil {
 		err := errors.New("rate source is nil")
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
 
-	rules, err := json.Marshal(rateSource.Rules)
+	rules, err := json.Marshal(record.Rules)
 	if err != nil {
-		err = fmt.Errorf("marshal rules for rateSource %q: %w", rateSource.Name, err)
+		err = fmt.Errorf("marshal rules for rate source %q: %w", record.Name, err)
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
 
-	opts, err := json.Marshal(rateSource.Options)
+	opts, err := json.Marshal(record.Options)
 	if err != nil {
-		err = fmt.Errorf("marshal options for rateSource %q: %w", rateSource.Name, err)
+		err = fmt.Errorf("marshal options for rate source %q: %w", record.Name, err)
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
@@ -105,8 +151,7 @@ func (r *RateSourceRepository) RetainRateSource(ctx context.Context, rateSource 
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	var count int64
-	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM"+" "+rateSourceTableName+" WHERE "+rateSourceNameFieldName+" = ?;", rateSource.Name).Scan(&count)
+	count, err := rateSourceCount(tx, ctx, "WHERE "+rateSourceNameFieldName+" = ?;", record.Name)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return err
@@ -124,27 +169,36 @@ func (r *RateSourceRepository) RetainRateSource(ctx context.Context, rateSource 
 			" WHERE " + rateSourceNameFieldName + " = ?;"
 		_, err = tx.ExecContext(
 			ctx, cmd,
-			rateSource.Title,
-			rateSource.BaseCurrency,
-			rateSource.QuoteCurrency,
-			rateSource.URL,
-			rateSource.Interval,
+			record.Title,
+			record.BaseCurrency,
+			record.QuoteCurrency,
+			record.URL,
+			record.Interval,
 			string(opts),
 			string(rules),
-			rateSource.Name,
+			record.Name,
 		)
 	} else {
 		cmd := "INSERT INTO" + " " + rateSourceTableName +
-			" (" + rateSourceNameFieldName + ", " + rateSourceTitleFieldName + ", " + reteSourceBaseCurrencyFieldName + ", " + reteSourceQuoteCurrencyFieldName + ", " + rateSourceURLFieldName + ", " + reteSourceIntervalFieldName + ", " + rateSourceOptionsFieldName + ", " + rateSourceRulesFieldName + ")" +
+			" (" +
+			rateSourceNameFieldName + ", " +
+			rateSourceTitleFieldName + ", " +
+			reteSourceBaseCurrencyFieldName + ", " +
+			reteSourceQuoteCurrencyFieldName + ", " +
+			rateSourceURLFieldName + ", " +
+			reteSourceIntervalFieldName + ", " +
+			rateSourceOptionsFieldName + ", " +
+			rateSourceRulesFieldName +
+			")" +
 			" VALUES (?, ?, ?, ?, ?, ?, ?, ?);"
 		_, err = tx.ExecContext(
 			ctx, cmd,
-			rateSource.Name,
-			rateSource.Title,
-			rateSource.BaseCurrency,
-			rateSource.QuoteCurrency,
-			rateSource.URL,
-			rateSource.Interval,
+			record.Name,
+			record.Title,
+			record.BaseCurrency,
+			record.QuoteCurrency,
+			record.URL,
+			record.Interval,
 			string(opts),
 			string(rules),
 		)
@@ -162,8 +216,8 @@ func (r *RateSourceRepository) RetainRateSource(ctx context.Context, rateSource 
 	return nil
 }
 
-func (r *RateSourceRepository) RemoveRateSource(ctx context.Context, rateSource *domain.RateSource) error {
-	if rateSource == nil {
+func (r *RateSourceRepository) RemoveRateSource(ctx context.Context, record *domain.RateSource) error {
+	if record == nil {
 		err := errors.New("rate source is nil")
 		err = errors.Join(err, internal.NewTraceError())
 		return err
@@ -177,8 +231,9 @@ func (r *RateSourceRepository) RemoveRateSource(ctx context.Context, rateSource 
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
 	cmd := "DELETE FROM" + " " + rateSourceTableName + " WHERE " + rateSourceNameFieldName + " = ?;"
-	_, err = tx.ExecContext(ctx, cmd, rateSource.Name)
+	_, err = tx.ExecContext(ctx, cmd, record.Name)
 	if err != nil {
+		err = errors.Join(err, fmt.Errorf("SQL: %s", cmd))
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
@@ -191,72 +246,6 @@ func (r *RateSourceRepository) RemoveRateSource(ctx context.Context, rateSource 
 	return nil
 }
 
-func (r *RateSourceRepository) ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error) {
-	tx, err := r.db.Transaction(ctx)
-	if err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return nil, err
-	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
-
-	cmd := "SELECT " + rateSourceNameFieldName + ", " +
-		rateSourceTitleFieldName + ", " +
-		reteSourceBaseCurrencyFieldName + ", " +
-		reteSourceQuoteCurrencyFieldName + ", " +
-		rateSourceURLFieldName + ", " +
-		reteSourceIntervalFieldName + ", " +
-		rateSourceOptionsFieldName + ", " +
-		rateSourceRulesFieldName + " " +
-		"FROM " + rateSourceTableName + " " +
-		"WHERE " + rateSourceNameFieldName + " = ?;"
-
-	src, err := rateSourceQueryRowContext(tx, ctx, cmd, name)
-	if err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	}
-
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return nil, err
-	}
-
-	return src, nil
-}
-
-func (r *RateSourceRepository) ObtainAllRateSources(ctx context.Context) ([]domain.RateSource, error) {
-	tx, err := r.db.Transaction(ctx)
-	if err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return nil, err
-	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
-
-	cmd := "SELECT " + rateSourceNameFieldName + ", " +
-		rateSourceTitleFieldName + ", " +
-		reteSourceBaseCurrencyFieldName + ", " +
-		reteSourceQuoteCurrencyFieldName + ", " +
-		rateSourceURLFieldName + ", " +
-		reteSourceIntervalFieldName + ", " +
-		rateSourceOptionsFieldName + ", " +
-		rateSourceRulesFieldName + " " +
-		"FROM " + rateSourceTableName + " " +
-		"ORDER BY " + rateSourceNameFieldName + " DESC;"
-
-	src, err := rateSourceQueryContext(tx, ctx, cmd)
-	if err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	}
-
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return nil, err
-	}
-
-	return src, nil
-}
-
 const (
 	rateSourceTableName              = "rate_sources"
 	rateSourceNameFieldName          = "name"
@@ -267,14 +256,55 @@ const (
 	reteSourceQuoteCurrencyFieldName = "quote_currency"
 	rateSourceOptionsFieldName       = "options"
 	rateSourceRulesFieldName         = "rules"
+
+	rateSourceSqlSelect = "SELECT\n" +
+		rateSourceNameFieldName + ", " +
+		rateSourceTitleFieldName + ", " +
+		reteSourceBaseCurrencyFieldName + ", " +
+		reteSourceQuoteCurrencyFieldName + ", " +
+		rateSourceURLFieldName + ", " +
+		reteSourceIntervalFieldName + ", " +
+		rateSourceOptionsFieldName + ", " +
+		rateSourceRulesFieldName + " " +
+		"\nFROM " + rateSourceTableName
 )
 
-//func generateRateSourceID() string {
-//	now := time.Now().UTC()
-//	return fmt.Sprintf("RS%04d%02d%02d%02d%02d%02dZ%dT%X", now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), now.Second(), now.Nanosecond(), uuid.NewV4().Bytes())
-//}
+func generateRateSourceID() string {
+	now := time.Now().UTC()
+	return fmt.Sprintf("RS%04d%02d%02d%02d%02d%02dZ%dT%X", now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), now.Second(), now.Nanosecond(), uuid.NewV4().Bytes())
+}
 
-func rateSourceQueryContext(tx *sql.Tx, ctx context.Context, query string, args ...any) (items []domain.RateSource, err error) {
+func rateSourceCount(tx *sql.Tx, ctx context.Context, condition string, args ...any) (int64, error) {
+	query := "SELECT\n" +
+		" COUNT(*)\n" +
+		"FROM " + rateSourceTableName + "\n" + condition
+
+	var count int64
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&count)
+	if err != nil && errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	} else if err != nil {
+		err = errors.Join(err, fmt.Errorf("SQL: %s", query))
+		err = errors.Join(err, internal.NewTraceError())
+		return 0, err
+	}
+
+	return count, nil
+}
+
+func rateSourceQueryContext(tx *sql.Tx, ctx context.Context, condition string, args ...any) (items []domain.RateSource, err error) {
+	count, err := rateSourceCount(tx, ctx, condition, args...)
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return
+	}
+	if count == 0 {
+		items = []domain.RateSource{}
+		return
+	}
+
+	query := rateSourceSqlSelect + "\n" + condition
+
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		err = errors.Join(err, fmt.Errorf("SQL: %s", query))
@@ -283,7 +313,7 @@ func rateSourceQueryContext(tx *sql.Tx, ctx context.Context, query string, args 
 	}
 	defer func(rows io.Closer) { err = errors.Join(err, rows.Close()) }(rows)
 
-	items = make([]domain.RateSource, 0)
+	items = make([]domain.RateSource, 0, count)
 
 	for rows.Next() {
 		var optsJSON, rulesJSON string
@@ -312,11 +342,21 @@ func rateSourceQueryContext(tx *sql.Tx, ctx context.Context, query string, args 
 	return
 }
 
-func rateSourceQueryRowContext(tx *sql.Tx, ctx context.Context, query string, args ...any) (*domain.RateSource, error) {
-	var optsJSON, rulesJSON string
+func rateSourceQueryRowContext(tx *sql.Tx, ctx context.Context, condition string, args ...any) (*domain.RateSource, error) {
+	query := rateSourceSqlSelect + "\n" + condition
 
-	var src domain.RateSource
-	err := tx.QueryRowContext(ctx, query, args...).Scan(&src.Name, &src.Title, &src.BaseCurrency, &src.QuoteCurrency, &src.URL, &src.Interval, &optsJSON, &rulesJSON)
+	var item domain.RateSource
+	var optionsJSON, rulesJSON string
+	err := tx.QueryRowContext(ctx, query, args...).Scan(
+		&item.Name,
+		&item.Title,
+		&item.BaseCurrency,
+		&item.QuoteCurrency,
+		&item.URL,
+		&item.Interval,
+		&optionsJSON,
+		&rulesJSON,
+	)
 	if err != nil && errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	} else if err != nil {
@@ -325,17 +365,17 @@ func rateSourceQueryRowContext(tx *sql.Tx, ctx context.Context, query string, ar
 		return nil, err
 	}
 
-	if err = json.Unmarshal([]byte(optsJSON), &src.Options); err != nil {
-		err = fmt.Errorf("unmarshal options for source %q: %w", src.Name, err)
+	if err = json.Unmarshal([]byte(optionsJSON), &item.Options); err != nil {
+		err = fmt.Errorf("unmarshal options for source %q: %w", item.Name, err)
 		err = errors.Join(err, internal.NewTraceError())
 		return nil, err
 	}
 
-	if err = json.Unmarshal([]byte(rulesJSON), &src.Rules); err != nil {
-		err = fmt.Errorf("unmarshal rules for source %q: %w", src.Name, err)
+	if err = json.Unmarshal([]byte(rulesJSON), &item.Rules); err != nil {
+		err = fmt.Errorf("unmarshal rules for source %q: %w", item.Name, err)
 		err = errors.Join(err, internal.NewTraceError())
 		return nil, err
 	}
 
-	return &src, nil
+	return &item, nil
 }

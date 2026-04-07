@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -106,13 +107,21 @@ func (extractor *RateExtractor) Run(ctx context.Context, source *domain.RateSour
 	payload = bytes.ReplaceAll(payload, []byte(" "), []byte(""))
 
 	value, err := strconv.ParseFloat(string(payload), 64)
-	if err != nil || value <= 0 {
-		if err == nil {
-			err = fmt.Errorf("invalid rate value: %s", string(payload))
-		}
+	if err != nil {
 		err = fmt.Errorf("parse extracted value %q: %s", payload, err.Error())
 		err = errors.Join(err, internal.NewTraceError())
 		return err
+	}
+
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		err = fmt.Errorf("extracted value is NaN or Inf for source %s", source.Name)
+		return errors.Join(err, internal.NewTraceError())
+	}
+
+	if value <= 0 || value > math.MaxInt32 {
+		err = fmt.Errorf("invalid rate value: %s", string(payload))
+		err = fmt.Errorf("parse extracted value %q: %s", payload, err.Error())
+		return errors.Join(err, internal.NewTraceError())
 	}
 
 	rateValue := &domain.RateValue{

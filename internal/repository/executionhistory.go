@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/seilbekskindirov/monitor/internal"
@@ -40,8 +42,8 @@ func (r *ExecutionHistoryRepository) CheckUP(ctx context.Context) error {
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	var count int
-	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM"+" "+executionHistoryTableName+";").Scan(&count); err != nil {
+	count, err := executionHistoryCount(tx, ctx, ";")
+	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
@@ -74,18 +76,48 @@ CREATE INDEX IF NOT EXISTS idx_` + executionHistoryTableName + `_lookup_errors O
 	}, nil
 }
 
-func (r *ExecutionHistoryRepository) RetainExecutionHistory(ctx context.Context, executionHistory *domain.ExecutionHistory) error {
-	if executionHistory == nil {
+// ObtainLastNExecutionHistoryBySourceName returns at most limit execution history records
+// for the given source, ordered newest-first. When successOnly is true, only successful
+// (success=1) rows are returned. Always returns a non-nil slice on success.
+func (r *ExecutionHistoryRepository) ObtainLastNExecutionHistoryBySourceName(ctx context.Context, sourceName string, limit int64, successOnly bool) ([]domain.ExecutionHistory, error) {
+	tx, err := r.db.Transaction(ctx)
+	if err != nil {
+		err = errors.Join(err, internal.NewStackTraceError())
+		return nil, err
+	}
+	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+
+	whereClause := executionHistorySourceNameFieldName + " = ?"
+	if successOnly {
+		whereClause += " AND " + executionHistorySuccessFieldName + " = 1"
+	}
+
+	rows, err := executionHistoryQueryContext(tx, ctx, "WHERE "+whereClause+" ORDER BY "+executionHistoryTimestampFieldName+" DESC LIMIT ?;", sourceName, limit)
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+
+	if err = tx.Rollback(); err != nil {
+		err = errors.Join(err, internal.NewStackTraceError())
+		return nil, err
+	}
+
+	return rows, nil
+}
+
+func (r *ExecutionHistoryRepository) RetainExecutionHistory(ctx context.Context, record *domain.ExecutionHistory) error {
+	if record == nil {
 		err := errors.New("execution history is nil")
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
 
-	if executionHistory.ID == "" {
-		executionHistory.ID = generateExecutionHistoryID()
+	if record.ID == "" {
+		record.ID = generateExecutionHistoryID()
 	}
-	if executionHistory.Timestamp.IsZero() {
-		executionHistory.Timestamp = time.Now().UTC()
+	if record.Timestamp.IsZero() {
+		record.Timestamp = time.Now().UTC()
 	}
 
 	tx, err := r.db.Transaction(ctx)
@@ -95,11 +127,7 @@ func (r *ExecutionHistoryRepository) RetainExecutionHistory(ctx context.Context,
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	var count int64
-	err = tx.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM"+" "+executionHistoryTableName+" WHERE "+executionHistoryIDFieldName+" = ?;",
-		executionHistory.ID,
-	).Scan(&count)
+	count, err := executionHistoryCount(tx, ctx, "WHERE "+executionHistoryIDFieldName+" = ?;", record.ID)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return err
@@ -114,23 +142,29 @@ func (r *ExecutionHistoryRepository) RetainExecutionHistory(ctx context.Context,
 			" WHERE " + executionHistoryIDFieldName + " = ?;"
 		_, err = tx.ExecContext(
 			ctx, cmd,
-			executionHistory.SourceName,
-			executionHistory.Success,
-			executionHistory.Error,
-			executionHistory.Timestamp.Unix(),
-			executionHistory.ID,
+			record.SourceName,
+			record.Success,
+			record.Error,
+			record.Timestamp.Unix(),
+			record.ID,
 		)
 	} else {
 		cmd := "INSERT INTO" + " " + executionHistoryTableName +
-			" (" + executionHistoryIDFieldName + ", " + executionHistorySourceNameFieldName + ", " + executionHistorySuccessFieldName + ", " + executionHistoryErrorFieldName + ", " + executionHistoryTimestampFieldName + ")" +
+			" (" +
+			executionHistoryIDFieldName + ", " +
+			executionHistorySourceNameFieldName + ", " +
+			executionHistorySuccessFieldName + ", " +
+			executionHistoryErrorFieldName + ", " +
+			executionHistoryTimestampFieldName +
+			")" +
 			" VALUES (?, ?, ?, ?, ?);"
 		_, err = tx.ExecContext(
 			ctx, cmd,
-			executionHistory.ID,
-			executionHistory.SourceName,
-			executionHistory.Success,
-			executionHistory.Error,
-			executionHistory.Timestamp.Unix(),
+			record.ID,
+			record.SourceName,
+			record.Success,
+			record.Error,
+			record.Timestamp.Unix(),
 		)
 	}
 	if err != nil {
@@ -146,65 +180,8 @@ func (r *ExecutionHistoryRepository) RetainExecutionHistory(ctx context.Context,
 	return nil
 }
 
-// ObtainLastNExecutionHistoryBySourceName returns at most limit execution history records
-// for the given source, ordered newest-first. When successOnly is true, only successful
-// (success=1) rows are returned. Always returns a non-nil slice on success.
-func (r *ExecutionHistoryRepository) ObtainLastNExecutionHistoryBySourceName(
-	ctx context.Context,
-	sourceName string,
-	limit int,
-	successOnly bool,
-) ([]domain.ExecutionHistory, error) {
-	tx, err := r.db.Transaction(ctx)
-	if err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return nil, err
-	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
-
-	whereClause := executionHistorySourceNameFieldName + " = ?"
-	if successOnly {
-		whereClause += " AND " + executionHistorySuccessFieldName + " = 1"
-	}
-
-	cmd := "SELECT " + executionHistoryIDFieldName +
-		", " + executionHistorySourceNameFieldName +
-		", " + executionHistorySuccessFieldName +
-		", " + executionHistoryErrorFieldName +
-		", " + executionHistoryTimestampFieldName +
-		" FROM " + executionHistoryTableName +
-		" WHERE " + whereClause +
-		" ORDER BY " + executionHistoryTimestampFieldName + " DESC LIMIT ?;"
-
-	rows, err := tx.QueryContext(ctx, cmd, sourceName, limit)
-	if err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	}
-	defer func(c interface{ Close() error }) { _ = c.Close() }(rows)
-
-	records := make([]domain.ExecutionHistory, 0)
-	for rows.Next() {
-		var h domain.ExecutionHistory
-		var ts int64
-		if err = rows.Scan(&h.ID, &h.SourceName, &h.Success, &h.Error, &ts); err != nil {
-			err = errors.Join(err, internal.NewTraceError())
-			return nil, err
-		}
-		h.Timestamp = time.Unix(ts, 0).UTC()
-		records = append(records, h)
-	}
-
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return nil, err
-	}
-
-	return records, nil
-}
-
-func (r *ExecutionHistoryRepository) RemoveSourceExecutionHistory(ctx context.Context, executionHistory *domain.ExecutionHistory) error {
-	if executionHistory == nil {
+func (r *ExecutionHistoryRepository) RemoveSourceExecutionHistory(ctx context.Context, record *domain.ExecutionHistory) error {
+	if record == nil {
 		err := errors.New("execution history is nil")
 		err = errors.Join(err, internal.NewTraceError())
 		return err
@@ -218,8 +195,9 @@ func (r *ExecutionHistoryRepository) RemoveSourceExecutionHistory(ctx context.Co
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
 	cmd := "DELETE FROM" + " " + executionHistoryTableName + " WHERE " + executionHistoryIDFieldName + " = ?;"
-	_, err = tx.ExecContext(ctx, cmd, executionHistory.ID)
+	_, err = tx.ExecContext(ctx, cmd, record.ID)
 	if err != nil {
+		err = errors.Join(err, fmt.Errorf("SQL: %s", cmd))
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
@@ -239,9 +217,107 @@ const (
 	executionHistorySuccessFieldName    = "success"
 	executionHistoryErrorFieldName      = "error"
 	executionHistoryTimestampFieldName  = "timestamp"
+
+	executionHistorySqlSelect = "SELECT" + "\n" +
+		executionHistoryIDFieldName + ", " +
+		executionHistorySourceNameFieldName + ", " +
+		executionHistorySuccessFieldName + ", " +
+		executionHistoryErrorFieldName + ", " +
+		executionHistoryTimestampFieldName +
+		"\nFROM " + executionHistoryTableName
 )
 
 func generateExecutionHistoryID() string {
 	now := time.Now().UTC()
 	return fmt.Sprintf("H%04d%02d%02d%02d%02d%02dZ%dT%X", now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), now.Second(), now.Nanosecond(), uuid.NewV4().Bytes())
+}
+
+func executionHistoryCount(tx *sql.Tx, ctx context.Context, condition string, args ...any) (int64, error) {
+	query := "SELECT\n" +
+		" COUNT(*)\n" +
+		"FROM " + executionHistoryTableName + "\n" + condition
+
+	var count int64
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&count)
+	if err != nil && errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	} else if err != nil {
+		err = errors.Join(err, fmt.Errorf("SQL: %s", query))
+		err = errors.Join(err, internal.NewTraceError())
+		return 0, err
+	}
+
+	return count, nil
+}
+
+func executionHistoryQueryContext(tx *sql.Tx, ctx context.Context, condition string, args ...any) (items []domain.ExecutionHistory, err error) {
+	count, err := executionHistoryCount(tx, ctx, condition, args...)
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return
+	}
+	if count == 0 {
+		items = []domain.ExecutionHistory{}
+		return
+	}
+
+	query := executionHistorySqlSelect + "\n" + condition
+
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		err = errors.Join(err, fmt.Errorf("SQL: %s", query))
+		err = errors.Join(err, internal.NewTraceError())
+		return
+	}
+	defer func(rows io.Closer) { err = errors.Join(err, rows.Close()) }(rows)
+
+	items = make([]domain.ExecutionHistory, 0, count)
+
+	for rows.Next() {
+		var item domain.ExecutionHistory
+		var timestamp int64
+
+		err = rows.Scan(
+			&item.ID,
+			&item.SourceName,
+			&item.Success,
+			&item.Error,
+			&timestamp,
+		)
+		if err != nil {
+			err = errors.Join(err, internal.NewTraceError())
+			return
+		}
+
+		item.Timestamp = time.Unix(timestamp, 0).UTC()
+
+		items = append(items, item)
+	}
+
+	return
+}
+
+func executionHistoryQueryRowContext(tx *sql.Tx, ctx context.Context, condition string, args ...any) (*domain.ExecutionHistory, error) {
+	query := executionHistorySqlSelect + "\n" + condition
+
+	var item domain.ExecutionHistory
+	var timestamp int64
+	err := tx.QueryRowContext(ctx, query, args...).Scan(
+		&item.ID,
+		&item.SourceName,
+		&item.Success,
+		&item.Error,
+		&timestamp,
+	)
+	if err != nil && errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	} else if err != nil {
+		err = errors.Join(err, fmt.Errorf("SQL: %s", query))
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+
+	item.Timestamp = time.Unix(timestamp, 0).UTC()
+
+	return &item, nil
 }

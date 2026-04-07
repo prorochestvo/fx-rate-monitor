@@ -2,7 +2,9 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -29,7 +31,7 @@ type RateUserSubscriptionRepository struct {
 	db db
 }
 
-func (r *RateUserSubscriptionRepository) Name() string { return subscriptionTableName }
+func (r *RateUserSubscriptionRepository) Name() string { return rateUserSubscriptionTableName }
 
 func (r *RateUserSubscriptionRepository) CheckUP(ctx context.Context) error {
 	tx, err := r.db.Transaction(ctx)
@@ -39,8 +41,8 @@ func (r *RateUserSubscriptionRepository) CheckUP(ctx context.Context) error {
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	var count int
-	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM"+" "+subscriptionTableName+";").Scan(&count); err != nil {
+	count, err := rateUserSubscriptionCount(tx, ctx, ";")
+	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
@@ -61,87 +63,20 @@ func (r *RateUserSubscriptionRepository) CheckUP(ctx context.Context) error {
 
 func (r *RateUserSubscriptionRepository) Migration() (map[string]string, error) {
 	return map[string]string{
-		subscriptionTableName + "_001_table_initiate": `CREATE TABLE IF NOT EXISTS ` + subscriptionTableName + ` (
-	` + subscriptionUserTypeFieldName + `        TEXT NOT NULL,
-	` + subscriptionUserIDFieldName + `          TEXT NOT NULL,
-	` + subscriptionSourceNameFieldName + `      TEXT NOT NULL,
- 	` + subscriptionDeltaThresholdFieldName + `  REAL NOT NULL DEFAULT 0,
-	` + subscriptionCreatedAtFieldName + `       TEXT NOT NULL,
-	PRIMARY KEY (` + subscriptionUserTypeFieldName + `, ` + subscriptionUserIDFieldName + `, ` + subscriptionSourceNameFieldName + `)
+		rateUserSubscriptionTableName + "_001_table_initiate": `CREATE TABLE IF NOT EXISTS ` + rateUserSubscriptionTableName + ` (
+	` + rateUserSubscriptionUserTypeFieldName + `        TEXT NOT NULL,
+	` + rateUserSubscriptionUserIDFieldName + `          TEXT NOT NULL,
+	` + rateUserSubscriptionSourceNameFieldName + `      TEXT NOT NULL,
+ 	` + rateUserSubscriptionConditionTypeFieldName + `   TEXT NOT NULL DEFAULT 'delta',
+ 	` + rateUserSubscriptionConditionValueFieldName + `  REAL NOT NULL DEFAULT 0,
+	` + rateUserSubscriptionCreatedAtFieldName + `       TEXT NOT NULL,
+	PRIMARY KEY (` + rateUserSubscriptionUserTypeFieldName + `, ` + rateUserSubscriptionUserIDFieldName + `, ` + rateUserSubscriptionSourceNameFieldName + `)
 );
-CREATE INDEX IF NOT EXISTS idx_` + subscriptionTableName + `_userType ON ` + subscriptionTableName + ` (` + subscriptionUserTypeFieldName + `);
-CREATE INDEX IF NOT EXISTS idx_` + subscriptionTableName + `_userID ON ` + subscriptionTableName + ` (` + subscriptionUserIDFieldName + `);
-CREATE INDEX IF NOT EXISTS idx_` + subscriptionTableName + `_sourceName ON ` + subscriptionTableName + ` (` + subscriptionSourceNameFieldName + `);`,
-		subscriptionTableName + "_002_unique_source_user": `CREATE UNIQUE INDEX IF NOT EXISTS idx_` + subscriptionTableName + `_sourceName_user ON ` + subscriptionTableName + ` (` + subscriptionSourceNameFieldName + `, ` + subscriptionUserIDFieldName + `);`,
+CREATE INDEX IF NOT EXISTS idx_` + rateUserSubscriptionTableName + `_userType ON ` + rateUserSubscriptionTableName + ` (` + rateUserSubscriptionUserTypeFieldName + `);
+CREATE INDEX IF NOT EXISTS idx_` + rateUserSubscriptionTableName + `_userID ON ` + rateUserSubscriptionTableName + ` (` + rateUserSubscriptionUserIDFieldName + `);
+CREATE INDEX IF NOT EXISTS idx_` + rateUserSubscriptionTableName + `_sourceName ON ` + rateUserSubscriptionTableName + ` (` + rateUserSubscriptionSourceNameFieldName + `);`,
+		rateUserSubscriptionTableName + "_002_unique_source_user": `CREATE UNIQUE INDEX IF NOT EXISTS idx_` + rateUserSubscriptionTableName + `_sourceName_user ON ` + rateUserSubscriptionTableName + ` (` + rateUserSubscriptionSourceNameFieldName + `, ` + rateUserSubscriptionUserIDFieldName + `);`,
 	}, nil
-}
-
-func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.Context, userSubscription *domain.RateUserSubscription) error {
-	if userSubscription == nil {
-		err := errors.New("user subscription is nil")
-		err = errors.Join(err, internal.NewTraceError())
-		return err
-	}
-
-	if userSubscription.CreatedAt.IsZero() {
-		userSubscription.CreatedAt = time.Now().UTC()
-	}
-
-	tx, err := r.db.Transaction(ctx)
-	if err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return err
-	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
-
-	cmd := "INSERT OR IGNORE INTO" + " " + subscriptionTableName +
-		" (" + subscriptionUserTypeFieldName + ", " + subscriptionUserIDFieldName + ", " +
-		subscriptionSourceNameFieldName + ", " + subscriptionDeltaThresholdFieldName + ", " + subscriptionCreatedAtFieldName + ")" +
-		" VALUES (?, ?, ?, ?, ?);"
-	_, err = tx.ExecContext(ctx, cmd, userSubscription.UserType, userSubscription.UserID, userSubscription.Source, userSubscription.DeltaThreshold, userSubscription.CreatedAt.Format(time.RFC3339))
-	if err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return err
-	}
-
-	if err = tx.Commit(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return err
-	}
-
-	return nil
-}
-
-func (r *RateUserSubscriptionRepository) RemoveRateUserSubscription(ctx context.Context, userSubscription *domain.RateUserSubscription) error {
-	if userSubscription == nil {
-		err := errors.New("user subscription is nil")
-		err = errors.Join(err, internal.NewTraceError())
-		return err
-	}
-
-	tx, err := r.db.Transaction(ctx)
-	if err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return err
-	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
-
-	cmd := "DELETE FROM" + " " + subscriptionTableName +
-		" WHERE " + subscriptionUserTypeFieldName + " = ?" +
-		" AND " + subscriptionUserIDFieldName + " = ?" +
-		" AND " + subscriptionSourceNameFieldName + " = ?;"
-	_, err = tx.ExecContext(ctx, cmd, userSubscription.UserType, userSubscription.UserID, userSubscription.Source)
-	if err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return err
-	}
-
-	if err = tx.Commit(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return err
-	}
-
-	return nil
 }
 
 func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsByUserID(ctx context.Context, userType domain.UserType, userID string) ([]domain.RateUserSubscription, error) {
@@ -152,19 +87,7 @@ func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsByUserID(ctx
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	cmd := "SELECT " + subscriptionUserTypeFieldName + ", " + subscriptionUserIDFieldName + ", " +
-		subscriptionSourceNameFieldName + ", " + subscriptionDeltaThresholdFieldName + ", " + subscriptionCreatedAtFieldName +
-		" FROM " + subscriptionTableName +
-		" WHERE " + subscriptionUserTypeFieldName + " = ? AND " + subscriptionUserIDFieldName + " = ?;"
-
-	rows, err := tx.QueryContext(ctx, cmd, userType, userID)
-	if err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	}
-	defer func(rows io.Closer) { _ = rows.Close() }(rows)
-
-	subs, err := scanSubscriptions(rows)
+	rows, err := rateUserSubscriptionQueryContext(tx, ctx, "WHERE "+rateUserSubscriptionUserTypeFieldName+" = ? AND "+rateUserSubscriptionUserIDFieldName+" = ?;", userType, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +97,7 @@ func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsByUserID(ctx
 		return nil, err
 	}
 
-	return subs, nil
+	return rows, nil
 }
 
 func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySource(ctx context.Context, sourceName string) ([]domain.RateUserSubscription, error) {
@@ -185,20 +108,9 @@ func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySource(ctx
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	cmd := "SELECT " + subscriptionUserTypeFieldName + ", " + subscriptionUserIDFieldName + ", " +
-		subscriptionSourceNameFieldName + ", " + subscriptionDeltaThresholdFieldName + ", " + subscriptionCreatedAtFieldName +
-		" FROM " + subscriptionTableName +
-		" WHERE " + subscriptionSourceNameFieldName + " = ?;"
-
-	rows, err := tx.QueryContext(ctx, cmd, sourceName)
+	rows, err := rateUserSubscriptionQueryContext(tx, ctx, "WHERE "+rateUserSubscriptionSourceNameFieldName+" = ?;", sourceName)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	}
-	defer func(rows io.Closer) { _ = rows.Close() }(rows)
-
-	subs, err := scanSubscriptions(rows)
-	if err != nil {
 		return nil, err
 	}
 
@@ -207,42 +119,224 @@ func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySource(ctx
 		return nil, err
 	}
 
-	return subs, nil
+	return rows, nil
 }
 
-type subscriptionRows interface {
-	Next() bool
-	Scan(dest ...any) error
-}
-
-func scanSubscriptions(rows subscriptionRows) ([]domain.RateUserSubscription, error) {
-	var subs []domain.RateUserSubscription
-	for rows.Next() {
-		var sub domain.RateUserSubscription
-		var createdAt string
-		if err := rows.Scan(&sub.UserType, &sub.UserID, &sub.Source, &sub.DeltaThreshold, &createdAt); err != nil {
-			return nil, errors.Join(err, internal.NewTraceError())
-		}
-		var err error
-		sub.CreatedAt, err = time.Parse(time.RFC3339, createdAt)
-		if err != nil {
-			return nil, errors.Join(err, internal.NewTraceError())
-		}
-		subs = append(subs, sub)
+func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.Context, record *domain.RateUserSubscription) error {
+	if record == nil {
+		err := errors.New("user subscription is nil")
+		err = errors.Join(err, internal.NewTraceError())
+		return err
 	}
-	return subs, nil
+
+	if record.CreatedAt.IsZero() {
+		record.CreatedAt = time.Now().UTC()
+	}
+
+	tx, err := r.db.Transaction(ctx)
+	if err != nil {
+		err = errors.Join(err, internal.NewStackTraceError())
+		return err
+	}
+	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+
+	count, err := rateUserSubscriptionCount(tx, ctx, "WHERE "+rateUserSubscriptionUserTypeFieldName+" = ? AND "+rateUserSubscriptionUserIDFieldName+" = ? AND "+rateUserSubscriptionSourceNameFieldName+" = ?;", record.UserType, record.UserID, record.SourceName)
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+
+	if count > 0 {
+		cmd := "UPDATE" + " " + rateUserSubscriptionTableName + " SET " +
+			rateUserSubscriptionConditionTypeFieldName + " = ?, " +
+			rateUserSubscriptionConditionValueFieldName + " = ? " +
+			" WHERE " + rateUserSubscriptionUserTypeFieldName + " = ? AND " + rateUserSubscriptionUserIDFieldName + " = ? AND " + rateUserSubscriptionSourceNameFieldName + " = ?;"
+		_, err = tx.ExecContext(
+			ctx, cmd,
+			record.ConditionType,
+			record.ConditionValue,
+			record.UserType,
+			record.UserID,
+			record.SourceName,
+		)
+	} else {
+		cmd := "INSERT INTO" + " " + rateUserSubscriptionTableName +
+			" (" +
+			rateUserSubscriptionUserTypeFieldName + ", " +
+			rateUserSubscriptionUserIDFieldName + ", " +
+			rateUserSubscriptionSourceNameFieldName + ", " +
+			rateUserSubscriptionConditionTypeFieldName + ", " +
+			rateUserSubscriptionConditionValueFieldName + ", " +
+			rateUserSubscriptionCreatedAtFieldName +
+			") VALUES (?, ?, ?, ?, ?, ?);"
+		_, err = tx.ExecContext(
+			ctx, cmd,
+			record.UserType,
+			record.UserID,
+			record.SourceName,
+			record.ConditionType,
+			record.ConditionValue,
+			record.CreatedAt.Format(time.RFC3339),
+		)
+	}
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+
+	if err = tx.Commit(); err != nil {
+		err = errors.Join(err, internal.NewStackTraceError())
+		return err
+	}
+
+	return nil
+}
+
+func (r *RateUserSubscriptionRepository) RemoveRateUserSubscription(ctx context.Context, record *domain.RateUserSubscription) error {
+	if record == nil {
+		err := errors.New("user subscription is nil")
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+
+	tx, err := r.db.Transaction(ctx)
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+
+	cmd := "DELETE FROM" + " " + rateUserSubscriptionTableName +
+		" WHERE " + rateUserSubscriptionUserTypeFieldName + " = ?" +
+		" AND " + rateUserSubscriptionUserIDFieldName + " = ?" +
+		" AND " + rateUserSubscriptionSourceNameFieldName + " = ?;"
+	_, err = tx.ExecContext(ctx, cmd, record.UserType, record.UserID, record.SourceName)
+	if err != nil {
+		err = errors.Join(err, fmt.Errorf("SQL: %s", cmd))
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+
+	if err = tx.Commit(); err != nil {
+		err = errors.Join(err, internal.NewStackTraceError())
+		return err
+	}
+
+	return nil
 }
 
 const (
-	subscriptionTableName               = "rate_user_subscriptions"
-	subscriptionUserTypeFieldName       = "user_type"
-	subscriptionUserIDFieldName         = "user_id"
-	subscriptionSourceNameFieldName     = "source_name"
-	subscriptionDeltaThresholdFieldName = "delta_threshold"
-	subscriptionCreatedAtFieldName      = "created_at"
+	rateUserSubscriptionTableName               = "rate_user_subscriptions"
+	rateUserSubscriptionUserTypeFieldName       = "user_type"
+	rateUserSubscriptionUserIDFieldName         = "user_id"
+	rateUserSubscriptionSourceNameFieldName     = "source_name"
+	rateUserSubscriptionConditionTypeFieldName  = "condition_type"
+	rateUserSubscriptionConditionValueFieldName = "condition_value"
+	rateUserSubscriptionCreatedAtFieldName      = "created_at"
+
+	rateUserSubscriptionSqlSelect = "SELECT\n" +
+		rateUserSubscriptionUserTypeFieldName + ", " +
+		rateUserSubscriptionUserIDFieldName + ", " +
+		rateUserSubscriptionSourceNameFieldName + ", " +
+		rateUserSubscriptionConditionTypeFieldName + ", " +
+		rateUserSubscriptionConditionValueFieldName + ", " +
+		rateUserSubscriptionCreatedAtFieldName +
+		"\nFROM " + rateUserSubscriptionTableName
 )
 
-//func generateRateUserSubscriptionID() string {
-//	now := time.Now().UTC()
-//	return fmt.Sprintf("US%04d%02d%02d%02d%02d%02dZ%dT%X", now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), now.Second(), now.Nanosecond(), uuid.NewV4().Bytes())
-//}
+func rateUserSubscriptionCount(tx *sql.Tx, ctx context.Context, condition string, args ...any) (int64, error) {
+	query := "SELECT\n" +
+		" COUNT(*)\n" +
+		"FROM " + rateUserSubscriptionTableName + "\n" + condition
+
+	var count int64
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&count)
+	if err != nil && errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	} else if err != nil {
+		err = errors.Join(err, fmt.Errorf("SQL: %s", query))
+		err = errors.Join(err, internal.NewTraceError())
+		return 0, err
+	}
+
+	return count, nil
+}
+
+func rateUserSubscriptionQueryContext(tx *sql.Tx, ctx context.Context, condition string, args ...any) (items []domain.RateUserSubscription, err error) {
+	count, err := rateUserSubscriptionCount(tx, ctx, condition, args...)
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return
+	}
+	if count == 0 {
+		items = []domain.RateUserSubscription{}
+		return
+	}
+
+	query := rateUserSubscriptionSqlSelect + "\n" + condition
+
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		err = errors.Join(err, fmt.Errorf("SQL: %s", query))
+		err = errors.Join(err, internal.NewTraceError())
+		return
+	}
+	defer func(rows io.Closer) { err = errors.Join(err, rows.Close()) }(rows)
+
+	items = make([]domain.RateUserSubscription, 0, count)
+
+	for rows.Next() {
+		var item domain.RateUserSubscription
+		var createdAt string
+
+		err = rows.Scan(
+			&item.UserType, &item.UserID, &item.SourceName,
+			&item.ConditionType, &item.ConditionValue,
+			&createdAt,
+		)
+		if err != nil {
+			err = errors.Join(err, internal.NewTraceError())
+			return
+		}
+
+		item.CreatedAt, err = time.Parse(time.RFC3339, createdAt)
+		if err != nil {
+			err = errors.Join(err, internal.NewTraceError())
+			return
+		}
+
+		items = append(items, item)
+	}
+
+	return
+}
+
+func rateUserSubscriptionQueryRowContext(tx *sql.Tx, ctx context.Context, condition string, args ...any) (*domain.RateUserSubscription, error) {
+	query := rateUserSubscriptionSqlSelect + "\n" + condition
+
+	var item domain.RateUserSubscription
+	var createdAt string
+	err := tx.QueryRowContext(ctx, query, args...).Scan(
+		&item.UserType,
+		&item.UserID,
+		&item.SourceName,
+		&item.ConditionType,
+		&item.ConditionValue,
+		&createdAt,
+	)
+	if err != nil && errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	} else if err != nil {
+		err = errors.Join(err, fmt.Errorf("SQL: %s", query))
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+
+	item.CreatedAt, err = time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+
+	return &item, nil
+}

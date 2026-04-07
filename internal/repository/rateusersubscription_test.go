@@ -21,7 +21,7 @@ func TestRateUserSubscriptionRepository_Name(t *testing.T) {
 
 	r, err := NewRateUserSubscriptionRepository(stubSQLiteDB(t))
 	require.NoError(t, err)
-	require.Equal(t, subscriptionTableName, r.Name())
+	require.Equal(t, rateUserSubscriptionTableName, r.Name())
 }
 
 func TestRateUserSubscriptionRepository_CheckUP(t *testing.T) {
@@ -45,8 +45,9 @@ func TestRateUserSubscriptionRepository_RetainRateUserSubscription(t *testing.T)
 		sub := &domain.RateUserSubscription{
 			UserType:       domain.UserTypeTelegram,
 			UserID:         "user-1",
-			Source:         "src-a",
-			DeltaThreshold: 0.5,
+			SourceName:     "src-a",
+			ConditionType:  domain.ConditionTypeDelta,
+			ConditionValue: "0.5",
 		}
 
 		require.NoError(t, r.RetainRateUserSubscription(t.Context(), sub))
@@ -58,11 +59,11 @@ func TestRateUserSubscriptionRepository_RetainRateUserSubscription(t *testing.T)
 
 		var count int
 		require.NoError(t, tx.QueryRow(
-			"SELECT COUNT(*) FROM"+" "+subscriptionTableName+
-				" WHERE "+subscriptionUserTypeFieldName+" = ?"+
-				" AND "+subscriptionUserIDFieldName+" = ?"+
-				" AND "+subscriptionSourceNameFieldName+" = ?",
-			sub.UserType, sub.UserID, sub.Source,
+			"SELECT COUNT(*) FROM"+" "+rateUserSubscriptionTableName+
+				" WHERE "+rateUserSubscriptionUserTypeFieldName+" = ?"+
+				" AND "+rateUserSubscriptionUserIDFieldName+" = ?"+
+				" AND "+rateUserSubscriptionSourceNameFieldName+" = ?",
+			sub.UserType, sub.UserID, sub.SourceName,
 		).Scan(&count))
 		require.Equal(t, 1, count)
 	})
@@ -70,9 +71,9 @@ func TestRateUserSubscriptionRepository_RetainRateUserSubscription(t *testing.T)
 		t.Parallel()
 
 		sub := &domain.RateUserSubscription{
-			UserType: domain.UserTypeTelegram,
-			UserID:   "user-2",
-			Source:   "src-b",
+			UserType:   domain.UserTypeTelegram,
+			UserID:     "user-2",
+			SourceName: "src-b",
 		}
 
 		require.NoError(t, r.RetainRateUserSubscription(t.Context(), sub))
@@ -84,11 +85,11 @@ func TestRateUserSubscriptionRepository_RetainRateUserSubscription(t *testing.T)
 
 		var count int
 		require.NoError(t, tx.QueryRow(
-			"SELECT COUNT(*) FROM"+" "+subscriptionTableName+
-				" WHERE "+subscriptionUserTypeFieldName+" = ?"+
-				" AND "+subscriptionUserIDFieldName+" = ?"+
-				" AND "+subscriptionSourceNameFieldName+" = ?",
-			sub.UserType, sub.UserID, sub.Source,
+			"SELECT COUNT(*) FROM"+" "+rateUserSubscriptionTableName+
+				" WHERE "+rateUserSubscriptionUserTypeFieldName+" = ?"+
+				" AND "+rateUserSubscriptionUserIDFieldName+" = ?"+
+				" AND "+rateUserSubscriptionSourceNameFieldName+" = ?",
+			sub.UserType, sub.UserID, sub.SourceName,
 		).Scan(&count))
 		require.Equal(t, 1, count)
 	})
@@ -98,15 +99,19 @@ func TestRateUserSubscriptionRepository_RetainRateUserSubscription(t *testing.T)
 		sub := &domain.RateUserSubscription{
 			UserType:       domain.UserTypeTelegram,
 			UserID:         "user-dt",
-			Source:         "src-dt",
-			DeltaThreshold: 0.75,
+			SourceName:     "src-dt",
+			ConditionType:  domain.ConditionTypeDelta,
+			ConditionValue: "0.75",
 		}
 		require.NoError(t, r.RetainRateUserSubscription(t.Context(), sub))
 
 		result, err := r.ObtainRateUserSubscriptionsBySource(t.Context(), "src-dt")
 		require.NoError(t, err)
 		require.Len(t, result, 1)
-		require.Equal(t, 0.75, result[0].DeltaThreshold)
+
+		deltaThreshold, err := result[0].DeltaThreshold()
+		require.NoError(t, err)
+		require.Equal(t, 0.75, deltaThreshold)
 	})
 }
 
@@ -121,9 +126,9 @@ func TestRateUserSubscriptionRepository_RemoveRateUserSubscription(t *testing.T)
 		t.Parallel()
 
 		sub := &domain.RateUserSubscription{
-			UserType: domain.UserTypeTelegram,
-			UserID:   "user-3",
-			Source:   "src-c",
+			UserType:   domain.UserTypeTelegram,
+			UserID:     "user-3",
+			SourceName: "src-c",
 		}
 
 		require.NoError(t, r.RetainRateUserSubscription(t.Context(), sub))
@@ -135,11 +140,11 @@ func TestRateUserSubscriptionRepository_RemoveRateUserSubscription(t *testing.T)
 
 		var count int
 		require.NoError(t, tx.QueryRow(
-			"SELECT COUNT(*) FROM"+" "+subscriptionTableName+
-				" WHERE "+subscriptionUserTypeFieldName+" = ?"+
-				" AND "+subscriptionUserIDFieldName+" = ?"+
-				" AND "+subscriptionSourceNameFieldName+" = ?",
-			sub.UserType, sub.UserID, sub.Source,
+			"SELECT COUNT(*) FROM"+" "+rateUserSubscriptionTableName+
+				" WHERE "+rateUserSubscriptionUserTypeFieldName+" = ?"+
+				" AND "+rateUserSubscriptionUserIDFieldName+" = ?"+
+				" AND "+rateUserSubscriptionSourceNameFieldName+" = ?",
+			sub.UserType, sub.UserID, sub.SourceName,
 		).Scan(&count))
 		require.Equal(t, 0, count)
 	})
@@ -156,9 +161,9 @@ func TestRateUserSubscriptionRepository_ObtainRateUserSubscriptionsByUserID(t *t
 		t.Parallel()
 
 		subs := []domain.RateUserSubscription{
-			{UserType: domain.UserTypeTelegram, UserID: "user-4", Source: "src-a"},
-			{UserType: domain.UserTypeTelegram, UserID: "user-4", Source: "src-b"},
-			{UserType: domain.UserTypeTelegram, UserID: "user-5", Source: "src-a"},
+			{UserType: domain.UserTypeTelegram, UserID: "user-4", SourceName: "src-a"},
+			{UserType: domain.UserTypeTelegram, UserID: "user-4", SourceName: "src-b"},
+			{UserType: domain.UserTypeTelegram, UserID: "user-5", SourceName: "src-a"},
 		}
 		for i := range subs {
 			require.NoError(t, r.RetainRateUserSubscription(t.Context(), &subs[i]))
@@ -192,9 +197,9 @@ func TestRateUserSubscriptionRepository_ObtainRateUserSubscriptionsBySource(t *t
 		t.Parallel()
 
 		subs := []domain.RateUserSubscription{
-			{UserType: domain.UserTypeTelegram, UserID: "user-6", Source: "src-x"},
-			{UserType: domain.UserTypeTelegram, UserID: "user-7", Source: "src-x"},
-			{UserType: domain.UserTypeTelegram, UserID: "user-8", Source: "src-y"},
+			{UserType: domain.UserTypeTelegram, UserID: "user-6", SourceName: "src-x"},
+			{UserType: domain.UserTypeTelegram, UserID: "user-7", SourceName: "src-x"},
+			{UserType: domain.UserTypeTelegram, UserID: "user-8", SourceName: "src-y"},
 		}
 		for i := range subs {
 			require.NoError(t, r.RetainRateUserSubscription(t.Context(), &subs[i]))
@@ -204,7 +209,7 @@ func TestRateUserSubscriptionRepository_ObtainRateUserSubscriptionsBySource(t *t
 		require.NoError(t, err)
 		require.Len(t, result, 2)
 		for _, s := range result {
-			require.Equal(t, "src-x", s.Source)
+			require.Equal(t, "src-x", s.SourceName)
 		}
 	})
 	t.Run("empty for unknown source", func(t *testing.T) {

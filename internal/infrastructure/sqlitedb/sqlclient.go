@@ -37,7 +37,8 @@ func NewSQLiteClient(sqlDSN dsninjector.DataSource, logger io.Writer) (*SQLiteCl
 }
 
 func NewSQLiteClientEx(db *sql.DB, logger io.Writer) (*SQLiteClient, error) {
-	if _, err := db.Exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;"); err != nil {
+	const pragma = "PRAGMA"
+	if _, err := db.Exec(pragma + " foreign_keys=ON;\n" + pragma + " journal_mode=WAL;"); err != nil {
 		err = fmt.Errorf("set pragmas: %w", err)
 		err = errors.Join(err, db.Close())
 		err = errors.Join(err, internal.NewStackTraceError())
@@ -140,6 +141,11 @@ func (sqlite *SQLiteClient) Rollback(ctx context.Context, action sqlAction, extr
 	return nil
 }
 
+func (sqlite *SQLiteClient) Vacuum(ctx context.Context) error {
+	_, err := sqlite.db.ExecContext(ctx, "VACUUM;")
+	return err
+}
+
 // Close closes the underlying database connection.
 func (sqlite *SQLiteClient) Close() error {
 	return sqlite.db.Close()
@@ -150,7 +156,7 @@ type Ping struct{}
 func (_ *Ping) Run(tx *sql.Tx, ctx context.Context) error {
 	var count int
 
-	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+migrationTableName).Scan(&count); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM"+" "+migrationTableName).Scan(&count); err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}

@@ -12,4 +12,11 @@ const (
 
 	// SourceHistory returns execution history for a named source.
 	SourceHistory = "/api/sources/{name}/history"
+
+	// Notifications returns the last N notification pool records.
+	// Registered before NotificationsFailed to avoid prefix shadowing.
+	Notifications = "/api/notifications"
+
+	// NotificationsFailed returns all failed notification pool records.
+	NotificationsFailed = "/api/notifications/failed"
 )
