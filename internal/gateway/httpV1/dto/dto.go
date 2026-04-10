@@ -34,12 +34,31 @@ type HistoryResponse struct {
 
 // NotificationResponse is the JSON representation of a notification pool record.
 // The message body is intentionally omitted to avoid leaking rate content through the API.
+// UserID is omitted when empty to prevent leaking subscriber identifiers via endpoints that
+// do not require it (e.g. failed-events per source).
 type NotificationResponse struct {
 	ID        string    `json:"id"`
 	UserType  string    `json:"user_type"`
-	UserID    string    `json:"user_id"`
+	UserID    string    `json:"user_id,omitempty"`
 	Status    string    `json:"status"`
 	LastError string    `json:"last_error,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	SentAt    time.Time `json:"sent_at"`
+}
+
+// ChartPointResponse is the JSON shape of one aggregated rate data point.
+type ChartPointResponse struct {
+	Label string  `json:"label"`
+	Price float64 `json:"price"`
+}
+
+// SubscriptionSummaryResponse is the JSON shape of one source subscription summary row.
+// UserID is never included so subscriber identifiers are not leaked via the API.
+type SubscriptionSummaryResponse struct {
+	SourceName        string `json:"source_name"`
+	UserType          string `json:"user_type"`
+	SubscriptionCount int64  `json:"subscription_count"`
+	LastSentAt        string `json:"last_sent_at,omitempty"`
+	SuccessCount      int64  `json:"success_count"`
+	FailedCount       int64  `json:"failed_count"`
 }

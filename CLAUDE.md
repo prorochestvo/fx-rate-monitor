@@ -118,3 +118,31 @@ use `context.Background()` or `context.TODO()`.
 result, err := svc.Fetch(t.Context(), id)
 require.NoError(t, err)
 ```
+
+### 8. Regression test for every bug and new edge case
+
+Whenever a bug is discovered **or** an edge case is identified that was not previously
+covered, a dedicated regression test **MUST** be added before the fix is merged.
+
+**Rules:**
+- The test must reproduce the bug / edge case as a failing test *before* the fix is applied.
+- The test must pass *after* the fix.
+- Name the subtest descriptively so the failure message is self-explanatory:
+
+```go
+t.Run("does not panic on empty rate slice", func(t *testing.T) {
+    t.Parallel()
+    require.NotPanics(t, func() { _ = forecaster.Forecast([]model.Rate{}) })
+})
+```
+
+- If the bug spans multiple packages, add a regression test in **each** affected package.
+- Reference the issue / PR number in a comment above the test (if applicable):
+
+```go
+// Regression: github.com/you/fx_rate_monitor/issues/42
+t.Run("returns ErrNoRates when history is empty", func(t *testing.T) { ... })
+```
+
+**Rationale:** Regression tests act as a living specification of known failure modes.
+They prevent silent re-introduction of the same bug in future refactors.

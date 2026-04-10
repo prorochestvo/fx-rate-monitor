@@ -46,9 +46,10 @@ func (a *RateAgent) Run(ctx context.Context) error {
 	ttl := now.Add(-a.ttl)
 
 	for _, event := range events {
+		event.SentAt = now
+
 		if event.CreatedAt.Before(ttl) {
 			event.Status = domain.RateUserEventStatusCanceled
-			event.SentAt = time.Time{}
 			event.LastError = strings.Join([]string{fmt.Sprintf("TTL (%s) exceeded", a.ttl.String()), event.LastError}, "\n")
 		} else {
 			switch event.UserType {
@@ -60,12 +61,10 @@ func (a *RateAgent) Run(ctx context.Context) error {
 			if err != nil {
 				event.LastError = err.Error()
 				event.Status = domain.RateUserEventStatusFailed
-				event.SentAt = time.Time{}
 				errs = append(errs, errors.Join(err, internal.NewTraceError()))
 			} else {
 				event.Status = domain.RateUserEventStatusSent
 				event.LastError = ""
-				event.SentAt = now
 			}
 		}
 

@@ -459,6 +459,171 @@ func TestRateUserEventRepository_RemoveRateUserEventRepository(t *testing.T) {
 	})
 }
 
+func TestRateUserEventRepository_SourceNameRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("source_name persists and is read back correctly", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateUserEventRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		event := &domain.RateUserEvent{
+			SourceName: "KAZ_NATIONALBANK_USD_KZT",
+			UserType:   domain.UserTypeTelegram,
+			UserID:     "user-42",
+			Message:    "rate changed",
+			Status:     domain.RateUserEventStatusPending,
+		}
+		require.NoError(t, r.RetainRateUserEvent(t.Context(), event))
+		require.NotEmpty(t, event.ID)
+
+		result, err := r.ObtainRateUserEventById(t.Context(), event.ID)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Equal(t, "KAZ_NATIONALBANK_USD_KZT", result.SourceName)
+	})
+
+	t.Run("existing rows without source_name have empty string", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateUserEventRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		// Insert without setting SourceName — should default to ""
+		event := &domain.RateUserEvent{
+			UserType: domain.UserTypeTelegram,
+			UserID:   "user-99",
+			Message:  "old event",
+			Status:   domain.RateUserEventStatusSent,
+		}
+		require.NoError(t, r.RetainRateUserEvent(t.Context(), event))
+
+		result, err := r.ObtainRateUserEventById(t.Context(), event.ID)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Equal(t, "", result.SourceName)
+	})
+}
+
+func TestRateUserEventRepository_ObtainRateUserEventsBySourceName(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns only events for the given source", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateUserEventRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		require.NoError(t, r.RetainRateUserEvent(t.Context(), &domain.RateUserEvent{
+			SourceName: "src-A",
+			UserType:   domain.UserTypeTelegram,
+			UserID:     "111",
+			Message:    "msg",
+			Status:     domain.RateUserEventStatusFailed,
+		}))
+		require.NoError(t, r.RetainRateUserEvent(t.Context(), &domain.RateUserEvent{
+			SourceName: "src-B",
+			UserType:   domain.UserTypeTelegram,
+			UserID:     "222",
+			Message:    "msg",
+			Status:     domain.RateUserEventStatusFailed,
+		}))
+
+		result, err := r.ObtainRateUserEventsBySourceName(t.Context(), "src-A", 0, 10)
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		require.Equal(t, "src-A", result[0].SourceName)
+	})
+
+	t.Run("status filter works correctly", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateUserEventRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		for _, status := range []domain.RateUserEventStatus{
+			domain.RateUserEventStatusFailed,
+			domain.RateUserEventStatusSent,
+			domain.RateUserEventStatusPending,
+		} {
+			require.NoError(t, r.RetainRateUserEvent(t.Context(), &domain.RateUserEvent{
+				SourceName: "src-X",
+				UserType:   domain.UserTypeTelegram,
+				UserID:     "u1",
+				Message:    "msg",
+				Status:     status,
+			}))
+		}
+
+		failed, err := r.ObtainRateUserEventsBySourceName(t.Context(), "src-X", 0, 10, domain.RateUserEventStatusFailed)
+		require.NoError(t, err)
+		require.Len(t, failed, 1)
+		require.Equal(t, domain.RateUserEventStatusFailed, failed[0].Status)
+	})
+
+	t.Run("no status args returns all statuses for source", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateUserEventRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		for _, status := range []domain.RateUserEventStatus{
+			domain.RateUserEventStatusFailed,
+			domain.RateUserEventStatusSent,
+		} {
+			require.NoError(t, r.RetainRateUserEvent(t.Context(), &domain.RateUserEvent{
+				SourceName: "src-Y",
+				UserType:   domain.UserTypeTelegram,
+				UserID:     "u2",
+				Message:    "msg",
+				Status:     status,
+			}))
+		}
+
+		all, err := r.ObtainRateUserEventsBySourceName(t.Context(), "src-Y", 0, 10)
+		require.NoError(t, err)
+		require.Len(t, all, 2)
+	})
+
+	t.Run("offset and limit paginate correctly", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateUserEventRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		for i := 0; i < 5; i++ {
+			require.NoError(t, r.RetainRateUserEvent(t.Context(), &domain.RateUserEvent{
+				SourceName: "src-Z",
+				UserType:   domain.UserTypeTelegram,
+				UserID:     "u3",
+				Message:    "msg",
+				Status:     domain.RateUserEventStatusFailed,
+			}))
+		}
+
+		page1, err := r.ObtainRateUserEventsBySourceName(t.Context(), "src-Z", 0, 3)
+		require.NoError(t, err)
+		require.Len(t, page1, 3)
+
+		page2, err := r.ObtainRateUserEventsBySourceName(t.Context(), "src-Z", 3, 3)
+		require.NoError(t, err)
+		require.Len(t, page2, 2)
+	})
+
+	t.Run("unknown source returns empty slice", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateUserEventRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		result, err := r.ObtainRateUserEventsBySourceName(t.Context(), "nonexistent", 0, 10)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Empty(t, result)
+	})
+}
+
 func TestRateUserEventRepository_RemoveRateUserEventOlderThan(t *testing.T) {
 	t.Parallel()
 

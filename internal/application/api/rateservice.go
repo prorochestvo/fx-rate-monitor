@@ -6,6 +6,7 @@ import (
 
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
+	"github.com/seilbekskindirov/monitor/internal/repository"
 )
 
 func NewWebRestAPI(
@@ -98,10 +99,58 @@ func (h *RateService) ObtainFailedListOfRateUserEvent(ctx context.Context, offse
 		ctx,
 		offset,
 		limit,
+		domain.RateUserEventStatusFailed,
 	)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return nil, err
+	}
+	return items, nil
+}
+
+// ObtainPendingRateUserEvents returns up to 1000 pending events (default-page widget).
+func (h *RateService) ObtainPendingRateUserEvents(ctx context.Context) ([]domain.RateUserEvent, error) {
+	items, err := h.rateUserEventRepository.ObtainLastNRateUserEvents(
+		ctx, 0, 1000, domain.RateUserEventStatusPending,
+	)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
+	}
+	return items, nil
+}
+
+// ObtainRateValueChartBySourceName returns aggregated chart data for the given source and period.
+func (h *RateService) ObtainRateValueChartBySourceName(
+	ctx context.Context, name string, period repository.ChartPeriod,
+) ([]repository.ChartPoint, error) {
+	items, err := h.rateValueRepository.ObtainRateValueChartBySourceName(ctx, name, period)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
+	}
+	return items, nil
+}
+
+// ObtainFailedRateUserEventsBySourceName returns a single page of failed events for a source.
+func (h *RateService) ObtainFailedRateUserEventsBySourceName(
+	ctx context.Context, sourceName string, page, pageSize int64,
+) ([]domain.RateUserEvent, error) {
+	offset := (page - 1) * pageSize
+	items, err := h.rateUserEventRepository.ObtainRateUserEventsBySourceName(
+		ctx, sourceName, offset, pageSize, domain.RateUserEventStatusFailed,
+	)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
+	}
+	return items, nil
+}
+
+// ObtainSubscriptionSummaryBySource returns grouped subscription + event statistics for a source.
+func (h *RateService) ObtainSubscriptionSummaryBySource(
+	ctx context.Context, sourceName string,
+) ([]repository.SubscriptionSummary, error) {
+	items, err := h.rateUserSubscriptionRepository.ObtainSubscriptionSummaryBySource(ctx, sourceName)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
 	}
 	return items, nil
 }
@@ -116,12 +165,15 @@ type rateSourceRepository interface {
 
 type rateValueRepository interface {
 	ObtainLastNRateValuesBySourceName(context.Context, string, int64) ([]domain.RateValue, error)
+	ObtainRateValueChartBySourceName(context.Context, string, repository.ChartPeriod) ([]repository.ChartPoint, error)
 }
 
 type rateUserSubscriptionRepository interface {
 	ObtainRateUserSubscriptionsBySource(context.Context, string) ([]domain.RateUserSubscription, error)
+	ObtainSubscriptionSummaryBySource(context.Context, string) ([]repository.SubscriptionSummary, error)
 }
 
 type rateUserEventRepository interface {
 	ObtainLastNRateUserEvents(context.Context, int64, int64, ...domain.RateUserEventStatus) ([]domain.RateUserEvent, error)
+	ObtainRateUserEventsBySourceName(context.Context, string, int64, int64, ...domain.RateUserEventStatus) ([]domain.RateUserEvent, error)
 }

@@ -60,8 +60,8 @@ claude_auto_fix_tests:
 
 ## run:
 run:
-	@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/web/main.go --static-dir ./build/static --logs-dir ./build/logs
-	#@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/collector/main.go --logs-dir ./build/logs
+	@#set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/web/main.go --static-dir ./build/static --logs-dir ./build/logs
+	@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/collector/main.go --logs-dir ./build/logs
 
 
 

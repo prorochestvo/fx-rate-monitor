@@ -216,6 +216,80 @@ func (r *RateValueRepository) RemoveRateValue(ctx context.Context, record *domai
 	return nil
 }
 
+// ChartPeriod specifies the time window for aggregated rate chart data.
+type ChartPeriod string
+
+const (
+	ChartPeriodWeek  ChartPeriod = "week"
+	ChartPeriodMonth ChartPeriod = "month"
+	ChartPeriodYear  ChartPeriod = "year"
+)
+
+// ChartPoint is one aggregated data point returned by ObtainRateValueChartBySourceName.
+type ChartPoint struct {
+	Label string  // "2026-04-03" (week/month) or "2026-04" (year)
+	Price float64 // AVG(price) for the bucket
+}
+
+// ObtainRateValueChartBySourceName returns aggregated rate data grouped by day (week/month)
+// or month (year) for the given source and period.
+func (r *RateValueRepository) ObtainRateValueChartBySourceName(
+	ctx context.Context,
+	sourceName string,
+	period ChartPeriod,
+) ([]ChartPoint, error) {
+	now := time.Now().UTC()
+
+	var since time.Time
+	var groupExpr string
+	switch period {
+	case ChartPeriodWeek:
+		since = now.AddDate(0, 0, -7)
+		groupExpr = "strftime('%Y-%m-%d', " + rateValueTimestampFieldName + ")"
+	case ChartPeriodMonth:
+		since = now.AddDate(0, -1, 0)
+		groupExpr = "strftime('%Y-%m-%d', " + rateValueTimestampFieldName + ")"
+	case ChartPeriodYear:
+		since = now.AddDate(-1, 0, 0)
+		groupExpr = "strftime('%Y-%m', " + rateValueTimestampFieldName + ")"
+	default:
+		return nil, fmt.Errorf("unknown chart period: %q", period)
+	}
+
+	query := fmt.Sprintf(
+		"SELECT %s AS label, AVG(%s) AS avg_price "+
+			"FROM %s WHERE %s = ? AND %s >= ? "+
+			"GROUP BY label ORDER BY label ASC;",
+		groupExpr, rateValuePriceFieldName,
+		rateValueTableName,
+		rateValueSourceNameFieldName,
+		rateValueTimestampFieldName,
+	)
+
+	tx, err := r.db.Transaction(ctx)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewStackTraceError())
+	}
+	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+
+	rows, err := tx.QueryContext(ctx, query, sourceName, since.Format(time.RFC3339))
+	if err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	var result []ChartPoint
+	for rows.Next() {
+		var p ChartPoint
+		if scanErr := rows.Scan(&p.Label, &p.Price); scanErr != nil {
+			return nil, errors.Join(scanErr, internal.NewTraceError())
+		}
+		result = append(result, p)
+	}
+	_ = tx.Rollback()
+	return result, nil
+}
+
 type db interface {
 	Transaction(ctx context.Context) (*sql.Tx, error)
 }

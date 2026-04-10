@@ -54,7 +54,11 @@ type RateAgent struct {
 
 func (a *RateAgent) Run(ctx context.Context) (err error) {
 	// isDue returns true if the source should run in this invocation.
-	// A 30-second grace period accounts for cron scheduling jitter.
+	// The grace period is interval/4, clamped to [30s, 1h], to absorb scheduling
+	// jitter between sources that share the same declared interval. For example, a
+	// 4h source uses a 1h grace (fires when elapsed ≥ 3h) so that two sources whose
+	// last runs drifted by several minutes still land in the same invocation.
+	// Short intervals (≤ 2m) keep the original 30s grace unchanged.
 	// If no successful execution history exists, the source is always considered due.
 	isDue := func(
 		ctx context.Context,
@@ -67,7 +71,10 @@ func (a *RateAgent) Run(ctx context.Context) (err error) {
 		if err != nil || len(records) == 0 {
 			return true
 		}
-		return now.Sub(records[0].Timestamp) >= interval-30*time.Second
+		grace := interval >> 2
+		grace = max(grace, 30*time.Second)
+		grace = min(grace, time.Hour)
+		return now.Sub(records[0].Timestamp) >= interval-grace
 	}
 
 	var sources []domain.RateSource
@@ -159,11 +166,17 @@ func (a *RateAgent) execution(ctx context.Context, sources []domain.RateSource) 
 	return errs
 }
 
+// telegramAlertKey groups alerts by userID so that all sources processed in a
+// single Run invocation are consolidated into one RateUserEvent per user.
+type telegramAlertKey struct {
+	userID string
+}
+
 func (a *RateAgent) notification(ctx context.Context, sources []domain.RateSource) map[string]error {
 	now := time.Now().UTC()
 	errs := make(map[string]error, len(sources))
 
-	telegramBotAlerts := make(map[string][]alert, len(sources))
+	telegramBotAlerts := make(map[telegramAlertKey][]alert, len(sources))
 
 	for _, source := range sources {
 		var newValue float64
@@ -195,11 +208,8 @@ func (a *RateAgent) notification(ctx context.Context, sources []domain.RateSourc
 		for _, subscription := range subscriptions {
 			switch subscription.UserType {
 			case domain.UserTypeTelegram:
-				items, ok := telegramBotAlerts[subscription.UserID]
-				if !ok || items == nil {
-					items = make([]alert, 0)
-				}
-				telegramBotAlerts[subscription.UserID] = append(items, alert{
+				key := telegramAlertKey{userID: subscription.UserID}
+				telegramBotAlerts[key] = append(telegramBotAlerts[key], alert{
 					SourceName:     source.Name,
 					SourceTitle:    source.Title,
 					BaseCurrency:   source.BaseCurrency,
@@ -216,7 +226,7 @@ func (a *RateAgent) notification(ctx context.Context, sources []domain.RateSourc
 		}
 	}
 
-	for tbotChatID, tbotAlerts := range telegramBotAlerts {
+	for key, tbotAlerts := range telegramBotAlerts {
 		var errMessages []error
 
 		msgs, err := buildAlertMessage(tbotAlerts...)
@@ -224,9 +234,10 @@ func (a *RateAgent) notification(ctx context.Context, sources []domain.RateSourc
 			errMessages = make([]error, 0, len(msgs))
 			for _, msg := range msgs {
 				err = a.rateUserEventRepository.RetainRateUserEvent(ctx, &domain.RateUserEvent{
-					UserType: domain.UserTypeTelegram,
-					UserID:   tbotChatID,
-					Message:  msg,
+					SourceName: "",
+					UserType:   domain.UserTypeTelegram,
+					UserID:     key.userID,
+					Message:    msg,
 				})
 				if err != nil {
 					errMessages = append(errMessages, err)
@@ -240,7 +251,7 @@ func (a *RateAgent) notification(ctx context.Context, sources []domain.RateSourc
 			res = " " + err.Error()
 		}
 
-		log.Printf("notification: telegram chat_id=%s queued: %d/%d%s", tbotChatID, len(msgs)-len(errMessages), len(msgs), res)
+		log.Printf("notification: telegram chat_id=%s queued: %d/%d%s", key.userID, len(msgs)-len(errMessages), len(msgs), res)
 	}
 
 	return errs

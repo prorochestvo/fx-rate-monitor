@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FX Rate Monitor</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #222; padding: 1rem; }
+    h1  { font-size: 1.5rem; margin-bottom: 1rem; }
+    h2  { font-size: 1.1rem; margin: 1.5rem 0 .5rem; color: #444; }
+    a   { color: #0070f3; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+    th  { background: #f0f0f0; text-align: left; padding: .5rem .75rem; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+    td  { padding: .5rem .75rem; border-top: 1px solid #eee; font-size: .875rem; vertical-align: top; }
+    tr:hover td { background: #fafafa; }
+    .ok   { color: #16a34a; font-weight: 600; }
+    .err  { color: #dc2626; }
+    .badge-pending  { background: #fef9c3; color: #854d0e; padding: .1rem .4rem; border-radius: 4px; font-size: .75rem; }
+    .badge-sent     { background: #dcfce7; color: #166534; padding: .1rem .4rem; border-radius: 4px; font-size: .75rem; }
+    .badge-failed   { background: #fee2e2; color: #991b1b; padding: .1rem .4rem; border-radius: 4px; font-size: .75rem; }
+    .badge-canceled { background: #f3f4f6; color: #6b7280; padding: .1rem .4rem; border-radius: 4px; font-size: .75rem; }
+    .period-btns { display: flex; gap: .5rem; margin-bottom: 1rem; }
+    .period-btns button { padding: .3rem .8rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer; font-size: .85rem; }
+    .period-btns button.active { background: #0070f3; color: #fff; border-color: #0070f3; }
+    .chart-wrap { background: #fff; border-radius: 6px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); margin-bottom: 1rem; }
+    .breadcrumb { margin-bottom: 1rem; font-size: .9rem; }
+    .pagination { display: flex; gap: .4rem; margin-top: .75rem; }
+    .pagination button { padding: .3rem .7rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer; }
+    .pagination button.active { background: #0070f3; color: #fff; border-color: #0070f3; }
+    #app { max-width: 1100px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+<div id="app"><p>Loading…</p></div>
+
+<script>
+'use strict';
+
+// ── chart instance (module-level so we can destroy before re-creating) ──────
+let chartInstance = null;
+
+// ── routing ──────────────────────────────────────────────────────────────────
+window.addEventListener('hashchange', route);
+window.addEventListener('load', route);
+
+function route() {
+  const hash = location.hash;
+  if (hash.startsWith('#/sources/')) {
+    renderSourceDetail(decodeURIComponent(hash.slice('#/sources/'.length)));
+  } else {
+    renderDefaultView();
+  }
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  try { return new Date(iso).toLocaleString(); } catch { return iso; }
+}
+
+function statusBadge(s) {
+  const cls = {pending:'badge-pending', sent:'badge-sent', failed:'badge-failed', canceled:'badge-canceled'}[s] || '';
+  return `<span class="${cls}">${escapeHtml(s)}</span>`;
+}
+
+// ── default view ─────────────────────────────────────────────────────────────
+async function renderDefaultView() {
+  const app = document.getElementById('app');
+  app.innerHTML = '<p>Loading…</p>';
+
+  const [sources, pending, latest] = await Promise.all([
+    fetch('/api/sources').then(r => r.json()).catch(() => []),
+    fetch('/api/events/pending').then(r => r.json()).catch(() => []),
+    fetch('/api/notifications?limit=25').then(r => r.json()).catch(() => []),
+  ]);
+
+  // Fetch last rate per source (parallel)
+  const rateMap = {};
+  await Promise.all((sources || []).map(async s => {
+    const rates = await fetch(
+      `/api/sources/${encodeURIComponent(s.name)}/rates?limit=1`
+    ).then(r => r.json()).catch(() => []);
+    rateMap[s.name] = Array.isArray(rates) && rates.length ? rates[0].price.toFixed(4) : '—';
+  }));
+
+  app.innerHTML =
+    '<h1>FX Rate Monitor</h1>' +
+    renderSourcesTable(sources || [], rateMap) +
+    (Array.isArray(pending) && pending.length > 0 ? renderPendingTable(pending) : '') +
+    renderLatestTable(latest || []);
+}
+
+function renderSourcesTable(sources, rateMap) {
+  if (!sources.length) return '<h2>Sources</h2><p>No sources configured.</p>';
+  const rows = sources.map(s => {
+    const status = s.last_success
+      ? '<span class="ok">✓ OK</span>'
+      : `<span class="err">✗ ${escapeHtml(s.last_error || 'unknown')}</span>`;
+    return `<tr>
+      <td><a href="#/sources/${encodeURIComponent(s.name)}">${escapeHtml(s.name)}</a></td>
+      <td>${escapeHtml(s.base_currency)}/${escapeHtml(s.quote_currency)}</td>
+      <td>${escapeHtml(rateMap[s.name] || '—')}</td>
+      <td>${escapeHtml(s.interval)}</td>
+      <td>${fmtDate(s.last_run_at)}</td>
+      <td>${status}</td>
+    </tr>`;
+  }).join('');
+  return `<h2>Sources</h2>
+  <table>
+    <thead><tr><th>Name</th><th>Pair</th><th>Last Rate</th><th>Interval</th><th>Last Run</th><th>Status</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function renderPendingTable(events) {
+  const rows = events.map(e => `<tr>
+    <td>${escapeHtml(e.id)}</td>
+    <td>${escapeHtml(e.user_type)}</td>
+    <td>${statusBadge(e.status)}</td>
+    <td>${fmtDate(e.created_at)}</td>
+  </tr>`).join('');
+  return `<h2>Pending Events</h2>
+  <table>
+    <thead><tr><th>ID</th><th>User Type</th><th>Status</th><th>Created At</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function renderLatestTable(events) {
+  const body = events.length
+    ? events.map(e => `<tr>
+        <td>${escapeHtml(e.id)}</td>
+        <td>${escapeHtml(e.user_type)}</td>
+        <td>${statusBadge(e.status)}</td>
+        <td>${fmtDate(e.sent_at)}</td>
+        <td>${escapeHtml(e.last_error || '')}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="5">No events yet</td></tr>';
+  return `<h2>Latest Events (last 25)</h2>
+  <table>
+    <thead><tr><th>ID</th><th>User Type</th><th>Status</th><th>Sent At</th><th>Error</th></tr></thead>
+    <tbody>${body}</tbody>
+  </table>`;
+}
+
+// ── source detail view ────────────────────────────────────────────────────────
+async function renderSourceDetail(name) {
+  const app = document.getElementById('app');
+  app.innerHTML = '<p>Loading…</p>';
+
+  const encoded = encodeURIComponent(name);
+
+  const [sources, ratesOne, subscriptions, failedPage1] = await Promise.all([
+    fetch('/api/sources').then(r => r.json()).catch(() => []),
+    fetch(`/api/sources/${encoded}/rates?limit=1`).then(r => r.json()).catch(() => []),
+    fetch(`/api/sources/${encoded}/subscriptions`).then(r => r.json()).catch(() => []),
+    fetch(`/api/sources/${encoded}/events/failed?page=1`).then(r => r.json()).catch(() => []),
+  ]);
+
+  const source = (sources || []).find(s => s.name === name) || {};
+  const lastRate = Array.isArray(ratesOne) && ratesOne.length ? ratesOne[0].price.toFixed(4) : '—';
+
+  const status = source.last_success
+    ? '<span class="ok">✓ OK</span>'
+    : `<span class="err">✗ ${escapeHtml(source.last_error || 'unknown')}</span>`;
+
+  const headerRow = `<table>
+    <thead><tr><th>Name</th><th>Pair</th><th>Last Rate</th><th>Interval</th><th>Last Run</th><th>Status</th></tr></thead>
+    <tbody><tr>
+      <td>${escapeHtml(name)}</td>
+      <td>${escapeHtml(source.base_currency || '')}/${escapeHtml(source.quote_currency || '')}</td>
+      <td>${escapeHtml(lastRate)}</td>
+      <td>${escapeHtml(source.interval || '')}</td>
+      <td>${fmtDate(source.last_run_at)}</td>
+      <td>${status}</td>
+    </tr></tbody>
+  </table>`;
+
+  const hasFailed = Array.isArray(failedPage1) && failedPage1.some
+    ? (Array.isArray(subscriptions) && subscriptions.some(s => s.failed_count > 0))
+    : false;
+
+  app.innerHTML = `
+    <div class="breadcrumb"><a href="#/">← All Sources</a></div>
+    <h1>${escapeHtml(name)}</h1>
+    ${headerRow}
+    <h2>Rate Chart</h2>
+    <div class="period-btns">
+      <button id="btn-week"  class="active" onclick="switchPeriod('${escapeHtml(name)}','week')">Week</button>
+      <button id="btn-month" onclick="switchPeriod('${escapeHtml(name)}','month')">Month</button>
+      <button id="btn-year"  onclick="switchPeriod('${escapeHtml(name)}','year')">Year</button>
+    </div>
+    <div class="chart-wrap"><canvas id="rateChart"></canvas></div>
+    <h2>Subscriptions</h2>
+    <div id="subs-section">${renderSubscriptionsTable(subscriptions || [], name)}</div>
+    ${Array.isArray(failedPage1) && failedPage1.length > 0 ? `
+    <h2 id="errors-anchor">Subscription Errors</h2>
+    <div id="failed-section">${renderFailedTable(failedPage1, name, 1)}</div>` : ''}
+  `;
+
+  renderChart(name, 'week');
+}
+
+function renderSubscriptionsTable(summaries, sourceName) {
+  if (!summaries.length) return '<p>No subscription data.</p>';
+  const rows = summaries.map(s => {
+    let statusCell;
+    if (s.failed_count === 0) {
+      statusCell = '<span class="ok">ok</span>';
+    } else {
+      statusCell = `${escapeHtml(String(s.success_count))} ok ` +
+        `(<a href="#errors-anchor" onclick="document.getElementById('errors-anchor')` +
+        `&&document.getElementById('errors-anchor').scrollIntoView()">` +
+        `failed: ${escapeHtml(String(s.failed_count))}</a>)`;
+    }
+    return `<tr>
+      <td>${escapeHtml(s.source_name)}</td>
+      <td>${escapeHtml(s.user_type)}</td>
+      <td>${fmtDate(s.last_sent_at)}</td>
+      <td>${statusCell}</td>
+    </tr>`;
+  }).join('');
+  return `<table>
+    <thead><tr><th>Source</th><th>User Type</th><th>Last Sent</th><th>Status</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function renderFailedTable(events, sourceName, page) {
+  if (!events.length) return '';
+  const rows = events.map(e => `<tr>
+    <td>${escapeHtml(sourceName)}</td>
+    <td>${escapeHtml(e.user_type)}</td>
+    <td>${fmtDate(e.sent_at)}</td>
+    <td>${escapeHtml(e.last_error || '')}</td>
+  </tr>`).join('');
+
+  const pagination = events.length === 50
+    ? `<div class="pagination">
+        ${page > 1 ? `<button onclick="loadFailedPage('${escapeHtml(sourceName)}',${page-1})">‹ Prev</button>` : ''}
+        <button class="active">${page}</button>
+        <button onclick="loadFailedPage('${escapeHtml(sourceName)}',${page+1})">Next ›</button>
+      </div>`
+    : '';
+
+  return `<table>
+    <thead><tr><th>Source</th><th>User Type</th><th>Last Sent</th><th>Error</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>${pagination}`;
+}
+
+async function loadFailedPage(sourceName, page) {
+  const encoded = encodeURIComponent(sourceName);
+  const events = await fetch(`/api/sources/${encoded}/events/failed?page=${page}`)
+    .then(r => r.json()).catch(() => []);
+  const section = document.getElementById('failed-section');
+  if (section) section.innerHTML = renderFailedTable(events, sourceName, page);
+}
+
+async function switchPeriod(name, period) {
+  document.querySelectorAll('.period-btns button').forEach(b => b.classList.remove('active'));
+  const btn = document.getElementById(`btn-${period}`);
+  if (btn) btn.classList.add('active');
+  await renderChart(name, period);
+}
+
+async function renderChart(name, period) {
+  const encoded = encodeURIComponent(name);
+  const points = await fetch(`/api/sources/${encoded}/rates/chart?period=${period}`)
+    .then(r => r.json()).catch(() => []);
+
+  const labels = (points || []).map(p => p.label);
+  const data   = (points || []).map(p => p.price);
+
+  if (chartInstance) {
+    chartInstance.destroy();
+    chartInstance = null;
+  }
+
+  const canvas = document.getElementById('rateChart');
+  if (!canvas) return;
+
+  chartInstance = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: `${name} rate`,
+        data,
+        tension: 0.1,
+        fill: false,
+        borderColor: '#0070f3',
+        backgroundColor: 'rgba(0,112,243,.1)',
+      }],
+    },
+    options: { responsive: true },
+  });
+}
+</script>
+</body>
+</html>

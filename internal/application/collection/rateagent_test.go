@@ -104,7 +104,7 @@ func TestRateAgent_execution(t *testing.T) {
 func TestRateAgent_notification(t *testing.T) {
 	t.Parallel()
 
-	t.Run("two values — telegram event retained", func(t *testing.T) {
+	t.Run("two values — telegram event retained with empty SourceName for consolidated event", func(t *testing.T) {
 		t.Parallel()
 
 		eventRepo := &mockRateUserEventRepository{}
@@ -125,9 +125,10 @@ func TestRateAgent_notification(t *testing.T) {
 		errs := a.notification(t.Context(), []domain.RateSource{{Name: "src1"}})
 		require.Empty(t, errs)
 		require.Len(t, eventRepo.retained, 1)
+		require.Equal(t, "", eventRepo.retained[0].SourceName)
 	})
 
-	t.Run("one value — event retained", func(t *testing.T) {
+	t.Run("one value — event retained with empty SourceName for consolidated event", func(t *testing.T) {
 		t.Parallel()
 
 		eventRepo := &mockRateUserEventRepository{}
@@ -148,6 +149,7 @@ func TestRateAgent_notification(t *testing.T) {
 		errs := a.notification(t.Context(), []domain.RateSource{{Name: "src1"}})
 		require.Empty(t, errs)
 		require.Len(t, eventRepo.retained, 1)
+		require.Equal(t, "", eventRepo.retained[0].SourceName)
 	})
 
 	t.Run("no values — no event retained", func(t *testing.T) {
@@ -219,6 +221,41 @@ func TestRateAgent_notification(t *testing.T) {
 		errs := a.notification(t.Context(), []domain.RateSource{{Name: "src1"}})
 		require.NotNil(t, errs["src1"])
 	})
+	t.Run("two sources same user — consolidated into one event", func(t *testing.T) {
+		t.Parallel()
+
+		eventRepo := &mockRateUserEventRepository{}
+		a := &RateAgent{
+			rateValueRepository: &mockRateValueRepository{
+				values: []domain.RateValue{{Price: 475}, {Price: 472}},
+			},
+			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
+				subs: []domain.RateUserSubscription{{
+					UserType: domain.UserTypeTelegram,
+					UserID:   "115818690",
+				}},
+			},
+			rateUserEventRepository: eventRepo,
+			logger:                  io.Discard,
+		}
+
+		sources := []domain.RateSource{
+			{Name: "KAZ_NATIONALBANK_USD_KZT", Title: "National Bank of Kazakhstan",
+				BaseCurrency: "USD", QuoteCurrency: "KZT"},
+			{Name: "KAZ_BANKCENTERCREDIT_USD_KZT", Title: "Center Credit Bank",
+				BaseCurrency: "USD", QuoteCurrency: "KZT"},
+		}
+
+		errs := a.notification(t.Context(), sources)
+		require.Empty(t, errs)
+		// Both sources must be merged into exactly one RateUserEvent.
+		require.Len(t, eventRepo.retained, 1)
+		// The consolidated event covers all sources so SourceName is empty.
+		require.Equal(t, "", eventRepo.retained[0].SourceName)
+		// The single message must contain both source titles.
+		require.Contains(t, eventRepo.retained[0].Message, "National Bank of Kazakhstan")
+		require.Contains(t, eventRepo.retained[0].Message, "Center Credit Bank")
+	})
 }
 
 func TestBuildAlertMessage(t *testing.T) {
@@ -237,7 +274,6 @@ func TestBuildAlertMessage(t *testing.T) {
 		require.Len(t, msgs, 1)
 		require.True(t, strings.Contains(msgs[0], "USD/KZT"))
 	})
-
 	t.Run("delta zero — no arrow in message", func(t *testing.T) {
 		t.Parallel()
 
@@ -253,7 +289,6 @@ func TestBuildAlertMessage(t *testing.T) {
 		require.False(t, strings.Contains(msgs[0], telegramBotArrowUp))
 		require.False(t, strings.Contains(msgs[0], telegramBotArrowDown))
 	})
-
 	t.Run("positive delta — up arrow shown", func(t *testing.T) {
 		t.Parallel()
 
@@ -268,7 +303,6 @@ func TestBuildAlertMessage(t *testing.T) {
 		require.Len(t, msgs, 1)
 		require.True(t, strings.Contains(msgs[0], telegramBotArrowUp))
 	})
-
 	t.Run("negative delta — down arrow shown", func(t *testing.T) {
 		t.Parallel()
 
@@ -283,7 +317,6 @@ func TestBuildAlertMessage(t *testing.T) {
 		require.Len(t, msgs, 1)
 		require.True(t, strings.Contains(msgs[0], telegramBotArrowDown))
 	})
-
 	t.Run("forecast shown when ForecastMethod non-empty", func(t *testing.T) {
 		t.Parallel()
 
@@ -299,7 +332,6 @@ func TestBuildAlertMessage(t *testing.T) {
 		require.Len(t, msgs, 1)
 		require.True(t, strings.Contains(msgs[0], telegramBotForecast))
 	})
-
 	t.Run("forecast absent when ForecastMethod empty", func(t *testing.T) {
 		t.Parallel()
 
@@ -314,7 +346,6 @@ func TestBuildAlertMessage(t *testing.T) {
 		require.Len(t, msgs, 1)
 		require.False(t, strings.Contains(msgs[0], telegramBotForecast))
 	})
-
 	t.Run("no alerts — empty slice", func(t *testing.T) {
 		t.Parallel()
 
@@ -322,7 +353,6 @@ func TestBuildAlertMessage(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, msgs, 0)
 	})
-
 	t.Run("messages split above 2048 chars", func(t *testing.T) {
 		t.Parallel()
 
@@ -339,6 +369,7 @@ func TestBuildAlertMessage(t *testing.T) {
 		msgs, err := buildAlertMessage(alerts...)
 		require.NoError(t, err)
 		require.Greater(t, len(msgs), 1)
+		require.Equal(t, 2, len(msgs))
 	})
 }
 

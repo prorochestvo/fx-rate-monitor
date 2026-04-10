@@ -192,6 +192,67 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 	return nil
 }
 
+// SubscriptionSummary holds aggregated per-(source, user_type) notification statistics.
+type SubscriptionSummary struct {
+	SourceName        string
+	UserType          domain.UserType
+	SubscriptionCount int64
+	LastSentAt        time.Time // zero if no events have been sent
+	SuccessCount      int64
+	FailedCount       int64
+}
+
+// ObtainSubscriptionSummaryBySource returns one row per (source_name, user_type) pair
+// with aggregated subscription and event counts. user_id is never returned.
+func (r *RateUserSubscriptionRepository) ObtainSubscriptionSummaryBySource(
+	ctx context.Context, sourceName string,
+) ([]SubscriptionSummary, error) {
+	const query = `
+SELECT
+    s.source_name,
+    s.user_type,
+    COUNT(DISTINCT s.user_id)                                AS subscription_count,
+    MAX(e.sent_at)                                           AS last_sent_at,
+    SUM(CASE WHEN e.status='sent'   THEN 1 ELSE 0 END)      AS success_count,
+    SUM(CASE WHEN e.status='failed' THEN 1 ELSE 0 END)      AS failed_count
+FROM rate_user_subscriptions s
+LEFT JOIN rate_user_events e
+    ON e.source_name = s.source_name AND e.user_type = s.user_type
+WHERE s.source_name = ?
+GROUP BY s.source_name, s.user_type;`
+
+	tx, err := r.db.Transaction(ctx)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewStackTraceError())
+	}
+	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+
+	rows, err := tx.QueryContext(ctx, query, sourceName)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	var result []SubscriptionSummary
+	for rows.Next() {
+		var s SubscriptionSummary
+		var lastSentAt *string
+		if scanErr := rows.Scan(
+			&s.SourceName, &s.UserType,
+			&s.SubscriptionCount, &lastSentAt,
+			&s.SuccessCount, &s.FailedCount,
+		); scanErr != nil {
+			return nil, errors.Join(scanErr, internal.NewTraceError())
+		}
+		if lastSentAt != nil && *lastSentAt != "" {
+			s.LastSentAt, _ = time.Parse(time.RFC3339, *lastSentAt)
+		}
+		result = append(result, s)
+	}
+	_ = tx.Rollback()
+	return result, nil
+}
+
 func (r *RateUserSubscriptionRepository) RemoveRateUserSubscription(ctx context.Context, record *domain.RateUserSubscription) error {
 	if record == nil {
 		err := errors.New("user subscription is nil")

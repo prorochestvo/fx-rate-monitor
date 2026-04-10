@@ -145,10 +145,10 @@ func TestRateService_ObtainListOfLastRateUserEvent(t *testing.T) {
 		_, err := svc.ObtainListOfLastRateUserEvent(t.Context(), 10)
 		require.NoError(t, err)
 
-		require.Contains(t, repo.statuses, domain.RateUserEventStatusPending)
-		require.Contains(t, repo.statuses, domain.RateUserEventStatusSent)
-		require.Contains(t, repo.statuses, domain.RateUserEventStatusFailed)
-		require.Contains(t, repo.statuses, domain.RateUserEventStatusCanceled)
+		require.Contains(t, repo.lastNStatuses, domain.RateUserEventStatusPending)
+		require.Contains(t, repo.lastNStatuses, domain.RateUserEventStatusSent)
+		require.Contains(t, repo.lastNStatuses, domain.RateUserEventStatusFailed)
+		require.Contains(t, repo.lastNStatuses, domain.RateUserEventStatusCanceled)
 	})
 
 	t.Run("error propagated", func(t *testing.T) {
@@ -165,7 +165,7 @@ func TestRateService_ObtainListOfLastRateUserEvent(t *testing.T) {
 func TestRateService_ObtainFailedListOfRateUserEvent(t *testing.T) {
 	t.Parallel()
 
-	t.Run("delegates with offset and limit", func(t *testing.T) {
+	t.Run("delegates with offset, limit and failed status", func(t *testing.T) {
 		t.Parallel()
 
 		want := []domain.RateUserEvent{{ID: "e1"}}
@@ -175,8 +175,7 @@ func TestRateService_ObtainFailedListOfRateUserEvent(t *testing.T) {
 		got, err := svc.ObtainFailedListOfRateUserEvent(t.Context(), 0, 10)
 		require.NoError(t, err)
 		require.Equal(t, want, got)
-		// ObtainFailedListOfRateUserEvent passes no status args (empty variadic).
-		require.Empty(t, repo.statuses)
+		require.Equal(t, []domain.RateUserEventStatus{domain.RateUserEventStatusFailed}, repo.lastNStatuses)
 	})
 
 	t.Run("error propagated", func(t *testing.T) {
@@ -186,6 +185,114 @@ func TestRateService_ObtainFailedListOfRateUserEvent(t *testing.T) {
 		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
 
 		_, err := svc.ObtainFailedListOfRateUserEvent(t.Context(), 0, 10)
+		require.Error(t, err)
+	})
+}
+
+func TestRateService_ObtainPendingRateUserEvents(t *testing.T) {
+	t.Parallel()
+
+	t.Run("calls repo with pending status only", func(t *testing.T) {
+		t.Parallel()
+
+		want := []domain.RateUserEvent{{ID: "p1", Status: domain.RateUserEventStatusPending}}
+		repo := &mockRateUserEventRepository{items: want}
+		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
+
+		got, err := svc.ObtainPendingRateUserEvents(t.Context())
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+		require.Equal(t, []domain.RateUserEventStatus{domain.RateUserEventStatusPending}, repo.lastNStatuses)
+	})
+
+	t.Run("error propagated", func(t *testing.T) {
+		t.Parallel()
+
+		repo := &mockRateUserEventRepository{err: errors.New("fail")}
+		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
+
+		_, err := svc.ObtainPendingRateUserEvents(t.Context())
+		require.Error(t, err)
+	})
+}
+
+func TestRateService_ObtainRateValueChartBySourceName(t *testing.T) {
+	t.Parallel()
+
+	t.Run("delegates and returns chart points", func(t *testing.T) {
+		t.Parallel()
+
+		want := []repository.ChartPoint{{Label: "2026-04-01", Price: 450.0}}
+		repo := &mockRateValueRepository{chartPoints: want}
+		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, repo, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+
+		got, err := svc.ObtainRateValueChartBySourceName(t.Context(), "src1", repository.ChartPeriodWeek)
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+	})
+
+	t.Run("error propagated", func(t *testing.T) {
+		t.Parallel()
+
+		repo := &mockRateValueRepository{err: errors.New("fail")}
+		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, repo, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+
+		_, err := svc.ObtainRateValueChartBySourceName(t.Context(), "src1", repository.ChartPeriodWeek)
+		require.Error(t, err)
+	})
+}
+
+func TestRateService_ObtainFailedRateUserEventsBySourceName(t *testing.T) {
+	t.Parallel()
+
+	t.Run("calculates offset from page and returns failed events", func(t *testing.T) {
+		t.Parallel()
+
+		want := []domain.RateUserEvent{{ID: "e1"}}
+		repo := &mockRateUserEventRepository{items: want}
+		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
+
+		got, err := svc.ObtainFailedRateUserEventsBySourceName(t.Context(), "src1", 1, 50)
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+		require.Equal(t, []domain.RateUserEventStatus{domain.RateUserEventStatusFailed}, repo.bySourceStatuses)
+	})
+
+	t.Run("error propagated", func(t *testing.T) {
+		t.Parallel()
+
+		repo := &mockRateUserEventRepository{err: errors.New("fail")}
+		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
+
+		_, err := svc.ObtainFailedRateUserEventsBySourceName(t.Context(), "src1", 1, 50)
+		require.Error(t, err)
+	})
+}
+
+func TestRateService_ObtainSubscriptionSummaryBySource(t *testing.T) {
+	t.Parallel()
+
+	t.Run("delegates and returns summaries", func(t *testing.T) {
+		t.Parallel()
+
+		want := []repository.SubscriptionSummary{
+			{SourceName: "src1", UserType: domain.UserTypeTelegram, SubscriptionCount: 3},
+		}
+		repo := &mockRateUserSubscriptionRepository{summaries: want}
+		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, repo, &mockRateUserEventRepository{})
+
+		got, err := svc.ObtainSubscriptionSummaryBySource(t.Context(), "src1")
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+	})
+
+	t.Run("error propagated", func(t *testing.T) {
+		t.Parallel()
+
+		repo := &mockRateUserSubscriptionRepository{err: errors.New("fail")}
+		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, repo, &mockRateUserEventRepository{})
+
+		_, err := svc.ObtainSubscriptionSummaryBySource(t.Context(), "src1")
 		require.Error(t, err)
 	})
 }
@@ -211,27 +318,45 @@ func (m *mockRateSourceRepository) ObtainAllRateSources(_ context.Context) ([]do
 }
 
 type mockRateValueRepository struct {
-	values []domain.RateValue
-	err    error
+	values      []domain.RateValue
+	chartPoints []repository.ChartPoint
+	err         error
 }
 
 func (m *mockRateValueRepository) ObtainLastNRateValuesBySourceName(_ context.Context, _ string, _ int64) ([]domain.RateValue, error) {
 	return m.values, m.err
 }
 
-type mockRateUserSubscriptionRepository struct{}
+func (m *mockRateValueRepository) ObtainRateValueChartBySourceName(_ context.Context, _ string, _ repository.ChartPeriod) ([]repository.ChartPoint, error) {
+	return m.chartPoints, m.err
+}
+
+type mockRateUserSubscriptionRepository struct {
+	summaries []repository.SubscriptionSummary
+	err       error
+}
 
 func (m *mockRateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySource(_ context.Context, _ string) ([]domain.RateUserSubscription, error) {
-	return nil, nil
+	return nil, m.err
+}
+
+func (m *mockRateUserSubscriptionRepository) ObtainSubscriptionSummaryBySource(_ context.Context, _ string) ([]repository.SubscriptionSummary, error) {
+	return m.summaries, m.err
 }
 
 type mockRateUserEventRepository struct {
-	items    []domain.RateUserEvent
-	err      error
-	statuses []domain.RateUserEventStatus
+	items            []domain.RateUserEvent
+	err              error
+	lastNStatuses    []domain.RateUserEventStatus
+	bySourceStatuses []domain.RateUserEventStatus
 }
 
 func (m *mockRateUserEventRepository) ObtainLastNRateUserEvents(_ context.Context, _, _ int64, s ...domain.RateUserEventStatus) ([]domain.RateUserEvent, error) {
-	m.statuses = s
+	m.lastNStatuses = s
+	return m.items, m.err
+}
+
+func (m *mockRateUserEventRepository) ObtainRateUserEventsBySourceName(_ context.Context, _ string, _, _ int64, s ...domain.RateUserEventStatus) ([]domain.RateUserEvent, error) {
+	m.bySourceStatuses = s
 	return m.items, m.err
 }

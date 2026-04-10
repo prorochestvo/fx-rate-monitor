@@ -80,6 +80,10 @@ CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_status  ON ` + rat
 CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_user    ON ` + rateUserEventTableName + ` (` + rateUserEventUserTypeFieldName + `, ` + rateUserEventUserIDFieldName + `);
 CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_created ON ` + rateUserEventTableName + ` (` + rateUserEventCreatedAtFieldName + ` DESC);
 CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_failed ON ` + rateUserEventTableName + ` (` + rateUserEventCreatedAtFieldName + ` DESC) WHERE ` + rateUserEventStatusFieldName + ` = '` + string(domain.RateUserEventStatusFailed) + `';`,
+		rateUserEventTableName + "_002_add_source_name": `ALTER TABLE ` + rateUserEventTableName +
+			` ADD COLUMN ` + rateUserEventSourceNameFieldName + ` TEXT NOT NULL DEFAULT '';` +
+			`CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_source` +
+			` ON ` + rateUserEventTableName + ` (` + rateUserEventSourceNameFieldName + `);`,
 	}, nil
 }
 
@@ -135,6 +139,7 @@ func (r *RateUserEventRepository) ObtainLastNRateUserEvents(ctx context.Context,
 
 		if scanErr := dbRows.Scan(
 			&item.ID,
+			&item.SourceName,
 			&item.UserType,
 			&item.UserID,
 			&item.Message,
@@ -251,6 +256,7 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 
 	if count > 0 {
 		cmd := "UPDATE" + " " + rateUserEventTableName + " SET " +
+			rateUserEventSourceNameFieldName + " = ?, " +
 			rateUserEventUserTypeFieldName + " = ?, " +
 			rateUserEventUserIDFieldName + " = ?, " +
 			rateUserEventMessageFieldName + " = ?, " +
@@ -260,6 +266,7 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 			rateUserEventCreatedAtFieldName + " = ? " +
 			"WHERE " + rateUserEventIDFieldName + " = ?;"
 		_, err = tx.ExecContext(ctx, cmd,
+			record.SourceName,
 			record.UserType,
 			record.UserID,
 			record.Message,
@@ -276,6 +283,7 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 	} else {
 		cmd := "INSERT INTO" + " " + rateUserEventTableName + " (" +
 			rateUserEventIDFieldName + ", " +
+			rateUserEventSourceNameFieldName + ", " +
 			rateUserEventUserTypeFieldName + ", " +
 			rateUserEventUserIDFieldName + ", " +
 			rateUserEventMessageFieldName + ", " +
@@ -283,9 +291,10 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 			rateUserEventLastErrorFieldName + ", " +
 			rateUserEventSentAtFieldName + ", " +
 			rateUserEventCreatedAtFieldName +
-			") VALUES (?, ?, ?, ?, ?, ?, ?, ?);"
+			") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);"
 		_, err = tx.ExecContext(ctx, cmd,
 			record.ID,
+			record.SourceName,
 			record.UserType,
 			record.UserID,
 			record.Message,
@@ -306,6 +315,72 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 	}
 
 	return nil
+}
+
+// ObtainRateUserEventsBySourceName returns paginated events for one source,
+// optionally filtered by status. Pass no status args to get all statuses.
+func (r *RateUserEventRepository) ObtainRateUserEventsBySourceName(
+	ctx context.Context,
+	sourceName string,
+	offset, limit int64,
+	status ...domain.RateUserEventStatus,
+) ([]domain.RateUserEvent, error) {
+	tx, err := r.db.Transaction(ctx)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewStackTraceError())
+	}
+	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+
+	args := []any{sourceName}
+	where := "WHERE " + rateUserEventSourceNameFieldName + " = ?"
+
+	if len(status) > 0 {
+		placeholders := strings.Repeat("?, ", len(status)-1) + "?"
+		where += fmt.Sprintf(" AND %s IN (%s)", rateUserEventStatusFieldName, placeholders)
+		for _, s := range status {
+			args = append(args, s)
+		}
+	}
+
+	count, err := rateUserEventCount(tx, ctx, where+";", args...)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
+	}
+	if count == 0 {
+		_ = tx.Rollback()
+		return []domain.RateUserEvent{}, nil
+	}
+
+	fullCond := where + "\nORDER BY " + rateUserEventCreatedAtFieldName + " DESC\nLIMIT ?\nOFFSET ?;"
+	rows, err := tx.QueryContext(ctx,
+		rateUserEventSqlSelect+"\n"+fullCond,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	items := make([]domain.RateUserEvent, 0, count)
+	for rows.Next() {
+		var item domain.RateUserEvent
+		var createdAt string
+		var sentAt *string
+		if scanErr := rows.Scan(
+			&item.ID, &item.SourceName, &item.UserType, &item.UserID,
+			&item.Message, &item.Status, &item.LastError,
+			&createdAt, &sentAt,
+		); scanErr != nil {
+			return nil, errors.Join(scanErr, internal.NewTraceError())
+		}
+		item.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		if sentAt != nil && *sentAt != "" {
+			item.SentAt, _ = time.Parse(time.RFC3339, *sentAt)
+		}
+		items = append(items, item)
+	}
+	_ = tx.Rollback()
+	return items, nil
 }
 
 func (r *RateUserEventRepository) RemoveRateUserEvent(ctx context.Context, record *domain.RateUserEvent) error {
@@ -370,18 +445,20 @@ func (r *RateUserEventRepository) RemoveRateUserEventOlderThan(ctx context.Conte
 }
 
 const (
-	rateUserEventTableName          = "rate_user_events"
-	rateUserEventIDFieldName        = "id"
-	rateUserEventUserTypeFieldName  = "user_type"
-	rateUserEventUserIDFieldName    = "user_id"
-	rateUserEventMessageFieldName   = "message"
-	rateUserEventStatusFieldName    = "status"
-	rateUserEventLastErrorFieldName = "last_error"
-	rateUserEventCreatedAtFieldName = "created_at"
-	rateUserEventSentAtFieldName    = "sent_at"
+	rateUserEventTableName           = "rate_user_events"
+	rateUserEventIDFieldName         = "id"
+	rateUserEventSourceNameFieldName = "source_name"
+	rateUserEventUserTypeFieldName   = "user_type"
+	rateUserEventUserIDFieldName     = "user_id"
+	rateUserEventMessageFieldName    = "message"
+	rateUserEventStatusFieldName     = "status"
+	rateUserEventLastErrorFieldName  = "last_error"
+	rateUserEventCreatedAtFieldName  = "created_at"
+	rateUserEventSentAtFieldName     = "sent_at"
 
 	rateUserEventSqlSelect = "SELECT\n" +
 		rateUserEventIDFieldName + ", " +
+		rateUserEventSourceNameFieldName + ", " +
 		rateUserEventUserTypeFieldName + ", " +
 		rateUserEventUserIDFieldName + ", " +
 		rateUserEventMessageFieldName + ", " +
@@ -445,6 +522,7 @@ func rateUserEventQueryContext(tx *sql.Tx, ctx context.Context, condition string
 
 		err = rows.Scan(
 			&item.ID,
+			&item.SourceName,
 			&item.UserType,
 			&item.UserID,
 			&item.Message,
@@ -490,6 +568,7 @@ func rateUserEventQueryRowContext(tx *sql.Tx, ctx context.Context, condition str
 	var sentAt *string
 	err := tx.QueryRowContext(ctx, query, args...).Scan(
 		&item.ID,
+		&item.SourceName,
 		&item.UserType,
 		&item.UserID,
 		&item.Message,

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	"github.com/stretchr/testify/require"
@@ -220,5 +221,97 @@ func TestRateRepository_ObtainLastNRateValuesBySourceName(t *testing.T) {
 		require.Len(t, result, 2)
 		// Newest first: index 0 must have the highest price (inserted last)
 		require.GreaterOrEqual(t, result[0].Price, result[1].Price)
+	})
+}
+
+func TestRateValueRepository_ObtainRateValueChartBySourceName(t *testing.T) {
+	t.Parallel()
+
+	seedRates := func(t *testing.T, r *RateValueRepository, sourceName string, prices []float64, timestamps []time.Time) {
+		t.Helper()
+		for i, price := range prices {
+			rv := &domain.RateValue{
+				SourceName:    sourceName,
+				BaseCurrency:  "USD",
+				QuoteCurrency: "KZT",
+				Price:         price,
+			}
+			require.NoError(t, r.RetainRateValue(t.Context(), rv))
+			// overwrite timestamp via direct SQL — RetainRateValue sets it to now
+			sqliteDB := r.db
+			tx, err := sqliteDB.Transaction(t.Context())
+			require.NoError(t, err)
+			_, err = tx.ExecContext(t.Context(),
+				"UPDATE "+rateValueTableName+" SET "+rateValueTimestampFieldName+" = ? WHERE "+rateValueIdFieldName+" = ?",
+				timestamps[i].Format(time.RFC3339), rv.ID,
+			)
+			require.NoError(t, err)
+			require.NoError(t, tx.Commit())
+		}
+	}
+
+	t.Run("week period returns daily buckets within last 7 days", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateValueRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		now := time.Now().UTC()
+		prices := []float64{450.0, 451.0, 452.0}
+		ts := []time.Time{
+			now.AddDate(0, 0, -3),
+			now.AddDate(0, 0, -2),
+			now.AddDate(0, 0, -1),
+		}
+		seedRates(t, r, "chart-src", prices, ts)
+
+		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "chart-src", ChartPeriodWeek)
+		require.NoError(t, err)
+		require.NotEmpty(t, points)
+		require.LessOrEqual(t, len(points), 7)
+		// labels must be in YYYY-MM-DD format
+		require.Regexp(t, `^\d{4}-\d{2}-\d{2}$`, points[0].Label)
+	})
+
+	t.Run("year period returns monthly buckets in YYYY-MM format", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateValueRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		now := time.Now().UTC()
+		prices := []float64{460.0, 462.0}
+		ts := []time.Time{
+			now.AddDate(0, -2, 0),
+			now.AddDate(0, -1, 0),
+		}
+		seedRates(t, r, "chart-year-src", prices, ts)
+
+		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "chart-year-src", ChartPeriodYear)
+		require.NoError(t, err)
+		require.NotEmpty(t, points)
+		require.LessOrEqual(t, len(points), 12)
+		require.Regexp(t, `^\d{4}-\d{2}$`, points[0].Label)
+	})
+
+	t.Run("unknown period returns error", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateValueRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		_, err = r.ObtainRateValueChartBySourceName(t.Context(), "any", ChartPeriod("bogus"))
+		require.Error(t, err)
+	})
+
+	t.Run("no data returns empty slice without error", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateValueRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "empty-source", ChartPeriodWeek)
+		require.NoError(t, err)
+		require.Empty(t, points)
 	})
 }
