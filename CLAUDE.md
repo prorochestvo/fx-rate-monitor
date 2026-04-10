@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 make build      # Build binary to ./build/monitor (CGO_ENABLED=0)
 make test       # Run all tests with race detector
 make lint       # Run go vet
-make run ARGS="..." # Run with arguments
+make run        # Run collector app
 make format     # Run go fmt
 make clean      # Remove binary and database
 ```
@@ -50,3 +50,71 @@ The app periodically fetches FX rates, stores them in SQLite, and sends Telegram
 The binary requires a JSON sources config (`--config`). See `configs/sources.example.json` for format — each source defines a URL and regex rules to extract rates from HTML.
 
 Key CLI flags: `--db`, `--config`, `--interval`, `--telegram-token`, `--telegram-chat`, `--abs-threshold`, `--pct-threshold`, `--proxy`, `--log-format`.
+
+## Testing Conventions
+
+All tests in this project MUST follow these rules. No exceptions.
+
+### 1. Use subtests (`t.Run`) for organisation
+
+Every test function groups its cases with `t.Run`. Naming pattern: `TestType_Method`.
+
+```go
+func TestMyType_Method(t *testing.T) {
+    t.Parallel()
+
+    t.Run("returns result on valid input", func(t *testing.T) {
+        t.Parallel()
+        // ...
+    })
+    t.Run("returns error on invalid input", func(t *testing.T) {
+        t.Parallel()
+        // ...
+    })
+}
+```
+
+### 2. File layout order (per test file)
+
+Top → bottom:
+
+1. Test-case tables / input structs
+2. Test functions (with subtests)
+3. Helper functions
+4. Constants (if any)
+5. Mock / test-double structs
+
+No blank lines between subtests. No section-separator comments.
+
+### 3. Positive cases before negative cases
+
+Within every `t.Run` group, the **first** subtest MUST be a happy-path / success case.
+Error-handling and edge-case subtests follow. Every test function must have **at least one**
+positive case.
+
+### 4. Always call `t.Parallel()`
+
+Both the outer test function and every `t.Run` subtest must call `t.Parallel()` as their
+first statement (before any setup code).
+
+### 5. Use `testify` for assertions
+
+Use `require` for fatal assertions (test stops on failure) and `assert` for non-fatal ones.
+Prefer `require.NoError`, `require.Equal`, `require.ErrorIs`, etc.  
+Do **not** use bare `if err != nil { t.Fatal(...) }` patterns.
+
+### 6. `TestMain` / `main_test.go` only for global shared resources
+
+Create `main_test.go` (with `TestMain`) only when a package-level shared resource is needed
+(e.g. a Docker container, a single shared DB connection). Otherwise organise tests in files
+that mirror the file under test: `storage.go` → `storage_test.go`.
+
+### 7. Use `t.Context()` for context arguments
+
+If the function under test accepts a `context.Context`, pass `t.Context()` in tests — do not
+use `context.Background()` or `context.TODO()`.
+
+```go
+result, err := svc.Fetch(t.Context(), id)
+require.NoError(t, err)
+```
