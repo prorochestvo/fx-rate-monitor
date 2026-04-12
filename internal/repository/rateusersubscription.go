@@ -64,12 +64,13 @@ func (r *RateUserSubscriptionRepository) CheckUP(ctx context.Context) error {
 func (r *RateUserSubscriptionRepository) Migration() (map[string]string, error) {
 	return map[string]string{
 		rateUserSubscriptionTableName + "_001_table_initiate": `CREATE TABLE IF NOT EXISTS ` + rateUserSubscriptionTableName + ` (
-	` + rateUserSubscriptionUserTypeFieldName + `        TEXT NOT NULL,
-	` + rateUserSubscriptionUserIDFieldName + `          TEXT NOT NULL,
-	` + rateUserSubscriptionSourceNameFieldName + `      TEXT NOT NULL,
- 	` + rateUserSubscriptionConditionTypeFieldName + `   TEXT NOT NULL DEFAULT 'delta',
- 	` + rateUserSubscriptionConditionValueFieldName + `  REAL NOT NULL DEFAULT 0,
-	` + rateUserSubscriptionCreatedAtFieldName + `       TEXT NOT NULL,
+	` + rateUserSubscriptionUserTypeFieldName + `            TEXT NOT NULL,
+	` + rateUserSubscriptionUserIDFieldName + `              TEXT NOT NULL,
+	` + rateUserSubscriptionSourceNameFieldName + `          TEXT NOT NULL,
+ 	` + rateUserSubscriptionConditionTypeFieldName + `       TEXT NOT NULL DEFAULT 'delta',
+ 	` + rateUserSubscriptionConditionValueFieldName + `      TEXT NOT NULL DEFAULT '10',
+ 	` + rateUserSubscriptionLatestNotifiedRateFieldName + `  REAL NOT NULL DEFAULT 0,
+	` + rateUserSubscriptionCreatedAtFieldName + `           TEXT NOT NULL,
 	PRIMARY KEY (` + rateUserSubscriptionUserTypeFieldName + `, ` + rateUserSubscriptionUserIDFieldName + `, ` + rateUserSubscriptionSourceNameFieldName + `)
 );
 CREATE INDEX IF NOT EXISTS idx_` + rateUserSubscriptionTableName + `_userType ON ` + rateUserSubscriptionTableName + ` (` + rateUserSubscriptionUserTypeFieldName + `);
@@ -149,12 +150,14 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 	if count > 0 {
 		cmd := "UPDATE" + " " + rateUserSubscriptionTableName + " SET " +
 			rateUserSubscriptionConditionTypeFieldName + " = ?, " +
-			rateUserSubscriptionConditionValueFieldName + " = ? " +
+			rateUserSubscriptionConditionValueFieldName + " = ?, " +
+			rateUserSubscriptionLatestNotifiedRateFieldName + " = ? " +
 			" WHERE " + rateUserSubscriptionUserTypeFieldName + " = ? AND " + rateUserSubscriptionUserIDFieldName + " = ? AND " + rateUserSubscriptionSourceNameFieldName + " = ?;"
 		_, err = tx.ExecContext(
 			ctx, cmd,
 			record.ConditionType,
 			record.ConditionValue,
+			record.LatestNotifiedRate,
 			record.UserType,
 			record.UserID,
 			record.SourceName,
@@ -167,8 +170,9 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 			rateUserSubscriptionSourceNameFieldName + ", " +
 			rateUserSubscriptionConditionTypeFieldName + ", " +
 			rateUserSubscriptionConditionValueFieldName + ", " +
+			rateUserSubscriptionLatestNotifiedRateFieldName + ", " +
 			rateUserSubscriptionCreatedAtFieldName +
-			") VALUES (?, ?, ?, ?, ?, ?);"
+			") VALUES (?, ?, ?, ?, ?, ?, ?);"
 		_, err = tx.ExecContext(
 			ctx, cmd,
 			record.UserType,
@@ -176,6 +180,7 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 			record.SourceName,
 			record.ConditionType,
 			record.ConditionValue,
+			record.LatestNotifiedRate,
 			record.CreatedAt.Format(time.RFC3339),
 		)
 	}
@@ -207,8 +212,7 @@ type SubscriptionSummary struct {
 func (r *RateUserSubscriptionRepository) ObtainSubscriptionSummaryBySource(
 	ctx context.Context, sourceName string,
 ) ([]SubscriptionSummary, error) {
-	const query = `
-SELECT
+	const query = "SELECT" + `
     s.source_name,
     s.user_type,
     COUNT(DISTINCT s.user_id)                                AS subscription_count,
@@ -287,13 +291,14 @@ func (r *RateUserSubscriptionRepository) RemoveRateUserSubscription(ctx context.
 }
 
 const (
-	rateUserSubscriptionTableName               = "rate_user_subscriptions"
-	rateUserSubscriptionUserTypeFieldName       = "user_type"
-	rateUserSubscriptionUserIDFieldName         = "user_id"
-	rateUserSubscriptionSourceNameFieldName     = "source_name"
-	rateUserSubscriptionConditionTypeFieldName  = "condition_type"
-	rateUserSubscriptionConditionValueFieldName = "condition_value"
-	rateUserSubscriptionCreatedAtFieldName      = "created_at"
+	rateUserSubscriptionTableName                   = "rate_user_subscriptions"
+	rateUserSubscriptionUserTypeFieldName           = "user_type"
+	rateUserSubscriptionUserIDFieldName             = "user_id"
+	rateUserSubscriptionSourceNameFieldName         = "source_name"
+	rateUserSubscriptionConditionTypeFieldName      = "condition_type"
+	rateUserSubscriptionConditionValueFieldName     = "condition_value"
+	rateUserSubscriptionLatestNotifiedRateFieldName = "latest_notified_rate"
+	rateUserSubscriptionCreatedAtFieldName          = "created_at"
 
 	rateUserSubscriptionSqlSelect = "SELECT\n" +
 		rateUserSubscriptionUserTypeFieldName + ", " +
@@ -301,6 +306,7 @@ const (
 		rateUserSubscriptionSourceNameFieldName + ", " +
 		rateUserSubscriptionConditionTypeFieldName + ", " +
 		rateUserSubscriptionConditionValueFieldName + ", " +
+		rateUserSubscriptionLatestNotifiedRateFieldName + ", " +
 		rateUserSubscriptionCreatedAtFieldName +
 		"\nFROM " + rateUserSubscriptionTableName
 )
@@ -351,8 +357,12 @@ func rateUserSubscriptionQueryContext(tx *sql.Tx, ctx context.Context, condition
 		var createdAt string
 
 		err = rows.Scan(
-			&item.UserType, &item.UserID, &item.SourceName,
-			&item.ConditionType, &item.ConditionValue,
+			&item.UserType,
+			&item.UserID,
+			&item.SourceName,
+			&item.ConditionType,
+			&item.ConditionValue,
+			&item.LatestNotifiedRate,
 			&createdAt,
 		)
 		if err != nil {
@@ -383,6 +393,7 @@ func rateUserSubscriptionQueryRowContext(tx *sql.Tx, ctx context.Context, condit
 		&item.SourceName,
 		&item.ConditionType,
 		&item.ConditionValue,
+		&item.LatestNotifiedRate,
 		&createdAt,
 	)
 	if err != nil && errors.Is(err, sql.ErrNoRows) {

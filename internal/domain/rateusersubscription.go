@@ -10,12 +10,13 @@ import (
 
 // RateUserSubscription represents a user's subscription to a monitored rate source.
 type RateUserSubscription struct {
-	UserType       UserType                  `json:"user_type"`
-	UserID         string                    `json:"user_id"`
-	SourceName     string                    `json:"source_name"`
-	ConditionType  SubscriptionConditionType `json:"condition_type"`
-	ConditionValue string                    `json:"condition_value"`
-	CreatedAt      time.Time                 `json:"created_at"`
+	UserType           UserType                  `json:"user_type"`
+	UserID             string                    `json:"user_id"`
+	SourceName         string                    `json:"source_name"`
+	ConditionType      SubscriptionConditionType `json:"condition_type"`
+	ConditionValue     string                    `json:"condition_value"`
+	LatestNotifiedRate float64                   `json:"latest_notified_rate"`
+	CreatedAt          time.Time                 `json:"created_at"`
 }
 
 // Validate returns a non-nil error if the subscription is misconfigured.
