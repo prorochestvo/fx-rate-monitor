@@ -67,9 +67,9 @@ func (r *RateUserEventRepository) CheckUP(ctx context.Context) error {
 func (r *RateUserEventRepository) Migration() (map[string]string, error) {
 	return map[string]string{
 		rateUserEventTableName + "_001_table_initiate": `CREATE TABLE IF NOT EXISTS ` + rateUserEventTableName + ` (
-	` + rateUserEventIDFieldName + `          TEXT NOT NULL PRIMARY KEY,
+	` + rateUserEventIdFieldName + `          TEXT NOT NULL PRIMARY KEY,
 	` + rateUserEventUserTypeFieldName + `    TEXT NOT NULL,
-	` + rateUserEventUserIDFieldName + `      TEXT NOT NULL,
+	` + rateUserEventUserIdFieldName + `      TEXT NOT NULL,
 	` + rateUserEventMessageFieldName + `     TEXT NOT NULL,
 	` + rateUserEventStatusFieldName + `      TEXT NOT NULL DEFAULT '` + string(domain.RateUserEventStatusPending) + `',
 	` + rateUserEventSentAtFieldName + `      TEXT,
@@ -77,7 +77,7 @@ func (r *RateUserEventRepository) Migration() (map[string]string, error) {
 	` + rateUserEventCreatedAtFieldName + `   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_status  ON ` + rateUserEventTableName + ` (` + rateUserEventStatusFieldName + `);
-CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_user    ON ` + rateUserEventTableName + ` (` + rateUserEventUserTypeFieldName + `, ` + rateUserEventUserIDFieldName + `);
+CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_user    ON ` + rateUserEventTableName + ` (` + rateUserEventUserTypeFieldName + `, ` + rateUserEventUserIdFieldName + `);
 CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_created ON ` + rateUserEventTableName + ` (` + rateUserEventCreatedAtFieldName + ` DESC);
 CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_failed ON ` + rateUserEventTableName + ` (` + rateUserEventCreatedAtFieldName + ` DESC) WHERE ` + rateUserEventStatusFieldName + ` = '` + string(domain.RateUserEventStatusFailed) + `';`,
 		rateUserEventTableName + "_002_add_source_name": `ALTER TABLE ` + rateUserEventTableName +
@@ -205,7 +205,7 @@ func (r *RateUserEventRepository) ObtainRateUserEventById(ctx context.Context, i
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	row, err := rateUserEventQueryRowContext(tx, ctx, "WHERE "+rateUserEventIDFieldName+" = ? ORDER BY "+rateUserEventCreatedAtFieldName+" ASC;", id)
+	row, err := rateUserEventQueryRowContext(tx, ctx, "WHERE "+rateUserEventIdFieldName+" = ? ORDER BY "+rateUserEventCreatedAtFieldName+" ASC;", id)
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +226,7 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 	}
 
 	if record.ID == "" {
-		record.ID = generateNotificationID()
+		record.ID = generateRateUserEventID()
 	}
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = time.Now().UTC()
@@ -258,13 +258,13 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 		cmd := "UPDATE" + " " + rateUserEventTableName + " SET " +
 			rateUserEventSourceNameFieldName + " = ?, " +
 			rateUserEventUserTypeFieldName + " = ?, " +
-			rateUserEventUserIDFieldName + " = ?, " +
+			rateUserEventUserIdFieldName + " = ?, " +
 			rateUserEventMessageFieldName + " = ?, " +
 			rateUserEventStatusFieldName + " = ?, " +
 			rateUserEventLastErrorFieldName + " = ?, " +
 			rateUserEventSentAtFieldName + " = ?, " +
 			rateUserEventCreatedAtFieldName + " = ? " +
-			"WHERE " + rateUserEventIDFieldName + " = ?;"
+			"WHERE " + rateUserEventIdFieldName + " = ?;"
 		_, err = tx.ExecContext(ctx, cmd,
 			record.SourceName,
 			record.UserType,
@@ -282,10 +282,10 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 		}
 	} else {
 		cmd := "INSERT INTO" + " " + rateUserEventTableName + " (" +
-			rateUserEventIDFieldName + ", " +
+			rateUserEventIdFieldName + ", " +
 			rateUserEventSourceNameFieldName + ", " +
 			rateUserEventUserTypeFieldName + ", " +
-			rateUserEventUserIDFieldName + ", " +
+			rateUserEventUserIdFieldName + ", " +
 			rateUserEventMessageFieldName + ", " +
 			rateUserEventStatusFieldName + ", " +
 			rateUserEventLastErrorFieldName + ", " +
@@ -397,7 +397,7 @@ func (r *RateUserEventRepository) RemoveRateUserEvent(ctx context.Context, recor
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	cmd := "DELETE FROM" + " " + rateUserEventTableName + " WHERE " + rateUserEventIDFieldName + " = ?;"
+	cmd := "DELETE FROM" + " " + rateUserEventTableName + " WHERE " + rateUserEventIdFieldName + " = ?;"
 	_, err = tx.ExecContext(ctx, cmd, record.ID)
 	if err != nil {
 		err = errors.Join(err, fmt.Errorf("SQL: %s", cmd))
@@ -446,10 +446,10 @@ func (r *RateUserEventRepository) RemoveRateUserEventOlderThan(ctx context.Conte
 
 const (
 	rateUserEventTableName           = "rate_user_events"
-	rateUserEventIDFieldName         = "id"
+	rateUserEventIdFieldName         = "id"
 	rateUserEventSourceNameFieldName = "source_name"
 	rateUserEventUserTypeFieldName   = "user_type"
-	rateUserEventUserIDFieldName     = "user_id"
+	rateUserEventUserIdFieldName     = "user_id"
 	rateUserEventMessageFieldName    = "message"
 	rateUserEventStatusFieldName     = "status"
 	rateUserEventLastErrorFieldName  = "last_error"
@@ -457,10 +457,10 @@ const (
 	rateUserEventSentAtFieldName     = "sent_at"
 
 	rateUserEventSqlSelect = "SELECT\n" +
-		rateUserEventIDFieldName + ", " +
+		rateUserEventIdFieldName + ", " +
 		rateUserEventSourceNameFieldName + ", " +
 		rateUserEventUserTypeFieldName + ", " +
-		rateUserEventUserIDFieldName + ", " +
+		rateUserEventUserIdFieldName + ", " +
 		rateUserEventMessageFieldName + ", " +
 		rateUserEventStatusFieldName + ", " +
 		rateUserEventLastErrorFieldName + ", " +
@@ -469,7 +469,7 @@ const (
 		"\nFROM " + rateUserEventTableName
 )
 
-func generateNotificationID() string {
+func generateRateUserEventID() string {
 	now := time.Now().UTC()
 	return fmt.Sprintf("RUE%04d%02d%02d%02d%02d%02dZ%dT%X", now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), now.Second(), now.Nanosecond(), uuid.NewV4().Bytes())
 }

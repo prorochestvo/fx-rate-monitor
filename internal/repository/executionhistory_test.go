@@ -179,7 +179,7 @@ func TestExecutionHistoryRepository_RemoveSourceExecutionHistory(t *testing.T) {
 	defer func() { _ = tx.Rollback() }()
 
 	var count int
-	require.NoError(t, tx.QueryRow("SELECT COUNT(*) FROM"+" "+executionHistoryTableName+" WHERE "+executionHistoryIDFieldName+" = ?", h.ID).Scan(&count))
+	require.NoError(t, tx.QueryRow("SELECT COUNT(*) FROM"+" "+executionHistoryTableName+" WHERE "+executionHistoryIdFieldName+" = ?", h.ID).Scan(&count))
 	require.Equal(t, 0, count)
 }
 

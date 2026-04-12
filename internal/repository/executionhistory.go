@@ -65,7 +65,7 @@ func (r *ExecutionHistoryRepository) CheckUP(ctx context.Context) error {
 func (r *ExecutionHistoryRepository) Migration() (map[string]string, error) {
 	return map[string]string{
 		executionHistoryTableName + "_001_table_initiate": `CREATE TABLE IF NOT EXISTS ` + executionHistoryTableName + ` (
-	` + executionHistoryIDFieldName + `          TEXT    NOT NULL PRIMARY KEY,
+	` + executionHistoryIdFieldName + `          TEXT    NOT NULL PRIMARY KEY,
 	` + executionHistorySourceNameFieldName + ` TEXT    NOT NULL,
 	` + executionHistorySuccessFieldName + `    BOOLEAN NOT NULL,
 	` + executionHistoryErrorFieldName + `      TEXT    NOT NULL DEFAULT '',
@@ -127,7 +127,7 @@ func (r *ExecutionHistoryRepository) RetainExecutionHistory(ctx context.Context,
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	count, err := executionHistoryCount(tx, ctx, "WHERE "+executionHistoryIDFieldName+" = ?;", record.ID)
+	count, err := executionHistoryCount(tx, ctx, "WHERE "+executionHistoryIdFieldName+" = ?;", record.ID)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return err
@@ -139,7 +139,7 @@ func (r *ExecutionHistoryRepository) RetainExecutionHistory(ctx context.Context,
 			executionHistorySuccessFieldName + " = ?, " +
 			executionHistoryErrorFieldName + " = ?, " +
 			executionHistoryTimestampFieldName + " = ?" +
-			" WHERE " + executionHistoryIDFieldName + " = ?;"
+			" WHERE " + executionHistoryIdFieldName + " = ?;"
 		_, err = tx.ExecContext(
 			ctx, cmd,
 			record.SourceName,
@@ -151,7 +151,7 @@ func (r *ExecutionHistoryRepository) RetainExecutionHistory(ctx context.Context,
 	} else {
 		cmd := "INSERT INTO" + " " + executionHistoryTableName +
 			" (" +
-			executionHistoryIDFieldName + ", " +
+			executionHistoryIdFieldName + ", " +
 			executionHistorySourceNameFieldName + ", " +
 			executionHistorySuccessFieldName + ", " +
 			executionHistoryErrorFieldName + ", " +
@@ -194,7 +194,7 @@ func (r *ExecutionHistoryRepository) RemoveSourceExecutionHistory(ctx context.Co
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	cmd := "DELETE FROM" + " " + executionHistoryTableName + " WHERE " + executionHistoryIDFieldName + " = ?;"
+	cmd := "DELETE FROM" + " " + executionHistoryTableName + " WHERE " + executionHistoryIdFieldName + " = ?;"
 	_, err = tx.ExecContext(ctx, cmd, record.ID)
 	if err != nil {
 		err = errors.Join(err, fmt.Errorf("SQL: %s", cmd))
@@ -212,14 +212,14 @@ func (r *ExecutionHistoryRepository) RemoveSourceExecutionHistory(ctx context.Co
 
 const (
 	executionHistoryTableName           = "execution_history"
-	executionHistoryIDFieldName         = "id"
+	executionHistoryIdFieldName         = "id"
 	executionHistorySourceNameFieldName = "source_name"
 	executionHistorySuccessFieldName    = "success"
 	executionHistoryErrorFieldName      = "error"
 	executionHistoryTimestampFieldName  = "timestamp"
 
 	executionHistorySqlSelect = "SELECT" + "\n" +
-		executionHistoryIDFieldName + ", " +
+		executionHistoryIdFieldName + ", " +
 		executionHistorySourceNameFieldName + ", " +
 		executionHistorySuccessFieldName + ", " +
 		executionHistoryErrorFieldName + ", " +

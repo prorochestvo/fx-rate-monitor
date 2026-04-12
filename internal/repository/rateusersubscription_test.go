@@ -70,7 +70,7 @@ func TestRateUserSubscriptionRepository_RetainRateUserSubscription(t *testing.T)
 		require.NoError(t, tx.QueryRow(
 			"SELECT COUNT(*) FROM"+" "+rateUserSubscriptionTableName+
 				" WHERE "+rateUserSubscriptionUserTypeFieldName+" = ?"+
-				" AND "+rateUserSubscriptionUserIDFieldName+" = ?"+
+				" AND "+rateUserSubscriptionUserIdFieldName+" = ?"+
 				" AND "+rateUserSubscriptionSourceNameFieldName+" = ?",
 			sub.UserType, sub.UserID, sub.SourceName,
 		).Scan(&count))
@@ -96,7 +96,7 @@ func TestRateUserSubscriptionRepository_RetainRateUserSubscription(t *testing.T)
 		require.NoError(t, tx.QueryRow(
 			"SELECT COUNT(*) FROM"+" "+rateUserSubscriptionTableName+
 				" WHERE "+rateUserSubscriptionUserTypeFieldName+" = ?"+
-				" AND "+rateUserSubscriptionUserIDFieldName+" = ?"+
+				" AND "+rateUserSubscriptionUserIdFieldName+" = ?"+
 				" AND "+rateUserSubscriptionSourceNameFieldName+" = ?",
 			sub.UserType, sub.UserID, sub.SourceName,
 		).Scan(&count))
@@ -158,7 +158,7 @@ func TestRateUserSubscriptionRepository_RemoveRateUserSubscription(t *testing.T)
 		require.NoError(t, tx.QueryRow(
 			"SELECT COUNT(*) FROM"+" "+rateUserSubscriptionTableName+
 				" WHERE "+rateUserSubscriptionUserTypeFieldName+" = ?"+
-				" AND "+rateUserSubscriptionUserIDFieldName+" = ?"+
+				" AND "+rateUserSubscriptionUserIdFieldName+" = ?"+
 				" AND "+rateUserSubscriptionSourceNameFieldName+" = ?",
 			sub.UserType, sub.UserID, sub.SourceName,
 		).Scan(&count))

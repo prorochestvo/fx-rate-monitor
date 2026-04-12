@@ -11,6 +11,7 @@ import (
 
 // RateUserSubscription represents a user's subscription to a monitored rate source.
 type RateUserSubscription struct {
+	ID                 string                    `json:"id"`
 	UserType           UserType                  `json:"user_type"`
 	UserID             string                    `json:"user_id"`
 	SourceName         string                    `json:"source_name"`

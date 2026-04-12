@@ -11,6 +11,7 @@ import (
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
+	"github.com/twinj/uuid"
 )
 
 func NewRateUserSubscriptionRepository(db db) (*RateUserSubscriptionRepository, error) {
@@ -64,20 +65,20 @@ func (r *RateUserSubscriptionRepository) CheckUP(ctx context.Context) error {
 func (r *RateUserSubscriptionRepository) Migration() (map[string]string, error) {
 	return map[string]string{
 		rateUserSubscriptionTableName + "_001_table_initiate": `CREATE TABLE IF NOT EXISTS ` + rateUserSubscriptionTableName + ` (
+	` + rateUserSubscriptionIdFieldName + `                  TEXT NOT NULL PRIMARY KEY,
 	` + rateUserSubscriptionUserTypeFieldName + `            TEXT NOT NULL,
-	` + rateUserSubscriptionUserIDFieldName + `              TEXT NOT NULL,
+	` + rateUserSubscriptionUserIdFieldName + `              TEXT NOT NULL,
 	` + rateUserSubscriptionSourceNameFieldName + `          TEXT NOT NULL,
  	` + rateUserSubscriptionConditionTypeFieldName + `       TEXT NOT NULL DEFAULT 'delta',
  	` + rateUserSubscriptionConditionValueFieldName + `      TEXT NOT NULL DEFAULT '10',
  	` + rateUserSubscriptionLatestNotifiedRateFieldName + `  REAL NOT NULL DEFAULT 0,
 	` + rateUserSubscriptionUpdatedAtFieldName + `           TEXT NOT NULL,
-	` + rateUserSubscriptionCreatedAtFieldName + `           TEXT NOT NULL,
-	PRIMARY KEY (` + rateUserSubscriptionUserTypeFieldName + `, ` + rateUserSubscriptionUserIDFieldName + `, ` + rateUserSubscriptionSourceNameFieldName + `)
+	` + rateUserSubscriptionCreatedAtFieldName + `           TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_` + rateUserSubscriptionTableName + `_usrSubscriptions ON ` + rateUserSubscriptionTableName + ` (` + rateUserSubscriptionUserTypeFieldName + `, ` + rateUserSubscriptionUserIdFieldName + `);
 CREATE INDEX IF NOT EXISTS idx_` + rateUserSubscriptionTableName + `_userType ON ` + rateUserSubscriptionTableName + ` (` + rateUserSubscriptionUserTypeFieldName + `);
-CREATE INDEX IF NOT EXISTS idx_` + rateUserSubscriptionTableName + `_userID ON ` + rateUserSubscriptionTableName + ` (` + rateUserSubscriptionUserIDFieldName + `);
+CREATE INDEX IF NOT EXISTS idx_` + rateUserSubscriptionTableName + `_userID ON ` + rateUserSubscriptionTableName + ` (` + rateUserSubscriptionUserIdFieldName + `);
 CREATE INDEX IF NOT EXISTS idx_` + rateUserSubscriptionTableName + `_sourceName ON ` + rateUserSubscriptionTableName + ` (` + rateUserSubscriptionSourceNameFieldName + `);`,
-		rateUserSubscriptionTableName + "_002_unique_source_user": `CREATE UNIQUE INDEX IF NOT EXISTS idx_` + rateUserSubscriptionTableName + `_sourceName_user ON ` + rateUserSubscriptionTableName + ` (` + rateUserSubscriptionSourceNameFieldName + `, ` + rateUserSubscriptionUserIDFieldName + `);`,
 	}, nil
 }
 
@@ -89,7 +90,7 @@ func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsByUserID(ctx
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	rows, err := rateUserSubscriptionQueryContext(tx, ctx, "WHERE "+rateUserSubscriptionUserTypeFieldName+" = ? AND "+rateUserSubscriptionUserIDFieldName+" = ?;", userType, userID)
+	rows, err := rateUserSubscriptionQueryContext(tx, ctx, "WHERE "+rateUserSubscriptionUserTypeFieldName+" = ? AND "+rateUserSubscriptionUserIdFieldName+" = ?;", userType, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -133,6 +134,9 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 
 	now := time.Now().UTC()
 
+	if record.ID == "" {
+		record.ID = generateRateUserSubscriptionID()
+	}
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = now
 	}
@@ -145,7 +149,7 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	count, err := rateUserSubscriptionCount(tx, ctx, "WHERE "+rateUserSubscriptionUserTypeFieldName+" = ? AND "+rateUserSubscriptionUserIDFieldName+" = ? AND "+rateUserSubscriptionSourceNameFieldName+" = ?;", record.UserType, record.UserID, record.SourceName)
+	count, err := rateUserSubscriptionCount(tx, ctx, "WHERE "+rateUserSubscriptionIdFieldName+" = ?;", record.ID)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return err
@@ -153,35 +157,41 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 
 	if count > 0 {
 		cmd := "UPDATE" + " " + rateUserSubscriptionTableName + " SET " +
+			rateUserSubscriptionUserTypeFieldName + " = ?, " +
+			rateUserSubscriptionUserIdFieldName + " = ?, " +
+			rateUserSubscriptionSourceNameFieldName + " = ?, " +
 			rateUserSubscriptionConditionTypeFieldName + " = ?, " +
 			rateUserSubscriptionConditionValueFieldName + " = ?, " +
 			rateUserSubscriptionLatestNotifiedRateFieldName + " = ?, " +
 			rateUserSubscriptionUpdatedAtFieldName + " = ? " +
-			" WHERE " + rateUserSubscriptionUserTypeFieldName + " = ? AND " + rateUserSubscriptionUserIDFieldName + " = ? AND " + rateUserSubscriptionSourceNameFieldName + " = ?;"
+			" WHERE " + rateUserSubscriptionIdFieldName + " = ?;"
 		_, err = tx.ExecContext(
 			ctx, cmd,
+			record.UserType,
+			record.UserID,
+			record.SourceName,
 			record.ConditionType,
 			record.ConditionValue,
 			record.LatestNotifiedRate,
 			record.UpdatedAt.Format(time.RFC3339),
-			record.UserType,
-			record.UserID,
-			record.SourceName,
+			record.ID,
 		)
 	} else {
 		cmd := "INSERT INTO" + " " + rateUserSubscriptionTableName +
 			" (" +
+			rateUserSubscriptionIdFieldName + ", " +
 			rateUserSubscriptionUserTypeFieldName + ", " +
-			rateUserSubscriptionUserIDFieldName + ", " +
+			rateUserSubscriptionUserIdFieldName + ", " +
 			rateUserSubscriptionSourceNameFieldName + ", " +
 			rateUserSubscriptionConditionTypeFieldName + ", " +
 			rateUserSubscriptionConditionValueFieldName + ", " +
 			rateUserSubscriptionLatestNotifiedRateFieldName + ", " +
 			rateUserSubscriptionUpdatedAtFieldName + ", " +
 			rateUserSubscriptionCreatedAtFieldName +
-			") VALUES (?, ?, ?, ?, ?, ?, ?, ?);"
+			") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);"
 		_, err = tx.ExecContext(
 			ctx, cmd,
+			record.ID,
 			record.UserType,
 			record.UserID,
 			record.SourceName,
@@ -279,11 +289,8 @@ func (r *RateUserSubscriptionRepository) RemoveRateUserSubscription(ctx context.
 	}
 	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
 
-	cmd := "DELETE FROM" + " " + rateUserSubscriptionTableName +
-		" WHERE " + rateUserSubscriptionUserTypeFieldName + " = ?" +
-		" AND " + rateUserSubscriptionUserIDFieldName + " = ?" +
-		" AND " + rateUserSubscriptionSourceNameFieldName + " = ?;"
-	_, err = tx.ExecContext(ctx, cmd, record.UserType, record.UserID, record.SourceName)
+	cmd := "DELETE FROM" + " " + rateUserSubscriptionTableName + " WHERE " + rateUserSubscriptionIdFieldName + " = ?;"
+	_, err = tx.ExecContext(ctx, cmd, record.ID)
 	if err != nil {
 		err = errors.Join(err, fmt.Errorf("SQL: %s", cmd))
 		err = errors.Join(err, internal.NewTraceError())
@@ -300,8 +307,9 @@ func (r *RateUserSubscriptionRepository) RemoveRateUserSubscription(ctx context.
 
 const (
 	rateUserSubscriptionTableName                   = "rate_user_subscriptions"
+	rateUserSubscriptionIdFieldName                 = "id"
 	rateUserSubscriptionUserTypeFieldName           = "user_type"
-	rateUserSubscriptionUserIDFieldName             = "user_id"
+	rateUserSubscriptionUserIdFieldName             = "user_id"
 	rateUserSubscriptionSourceNameFieldName         = "source_name"
 	rateUserSubscriptionConditionTypeFieldName      = "condition_type"
 	rateUserSubscriptionConditionValueFieldName     = "condition_value"
@@ -310,8 +318,9 @@ const (
 	rateUserSubscriptionCreatedAtFieldName          = "created_at"
 
 	rateUserSubscriptionSqlSelect = "SELECT\n" +
+		rateUserSubscriptionIdFieldName + ", " +
 		rateUserSubscriptionUserTypeFieldName + ", " +
-		rateUserSubscriptionUserIDFieldName + ", " +
+		rateUserSubscriptionUserIdFieldName + ", " +
 		rateUserSubscriptionSourceNameFieldName + ", " +
 		rateUserSubscriptionConditionTypeFieldName + ", " +
 		rateUserSubscriptionConditionValueFieldName + ", " +
@@ -320,6 +329,11 @@ const (
 		rateUserSubscriptionCreatedAtFieldName +
 		"\nFROM " + rateUserSubscriptionTableName
 )
+
+func generateRateUserSubscriptionID() string {
+	now := time.Now().UTC()
+	return fmt.Sprintf("RUS%04d%02d%02d%02d%02d%02dZ%dT%X", now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), now.Second(), now.Nanosecond(), uuid.NewV4().Bytes())
+}
 
 func rateUserSubscriptionCount(tx *sql.Tx, ctx context.Context, condition string, args ...any) (int64, error) {
 	query := "SELECT\n" +
@@ -367,6 +381,7 @@ func rateUserSubscriptionQueryContext(tx *sql.Tx, ctx context.Context, condition
 		var createdAt, updatedAt string
 
 		err = rows.Scan(
+			&item.ID,
 			&item.UserType,
 			&item.UserID,
 			&item.SourceName,
@@ -405,6 +420,7 @@ func rateUserSubscriptionQueryRowContext(tx *sql.Tx, ctx context.Context, condit
 	var item domain.RateUserSubscription
 	var createdAt, updatedAt string
 	err := tx.QueryRowContext(ctx, query, args...).Scan(
+		&item.ID,
 		&item.UserType,
 		&item.UserID,
 		&item.SourceName,
