@@ -358,23 +358,99 @@ func TestRateExtractor_Run(t *testing.T) {
 func TestRateExtractor_fetchHtmlPage(t *testing.T) {
 	t.Parallel()
 
-	//logger := threadsafe.NewBuffer(nil)
+	logger := threadsafe.NewBuffer(nil)
 
 	t.Run("bring page", func(t *testing.T) {
 		t.Parallel()
-		t.Skip("Not implemented")
+
+		const responseBody = `<html>rate: 123.45</html>`
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = fmt.Fprint(w, responseBody)
+		}))
+		defer srv.Close()
+
+		ext, err := NewRateExtractorWithHTTPClient(
+			&mockRateValueRepository{},
+			&http.Client{Timeout: 5 * time.Second},
+			logger,
+		)
+		require.NoError(t, err)
+
+		body, err := ext.fetchHtmlPage(t.Context(), srv.URL)
+		require.NoError(t, err)
+		require.Equal(t, []byte(responseBody), body)
 	})
 	t.Run("cache page", func(t *testing.T) {
 		t.Parallel()
-		t.Skip("Not implemented")
+
+		callCount := 0
+		const responseBody = `<html>cached: 99.9</html>`
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			_, _ = fmt.Fprint(w, responseBody)
+		}))
+		defer srv.Close()
+
+		ext, err := NewRateExtractorWithHTTPClient(
+			&mockRateValueRepository{},
+			&http.Client{Timeout: 5 * time.Second},
+			logger,
+		)
+		require.NoError(t, err)
+
+		body1, err := ext.fetchHtmlPage(t.Context(), srv.URL)
+		require.NoError(t, err)
+		require.Equal(t, []byte(responseBody), body1)
+
+		body2, err := ext.fetchHtmlPage(t.Context(), srv.URL)
+		require.NoError(t, err)
+		require.Equal(t, []byte(responseBody), body2)
+
+		require.Equal(t, 1, callCount, "expected exactly one HTTP request; second call must be served from cache")
 	})
 	t.Run("invalid url", func(t *testing.T) {
 		t.Parallel()
-		t.Skip("Not implemented")
+
+		ext, err := NewRateExtractorWithHTTPClient(
+			&mockRateValueRepository{},
+			&http.Client{Timeout: 5 * time.Second},
+			logger,
+		)
+		require.NoError(t, err)
+
+		_, err = ext.fetchHtmlPage(t.Context(), "://bad")
+		require.Error(t, err)
 	})
 	t.Run("cache is failed but process is not interrupted", func(t *testing.T) {
 		t.Parallel()
-		t.Skip("Not implemented")
+
+		const responseBody = `<html>rate: 77.7</html>`
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = fmt.Fprint(w, responseBody)
+		}))
+		defer srv.Close()
+
+		ext, err := NewRateExtractorWithHTTPClient(
+			&mockRateValueRepository{},
+			&http.Client{Timeout: 5 * time.Second},
+			logger,
+		)
+		require.NoError(t, err)
+
+		// Pre-populate the cache with the same key but an empty value so that:
+		//   1. Fetch() finds the key but the empty-byte guard skips the cache hit.
+		//   2. After the real HTTP fetch, Push() fails (key already exists in go-cache.Add).
+		//   3. fetchHtmlPage logs the error and still returns the fetched body with nil error.
+		cacheKey := fmt.Sprintf("GET:%s", srv.URL)
+		require.NoError(t, ext.cache.Push(cacheKey, []byte{}))
+
+		body, err := ext.fetchHtmlPage(t.Context(), srv.URL)
+		require.NoError(t, err)
+		require.NotNil(t, body)
+		require.Equal(t, []byte(responseBody), body)
 	})
 }
 

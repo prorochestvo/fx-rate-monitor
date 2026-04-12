@@ -135,6 +135,15 @@ func TestRateAgent_Run(t *testing.T) {
 
 		require.NoError(t, agent.Run(t.Context()))
 	})
+	t.Run("repo error is propagated", func(t *testing.T) {
+		t.Parallel()
+
+		repo := &mockRateUserEventRepository{obtainErr: errors.New("db down")}
+		agent, err := NewRateAgent(&mockTelegramClient{}, repo)
+		require.NoError(t, err)
+
+		require.Error(t, agent.Run(t.Context()))
+	})
 }
 
 func TestRateAgent_runUserTypeTelegram(t *testing.T) {
@@ -222,13 +231,14 @@ func TestRateAgent_Vacuum(t *testing.T) {
 type mockRateUserEventRepository struct {
 	events          []domain.RateUserEvent
 	retained        []*domain.RateUserEvent
+	obtainErr       error
 	retainErr       error
 	removeErr       error
 	removedDuration time.Duration
 }
 
 func (m *mockRateUserEventRepository) ObtainUnprocessedRateUserEvents(_ context.Context) ([]domain.RateUserEvent, error) {
-	return m.events, nil
+	return m.events, m.obtainErr
 }
 
 func (m *mockRateUserEventRepository) RetainRateUserEvent(_ context.Context, e *domain.RateUserEvent) error {

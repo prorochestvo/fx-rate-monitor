@@ -2,6 +2,7 @@ package repository
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -740,5 +741,57 @@ func TestRateUserEventRepository_RemoveRateUserEventOlderThan(t *testing.T) {
 			event.ID,
 		).Scan(&count))
 		require.Equal(t, 0, count)
+	})
+}
+
+func TestRateUserEventRepository_TransactionErrors(t *testing.T) {
+	t.Parallel()
+
+	newBrokenRepo := func(t *testing.T) *RateUserEventRepository {
+		t.Helper()
+		r, err := NewRateUserEventRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+		r.db = &mockFailDB{err: errors.New("db unavailable")}
+		return r
+	}
+
+	t.Run("CheckUP propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		require.Error(t, newBrokenRepo(t).CheckUP(t.Context()))
+	})
+	t.Run("ObtainLastNRateUserEvents propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainLastNRateUserEvents(t.Context(), 0, 10)
+		require.Error(t, err)
+	})
+	t.Run("ObtainUnprocessedRateUserEvents propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainUnprocessedRateUserEvents(t.Context())
+		require.Error(t, err)
+	})
+	t.Run("ObtainRateUserEventById propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainRateUserEventById(t.Context(), "some-id")
+		require.Error(t, err)
+	})
+	t.Run("RetainRateUserEvent propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		err := newBrokenRepo(t).RetainRateUserEvent(t.Context(), &domain.RateUserEvent{UserType: domain.UserTypeTelegram, UserID: "u"})
+		require.Error(t, err)
+	})
+	t.Run("ObtainRateUserEventsBySourceName propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainRateUserEventsBySourceName(t.Context(), "src", 0, 10)
+		require.Error(t, err)
+	})
+	t.Run("RemoveRateUserEvent propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		err := newBrokenRepo(t).RemoveRateUserEvent(t.Context(), &domain.RateUserEvent{ID: "x"})
+		require.Error(t, err)
+	})
+	t.Run("RemoveRateUserEventOlderThan propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		err := newBrokenRepo(t).RemoveRateUserEventOlderThan(t.Context(), 24*time.Hour)
+		require.Error(t, err)
 	})
 }

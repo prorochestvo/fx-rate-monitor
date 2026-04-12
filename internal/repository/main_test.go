@@ -1,7 +1,9 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"sync"
 
@@ -36,6 +38,14 @@ func stubSQLiteDB(t interface {
 	}
 
 	return sqliteDB
+}
+
+// mockFailDB implements the db interface but always returns an error from Transaction.
+// Use it to test error-handling branches that fire when the DB is unavailable.
+type mockFailDB struct{ err error }
+
+func (m *mockFailDB) Transaction(_ context.Context) (*sql.Tx, error) {
+	return nil, errors.New(m.err.Error())
 }
 
 var m sync.Mutex

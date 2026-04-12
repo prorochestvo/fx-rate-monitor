@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -39,6 +40,13 @@ func TestExecutionHistoryRepository_RetainAndObtain(t *testing.T) {
 	r, err := NewExecutionHistoryRepository(stubSQLiteDB(t))
 	require.NoError(t, err)
 
+	t.Run("nil record returns error", func(t *testing.T) {
+		t.Parallel()
+
+		err := r.RetainExecutionHistory(t.Context(), nil)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "nil")
+	})
 	t.Run("insert success record", func(t *testing.T) {
 		t.Parallel()
 
@@ -148,6 +156,14 @@ func TestExecutionHistoryRepository_RemoveSourceExecutionHistory(t *testing.T) {
 	r, err := NewExecutionHistoryRepository(stubSQLiteDB(t))
 	require.NoError(t, err)
 
+	t.Run("nil record returns error", func(t *testing.T) {
+		t.Parallel()
+
+		err := r.RemoveSourceExecutionHistory(t.Context(), nil)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "nil")
+	})
+
 	h := &domain.ExecutionHistory{
 		SourceName: "to-remove",
 		Success:    true,
@@ -165,6 +181,38 @@ func TestExecutionHistoryRepository_RemoveSourceExecutionHistory(t *testing.T) {
 	var count int
 	require.NoError(t, tx.QueryRow("SELECT COUNT(*) FROM"+" "+executionHistoryTableName+" WHERE "+executionHistoryIDFieldName+" = ?", h.ID).Scan(&count))
 	require.Equal(t, 0, count)
+}
+
+func TestExecutionHistoryRepository_TransactionErrors(t *testing.T) {
+	t.Parallel()
+
+	newBrokenRepo := func(t *testing.T) *ExecutionHistoryRepository {
+		t.Helper()
+		r, err := NewExecutionHistoryRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+		r.db = &mockFailDB{err: errors.New("db unavailable")}
+		return r
+	}
+
+	t.Run("CheckUP propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		require.Error(t, newBrokenRepo(t).CheckUP(t.Context()))
+	})
+	t.Run("ObtainLastNExecutionHistoryBySourceName propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainLastNExecutionHistoryBySourceName(t.Context(), "src", 1, false)
+		require.Error(t, err)
+	})
+	t.Run("RetainExecutionHistory propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		err := newBrokenRepo(t).RetainExecutionHistory(t.Context(), &domain.ExecutionHistory{SourceName: "src"})
+		require.Error(t, err)
+	})
+	t.Run("RemoveSourceExecutionHistory propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		err := newBrokenRepo(t).RemoveSourceExecutionHistory(t.Context(), &domain.ExecutionHistory{ID: "x"})
+		require.Error(t, err)
+	})
 }
 
 func BenchmarkExecutionHistoryRepository_ObtainLastN(b *testing.B) {

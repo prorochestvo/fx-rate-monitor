@@ -2,6 +2,7 @@ package repository
 
 import (
 	"database/sql"
+	"errors"
 	"sort"
 	"testing"
 	"time"
@@ -35,6 +36,51 @@ func TestRateRepository_CheckUP(t *testing.T) {
 	require.NoError(t, r.CheckUP(t.Context()))
 }
 
+func TestRateRepository_TransactionErrors(t *testing.T) {
+	t.Parallel()
+
+	// For each method we create a valid repository (so migrations run), then
+	// replace the internal db with mockFailDB so the Transaction call errors out.
+	// This exercises the db.Transaction error branch in every public method.
+	newBrokenRepo := func(t *testing.T) *RateValueRepository {
+		t.Helper()
+		r, err := NewRateValueRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+		r.db = &mockFailDB{err: errors.New("db unavailable")}
+		return r
+	}
+
+	t.Run("CheckUP propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		require.Error(t, newBrokenRepo(t).CheckUP(t.Context()))
+	})
+	t.Run("ObtainAllRateValueBySourceName propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainAllRateValueBySourceName(t.Context(), "src")
+		require.Error(t, err)
+	})
+	t.Run("ObtainLastNRateValuesBySourceName propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainLastNRateValuesBySourceName(t.Context(), "src", 1)
+		require.Error(t, err)
+	})
+	t.Run("RetainRateValue propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		err := newBrokenRepo(t).RetainRateValue(t.Context(), &domain.RateValue{Price: 1.0})
+		require.Error(t, err)
+	})
+	t.Run("RemoveRateValue propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		err := newBrokenRepo(t).RemoveRateValue(t.Context(), &domain.RateValue{ID: "x"})
+		require.Error(t, err)
+	})
+	t.Run("ObtainRateValueChartBySourceName propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainRateValueChartBySourceName(t.Context(), "src", ChartPeriodWeek)
+		require.Error(t, err)
+	})
+}
+
 func TestRateRepository_RetainRateValue(t *testing.T) {
 	t.Parallel()
 
@@ -42,6 +88,13 @@ func TestRateRepository_RetainRateValue(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
+	t.Run("nil record returns error", func(t *testing.T) {
+		t.Parallel()
+
+		err := r.RetainRateValue(t.Context(), nil)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "nil")
+	})
 	t.Run("insert", func(t *testing.T) {
 		t.Parallel()
 
@@ -112,6 +165,13 @@ func TestRateRepository_RemoveRateValue(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
+	t.Run("nil record returns error", func(t *testing.T) {
+		t.Parallel()
+
+		err := r.RemoveRateValue(t.Context(), nil)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "nil")
+	})
 	t.Run("delete", func(t *testing.T) {
 		t.Parallel()
 
@@ -294,6 +354,28 @@ func TestRateValueRepository_ObtainRateValueChartBySourceName(t *testing.T) {
 		require.Regexp(t, `^\d{4}-\d{2}$`, points[0].Label)
 	})
 
+	t.Run("month period returns daily buckets within last 30 days", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateValueRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		now := time.Now().UTC()
+		prices := []float64{455.0, 457.0, 459.0}
+		ts := []time.Time{
+			now.AddDate(0, 0, -20),
+			now.AddDate(0, 0, -10),
+			now.AddDate(0, 0, -2),
+		}
+		seedRates(t, r, "chart-month-src", prices, ts)
+
+		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "chart-month-src", ChartPeriodMonth)
+		require.NoError(t, err)
+		require.NotEmpty(t, points)
+		require.LessOrEqual(t, len(points), 30)
+		// labels must be in YYYY-MM-DD format (same as week period)
+		require.Regexp(t, `^\d{4}-\d{2}-\d{2}$`, points[0].Label)
+	})
 	t.Run("unknown period returns error", func(t *testing.T) {
 		t.Parallel()
 

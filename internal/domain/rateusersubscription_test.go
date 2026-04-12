@@ -8,6 +8,72 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestRateUserSubscription_DailyTime(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid condition type returns parsed time", func(t *testing.T) {
+		t.Parallel()
+		rus := &RateUserSubscription{ConditionType: ConditionTypeDaily, ConditionValue: "08:00:00"}
+		got, err := rus.DailyTime()
+		require.NoError(t, err)
+		require.Equal(t, 8, got.Hour())
+	})
+	t.Run("wrong condition type returns error", func(t *testing.T) {
+		t.Parallel()
+		rus := &RateUserSubscription{ConditionType: ConditionTypeInterval, ConditionValue: "08:00:00"}
+		_, err := rus.DailyTime()
+		require.Error(t, err)
+	})
+}
+
+func TestRateUserSubscription_DeltaThreshold(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid positive threshold returns value", func(t *testing.T) {
+		t.Parallel()
+		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "5.5"}
+		got, err := rus.DeltaThreshold()
+		require.NoError(t, err)
+		require.InDelta(t, 5.5, got, 0.001)
+	})
+	t.Run("wrong condition type returns error", func(t *testing.T) {
+		t.Parallel()
+		rus := &RateUserSubscription{ConditionType: ConditionTypeInterval, ConditionValue: "5"}
+		_, err := rus.DeltaThreshold()
+		require.Error(t, err)
+	})
+	t.Run("non-numeric ConditionValue returns error", func(t *testing.T) {
+		t.Parallel()
+		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "not-a-number"}
+		_, err := rus.DeltaThreshold()
+		require.Error(t, err)
+	})
+	t.Run("negative threshold returns error", func(t *testing.T) {
+		t.Parallel()
+		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "-5"}
+		_, err := rus.DeltaThreshold()
+		require.Error(t, err)
+	})
+}
+
+func TestRateUserSubscription_IntervalDuration(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid interval returns duration", func(t *testing.T) {
+		t.Parallel()
+		rus := &RateUserSubscription{ConditionType: ConditionTypeInterval, ConditionValue: "1h"}
+		got, err := rus.IntervalDuration()
+		require.NoError(t, err)
+		require.Equal(t, time.Hour, got)
+	})
+	t.Run("wrong condition type returns error", func(t *testing.T) {
+		t.Parallel()
+		rus := &RateUserSubscription{ConditionType: ConditionTypeDaily, ConditionValue: "1h"}
+		_, err := rus.IntervalDuration()
+		require.Error(t, err)
+	})
+}
+
 func TestRateUserSubscription_IsDeltaSatisfied(t *testing.T) {
 	t.Parallel()
 
@@ -49,6 +115,13 @@ func TestRateUserSubscription_IsDeltaSatisfied(t *testing.T) {
 	t.Run("wrong condition type", func(t *testing.T) {
 		t.Parallel()
 		rus := &RateUserSubscription{ConditionType: ConditionTypeInterval, ConditionValue: "5"}
+		ok, err := rus.IsDeltaSatisfied(10)
+		require.Error(t, err)
+		require.False(t, ok)
+	})
+	t.Run("non-parseable ConditionValue propagates DeltaThreshold error", func(t *testing.T) {
+		t.Parallel()
+		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "not-a-number"}
 		ok, err := rus.IsDeltaSatisfied(10)
 		require.Error(t, err)
 		require.False(t, ok)

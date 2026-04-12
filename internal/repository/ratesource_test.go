@@ -2,6 +2,7 @@ package repository
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/seilbekskindirov/monitor/internal/domain"
@@ -39,6 +40,13 @@ func TestSourceRepository_RetainSource(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
+	t.Run("nil record returns error", func(t *testing.T) {
+		t.Parallel()
+
+		err := r.RetainRateSource(t.Context(), nil)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "nil")
+	})
 	t.Run("insert", func(t *testing.T) {
 		t.Parallel()
 
@@ -113,6 +121,13 @@ func TestSourceRepository_RemoveSource(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
+	t.Run("nil record returns error", func(t *testing.T) {
+		t.Parallel()
+
+		err := r.RemoveRateSource(t.Context(), nil)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "nil")
+	})
 	t.Run("delete", func(t *testing.T) {
 		t.Parallel()
 
@@ -219,5 +234,42 @@ func TestSourceRepository_ObtainAllSources(t *testing.T) {
 		result, err := emptyRepo.ObtainAllRateSources(t.Context())
 		require.NoError(t, err)
 		require.Empty(t, result)
+	})
+}
+
+func TestSourceRepository_TransactionErrors(t *testing.T) {
+	t.Parallel()
+
+	newBrokenRepo := func(t *testing.T) *RateSourceRepository {
+		t.Helper()
+		r, err := NewRateSourceRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+		r.db = &mockFailDB{err: errors.New("db unavailable")}
+		return r
+	}
+
+	t.Run("CheckUP propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		require.Error(t, newBrokenRepo(t).CheckUP(t.Context()))
+	})
+	t.Run("ObtainRateSourceByName propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainRateSourceByName(t.Context(), "src")
+		require.Error(t, err)
+	})
+	t.Run("ObtainAllRateSources propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainAllRateSources(t.Context())
+		require.Error(t, err)
+	})
+	t.Run("RetainRateSource propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		err := newBrokenRepo(t).RetainRateSource(t.Context(), &domain.RateSource{Name: "x"})
+		require.Error(t, err)
+	})
+	t.Run("RemoveRateSource propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		err := newBrokenRepo(t).RemoveRateSource(t.Context(), &domain.RateSource{Name: "x"})
+		require.Error(t, err)
 	})
 }

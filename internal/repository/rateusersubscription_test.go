@@ -2,6 +2,7 @@ package repository
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -40,6 +41,13 @@ func TestRateUserSubscriptionRepository_RetainRateUserSubscription(t *testing.T)
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
+	t.Run("nil record returns error", func(t *testing.T) {
+		t.Parallel()
+
+		err := r.RetainRateUserSubscription(t.Context(), nil)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "nil")
+	})
 	t.Run("insert", func(t *testing.T) {
 		t.Parallel()
 
@@ -123,6 +131,13 @@ func TestRateUserSubscriptionRepository_RemoveRateUserSubscription(t *testing.T)
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
+	t.Run("nil record returns error", func(t *testing.T) {
+		t.Parallel()
+
+		err := r.RemoveRateUserSubscription(t.Context(), nil)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "nil")
+	})
 	t.Run("delete", func(t *testing.T) {
 		t.Parallel()
 
@@ -229,5 +244,94 @@ func TestRateUserSubscriptionRepository_ObtainRateUserSubscriptionsBySource(t *t
 		result, err := r.ObtainRateUserSubscriptionsBySource(t.Context(), "nonexistent")
 		require.NoError(t, err)
 		require.Empty(t, result)
+	})
+}
+
+func TestRateUserSubscriptionRepository_ObtainSubscriptionSummaryBySource(t *testing.T) {
+	t.Parallel()
+
+	// ObtainSubscriptionSummaryBySource JOINs rate_user_events, so both repositories
+	// must be initialised on the same DB to ensure both tables exist.
+	newSubAndEventRepos := func(t *testing.T) (*RateUserSubscriptionRepository, *RateUserEventRepository) {
+		t.Helper()
+		db := stubSQLiteDB(t)
+		subRepo, err := NewRateUserSubscriptionRepository(db)
+		require.NoError(t, err)
+		eventRepo, err := NewRateUserEventRepository(db)
+		require.NoError(t, err)
+		return subRepo, eventRepo
+	}
+
+	t.Run("no subscriptions returns empty slice", func(t *testing.T) {
+		t.Parallel()
+
+		r, _ := newSubAndEventRepos(t)
+
+		result, err := r.ObtainSubscriptionSummaryBySource(t.Context(), "nonexistent-source")
+		require.NoError(t, err)
+		require.Empty(t, result)
+	})
+	t.Run("returns aggregated counts per user_type", func(t *testing.T) {
+		t.Parallel()
+
+		r, _ := newSubAndEventRepos(t)
+
+		subs := []domain.RateUserSubscription{
+			{UserType: domain.UserTypeTelegram, UserID: "u-sum-1", SourceName: "src-sum"},
+			{UserType: domain.UserTypeTelegram, UserID: "u-sum-2", SourceName: "src-sum"},
+		}
+		for i := range subs {
+			require.NoError(t, r.RetainRateUserSubscription(t.Context(), &subs[i]))
+		}
+
+		result, err := r.ObtainSubscriptionSummaryBySource(t.Context(), "src-sum")
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		require.Equal(t, "src-sum", result[0].SourceName)
+		require.Equal(t, domain.UserTypeTelegram, result[0].UserType)
+		require.Equal(t, int64(2), result[0].SubscriptionCount)
+		require.True(t, result[0].LastSentAt.IsZero(), "no events sent yet")
+	})
+}
+
+func TestRateUserSubscriptionRepository_TransactionErrors(t *testing.T) {
+	t.Parallel()
+
+	newBrokenRepo := func(t *testing.T) *RateUserSubscriptionRepository {
+		t.Helper()
+		r, err := NewRateUserSubscriptionRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+		r.db = &mockFailDB{err: errors.New("db unavailable")}
+		return r
+	}
+
+	t.Run("CheckUP propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		require.Error(t, newBrokenRepo(t).CheckUP(t.Context()))
+	})
+	t.Run("ObtainRateUserSubscriptionsByUserID propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainRateUserSubscriptionsByUserID(t.Context(), domain.UserTypeTelegram, "u1")
+		require.Error(t, err)
+	})
+	t.Run("ObtainRateUserSubscriptionsBySource propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainRateUserSubscriptionsBySource(t.Context(), "src")
+		require.Error(t, err)
+	})
+	t.Run("RetainRateUserSubscription propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		err := newBrokenRepo(t).RetainRateUserSubscription(t.Context(), &domain.RateUserSubscription{UserType: domain.UserTypeTelegram, UserID: "u", SourceName: "s"})
+		require.Error(t, err)
+	})
+	t.Run("ObtainSubscriptionSummaryBySource propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainSubscriptionSummaryBySource(t.Context(), "src")
+		require.Error(t, err)
+	})
+	t.Run("RemoveRateUserSubscription propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		err := newBrokenRepo(t).RemoveRateUserSubscription(t.Context(), &domain.RateUserSubscription{UserType: domain.UserTypeTelegram, UserID: "u", SourceName: "s"})
+		require.Error(t, err)
 	})
 }
