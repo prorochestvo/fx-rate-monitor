@@ -80,18 +80,33 @@ func (tbot *TelegramBotClient) Me(_ context.Context) (TelegramChatID, string, er
 	return TelegramChatID(u.ID), u.UserName, nil
 }
 
+func (tbot *TelegramBotClient) SendPlainTextMessageToAdmin(ctx context.Context, text string) error {
+	return tbot.SendPlainTextMessage(ctx, tbot.adminChatID, text)
+}
+
+func (tbot *TelegramBotClient) SendPlainTextMessage(ctx context.Context, chatID TelegramChatID, text string) error {
+	m := tgbotapi.NewMessage(int64(chatID), text)
+	return tbot.emit(ctx, &m)
+}
+
+func (tbot *TelegramBotClient) SendMarkdownMessageToAdmin(ctx context.Context, text string) error {
+	return tbot.SendMarkdownMessage(ctx, tbot.adminChatID, text)
+}
+
+func (tbot *TelegramBotClient) SendMarkdownMessage(ctx context.Context, chatID TelegramChatID, text string) error {
+	m := tgbotapi.NewMessage(int64(chatID), text)
+	m.ParseMode = tgbotapi.ModeMarkdown
+	return tbot.emit(ctx, &m)
+}
+
 func (tbot *TelegramBotClient) SendHTMLMessageToAdmin(ctx context.Context, text string) error {
 	return tbot.SendHTMLMessage(ctx, tbot.adminChatID, text)
 }
 
-func (tbot *TelegramBotClient) SendHTMLMessage(_ context.Context, chatID TelegramChatID, text string) error {
+func (tbot *TelegramBotClient) SendHTMLMessage(ctx context.Context, chatID TelegramChatID, text string) error {
 	m := tgbotapi.NewMessage(int64(chatID), text)
 	m.ParseMode = tgbotapi.ModeHTML
-
-	if _, err := tbot.bot.Send(m); err != nil {
-		return errors.Join(err, internal.NewTraceError())
-	}
-	return nil
+	return tbot.emit(ctx, &m)
 }
 
 func (tbot *TelegramBotClient) SendDocumentToAdmin(ctx context.Context, fileName string, fileContent []byte) error {
@@ -99,19 +114,20 @@ func (tbot *TelegramBotClient) SendDocumentToAdmin(ctx context.Context, fileName
 }
 
 // SendDocument uploads content as a file named name to chatID.
-func (tbot *TelegramBotClient) SendDocument(_ context.Context, chatID TelegramChatID, fileName string, fileContent []byte) error {
-	doc := tgbotapi.NewDocument(int64(chatID), tgbotapi.FileBytes{Name: fileName, Bytes: fileContent})
-	if _, err := tbot.bot.Send(doc); err != nil {
+func (tbot *TelegramBotClient) SendDocument(ctx context.Context, chatID TelegramChatID, fileName string, fileContent []byte) error {
+	d := tgbotapi.NewDocument(int64(chatID), tgbotapi.FileBytes{Name: fileName, Bytes: fileContent})
+	return tbot.emit(ctx, d)
+}
+
+func (tbot *TelegramBotClient) emit(_ context.Context, m tgbotapi.Chattable) error {
+	if _, err := tbot.bot.Send(m); err != nil {
 		return errors.Join(err, internal.NewTraceError())
 	}
 	return nil
 }
 
 // SendHTMLMessageWithKeyboard sends an HTML-formatted message with an inline keyboard to chatID.
-func (tbot *TelegramBotClient) SendHTMLMessageWithKeyboard(
-	_ context.Context, chatID TelegramChatID,
-	text string, keyboard tgbotapi.InlineKeyboardMarkup,
-) error {
+func (tbot *TelegramBotClient) SendHTMLMessageWithKeyboard(_ context.Context, chatID TelegramChatID, text string, keyboard tgbotapi.InlineKeyboardMarkup) error {
 	m := tgbotapi.NewMessage(int64(chatID), text)
 	m.ParseMode = tgbotapi.ModeHTML
 	m.ReplyMarkup = keyboard
@@ -132,9 +148,7 @@ func (tbot *TelegramBotClient) AnswerCallbackQuery(_ context.Context, callbackQu
 
 // EditMessageText replaces the text of an existing message in place.
 // "message is not modified" errors from Telegram are silently ignored.
-func (tbot *TelegramBotClient) EditMessageText(
-	_ context.Context, chatID TelegramChatID, messageID int, text string,
-) error {
+func (tbot *TelegramBotClient) EditMessageText(_ context.Context, chatID TelegramChatID, messageID int, text string) error {
 	edit := tgbotapi.NewEditMessageText(int64(chatID), messageID, text)
 	edit.ParseMode = tgbotapi.ModeHTML
 	if _, err := tbot.bot.Send(edit); err != nil {

@@ -1,4 +1,4 @@
-package api
+package service
 
 import (
 	"context"
@@ -16,20 +16,7 @@ var _ rateValueRepository = &repository.RateValueRepository{}
 var _ rateUserSubscriptionRepository = &repository.RateUserSubscriptionRepository{}
 var _ rateUserEventRepository = &repository.RateUserEventRepository{}
 
-func newTestService(t *testing.T,
-	eh executionHistoryRepository,
-	rs rateSourceRepository,
-	rv rateValueRepository,
-	rus rateUserSubscriptionRepository,
-	rue rateUserEventRepository,
-) *RateService {
-	t.Helper()
-	svc, err := NewWebRestAPI(eh, rs, rv, rus, rue)
-	require.NoError(t, err)
-	return svc
-}
-
-func TestRateService_ObtainLastNExecutionHistoryBySourceName(t *testing.T) {
+func TestRateRestApi_ObtainLastNExecutionHistoryBySourceName(t *testing.T) {
 	t.Parallel()
 
 	t.Run("delegates and returns results", func(t *testing.T) {
@@ -44,7 +31,6 @@ func TestRateService_ObtainLastNExecutionHistoryBySourceName(t *testing.T) {
 		require.Equal(t, want, got)
 		require.False(t, repo.capturedBool)
 	})
-
 	t.Run("error propagated", func(t *testing.T) {
 		t.Parallel()
 
@@ -56,7 +42,7 @@ func TestRateService_ObtainLastNExecutionHistoryBySourceName(t *testing.T) {
 	})
 }
 
-func TestRateService_ObtainLastSuccessNExecutionHistoryBySourceName(t *testing.T) {
+func TestRateRestApi_ObtainLastSuccessNExecutionHistoryBySourceName(t *testing.T) {
 	t.Parallel()
 
 	t.Run("calls repo with successOnly=true", func(t *testing.T) {
@@ -69,7 +55,6 @@ func TestRateService_ObtainLastSuccessNExecutionHistoryBySourceName(t *testing.T
 		require.NoError(t, err)
 		require.True(t, repo.capturedBool)
 	})
-
 	t.Run("error propagated", func(t *testing.T) {
 		t.Parallel()
 
@@ -81,7 +66,7 @@ func TestRateService_ObtainLastSuccessNExecutionHistoryBySourceName(t *testing.T
 	})
 }
 
-func TestRateService_ObtainAllRateSources(t *testing.T) {
+func TestRateRestApi_ObtainAllRateSources(t *testing.T) {
 	t.Parallel()
 
 	t.Run("returns sources", func(t *testing.T) {
@@ -95,7 +80,6 @@ func TestRateService_ObtainAllRateSources(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, want, got)
 	})
-
 	t.Run("error propagated", func(t *testing.T) {
 		t.Parallel()
 
@@ -107,7 +91,7 @@ func TestRateService_ObtainAllRateSources(t *testing.T) {
 	})
 }
 
-func TestRateService_ObtainLastNRateValuesBySourceName(t *testing.T) {
+func TestRateRestApi_ObtainLastNRateValuesBySourceName(t *testing.T) {
 	t.Parallel()
 
 	t.Run("delegates with correct args", func(t *testing.T) {
@@ -121,7 +105,6 @@ func TestRateService_ObtainLastNRateValuesBySourceName(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, want, got)
 	})
-
 	t.Run("error propagated", func(t *testing.T) {
 		t.Parallel()
 
@@ -133,7 +116,7 @@ func TestRateService_ObtainLastNRateValuesBySourceName(t *testing.T) {
 	})
 }
 
-func TestRateService_ObtainListOfLastRateUserEvent(t *testing.T) {
+func TestRateRestApi_ObtainListOfLastRateUserEvent(t *testing.T) {
 	t.Parallel()
 
 	t.Run("calls repo with all four statuses", func(t *testing.T) {
@@ -150,7 +133,6 @@ func TestRateService_ObtainListOfLastRateUserEvent(t *testing.T) {
 		require.Contains(t, repo.lastNStatuses, domain.RateUserEventStatusFailed)
 		require.Contains(t, repo.lastNStatuses, domain.RateUserEventStatusCanceled)
 	})
-
 	t.Run("error propagated", func(t *testing.T) {
 		t.Parallel()
 
@@ -162,7 +144,7 @@ func TestRateService_ObtainListOfLastRateUserEvent(t *testing.T) {
 	})
 }
 
-func TestRateService_ObtainFailedListOfRateUserEvent(t *testing.T) {
+func TestRateRestApi_ObtainFailedListOfRateUserEvent(t *testing.T) {
 	t.Parallel()
 
 	t.Run("delegates with offset, limit and failed status", func(t *testing.T) {
@@ -177,7 +159,6 @@ func TestRateService_ObtainFailedListOfRateUserEvent(t *testing.T) {
 		require.Equal(t, want, got)
 		require.Equal(t, []domain.RateUserEventStatus{domain.RateUserEventStatusFailed}, repo.lastNStatuses)
 	})
-
 	t.Run("error propagated", func(t *testing.T) {
 		t.Parallel()
 
@@ -189,7 +170,7 @@ func TestRateService_ObtainFailedListOfRateUserEvent(t *testing.T) {
 	})
 }
 
-func TestRateService_ObtainPendingRateUserEvents(t *testing.T) {
+func TestRateRestApi_ObtainPendingRateUserEvents(t *testing.T) {
 	t.Parallel()
 
 	t.Run("calls repo with pending status only", func(t *testing.T) {
@@ -204,7 +185,6 @@ func TestRateService_ObtainPendingRateUserEvents(t *testing.T) {
 		require.Equal(t, want, got)
 		require.Equal(t, []domain.RateUserEventStatus{domain.RateUserEventStatusPending}, repo.lastNStatuses)
 	})
-
 	t.Run("error propagated", func(t *testing.T) {
 		t.Parallel()
 
@@ -216,7 +196,7 @@ func TestRateService_ObtainPendingRateUserEvents(t *testing.T) {
 	})
 }
 
-func TestRateService_ObtainRateValueChartBySourceName(t *testing.T) {
+func TestRateRestApi_ObtainRateValueChartBySourceName(t *testing.T) {
 	t.Parallel()
 
 	t.Run("delegates and returns chart points", func(t *testing.T) {
@@ -230,7 +210,6 @@ func TestRateService_ObtainRateValueChartBySourceName(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, want, got)
 	})
-
 	t.Run("error propagated", func(t *testing.T) {
 		t.Parallel()
 
@@ -242,7 +221,7 @@ func TestRateService_ObtainRateValueChartBySourceName(t *testing.T) {
 	})
 }
 
-func TestRateService_ObtainFailedRateUserEventsBySourceName(t *testing.T) {
+func TestRateRestApi_ObtainFailedRateUserEventsBySourceName(t *testing.T) {
 	t.Parallel()
 
 	t.Run("calculates offset from page and returns failed events", func(t *testing.T) {
@@ -257,7 +236,6 @@ func TestRateService_ObtainFailedRateUserEventsBySourceName(t *testing.T) {
 		require.Equal(t, want, got)
 		require.Equal(t, []domain.RateUserEventStatus{domain.RateUserEventStatusFailed}, repo.bySourceStatuses)
 	})
-
 	t.Run("error propagated", func(t *testing.T) {
 		t.Parallel()
 
@@ -269,7 +247,7 @@ func TestRateService_ObtainFailedRateUserEventsBySourceName(t *testing.T) {
 	})
 }
 
-func TestRateService_ObtainSubscriptionSummaryBySource(t *testing.T) {
+func TestRateRestApi_ObtainSubscriptionSummaryBySource(t *testing.T) {
 	t.Parallel()
 
 	t.Run("delegates and returns summaries", func(t *testing.T) {
@@ -295,6 +273,19 @@ func TestRateService_ObtainSubscriptionSummaryBySource(t *testing.T) {
 		_, err := svc.ObtainSubscriptionSummaryBySource(t.Context(), "src1")
 		require.Error(t, err)
 	})
+}
+
+func newTestService(t *testing.T,
+	eh executionHistoryRepository,
+	rs rateSourceRepository,
+	rv rateValueRepository,
+	rus rateUserSubscriptionRepository,
+	rue rateUserEventRepository,
+) *RateRestApi {
+	t.Helper()
+	svc, err := NewRateRestAPI(eh, rs, rv, rus, rue)
+	require.NoError(t, err)
+	return svc
 }
 
 type mockExecutionHistoryRepository struct {

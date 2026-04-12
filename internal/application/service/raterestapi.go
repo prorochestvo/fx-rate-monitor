@@ -1,4 +1,4 @@
-package api
+package service
 
 import (
 	"context"
@@ -9,15 +9,15 @@ import (
 	"github.com/seilbekskindirov/monitor/internal/repository"
 )
 
-func NewWebRestAPI(
+func NewRateRestAPI(
 	rExecutionHistory executionHistoryRepository,
 	rRateSource rateSourceRepository,
 	rRateValue rateValueRepository,
 	rRateUserSubscription rateUserSubscriptionRepository,
 	rRateUserEvent rateUserEventRepository,
-) (*RateService, error) {
+) (*RateRestApi, error) {
 
-	h := &RateService{
+	h := &RateRestApi{
 		executionHistoryRepository:     rExecutionHistory,
 		rateSourceRepository:           rRateSource,
 		rateValueRepository:            rRateValue,
@@ -28,8 +28,8 @@ func NewWebRestAPI(
 	return h, nil
 }
 
-// RateService groups all v1 HTTP handlers and their repository dependencies.
-type RateService struct {
+// RateRestApi groups all v1 HTTP handlers and their repository dependencies.
+type RateRestApi struct {
 	executionHistoryRepository     executionHistoryRepository
 	rateSourceRepository           rateSourceRepository
 	rateValueRepository            rateValueRepository
@@ -37,7 +37,11 @@ type RateService struct {
 	rateUserEventRepository        rateUserEventRepository
 }
 
-func (h *RateService) ObtainLastNExecutionHistoryBySourceName(ctx context.Context, name string, limit int64) ([]domain.ExecutionHistory, error) {
+func (h *RateRestApi) HealthCheck(ctx context.Context) error {
+	return nil
+}
+
+func (h *RateRestApi) ObtainLastNExecutionHistoryBySourceName(ctx context.Context, name string, limit int64) ([]domain.ExecutionHistory, error) {
 	items, err := h.executionHistoryRepository.ObtainLastNExecutionHistoryBySourceName(ctx, name, limit, false)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
@@ -46,7 +50,7 @@ func (h *RateService) ObtainLastNExecutionHistoryBySourceName(ctx context.Contex
 	return items, nil
 }
 
-func (h *RateService) ObtainLastSuccessNExecutionHistoryBySourceName(ctx context.Context, name string, limit int64) ([]domain.ExecutionHistory, error) {
+func (h *RateRestApi) ObtainLastSuccessNExecutionHistoryBySourceName(ctx context.Context, name string, limit int64) ([]domain.ExecutionHistory, error) {
 	items, err := h.executionHistoryRepository.ObtainLastNExecutionHistoryBySourceName(ctx, name, limit, true)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
@@ -55,7 +59,7 @@ func (h *RateService) ObtainLastSuccessNExecutionHistoryBySourceName(ctx context
 	return items, nil
 }
 
-func (h *RateService) ObtainAllRateSources(ctx context.Context) ([]domain.RateSource, error) {
+func (h *RateRestApi) ObtainAllRateSources(ctx context.Context) ([]domain.RateSource, error) {
 	items, err := h.rateSourceRepository.ObtainAllRateSources(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
@@ -64,7 +68,7 @@ func (h *RateService) ObtainAllRateSources(ctx context.Context) ([]domain.RateSo
 	return items, nil
 }
 
-func (h *RateService) ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error) {
+func (h *RateRestApi) ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error) {
 	items, err := h.rateValueRepository.ObtainLastNRateValuesBySourceName(
 		ctx,
 		name,
@@ -77,7 +81,7 @@ func (h *RateService) ObtainLastNRateValuesBySourceName(ctx context.Context, nam
 	return items, nil
 }
 
-func (h *RateService) ObtainListOfLastRateUserEvent(ctx context.Context, limit int64) ([]domain.RateUserEvent, error) {
+func (h *RateRestApi) ObtainListOfLastRateUserEvent(ctx context.Context, limit int64) ([]domain.RateUserEvent, error) {
 	items, err := h.rateUserEventRepository.ObtainLastNRateUserEvents(
 		ctx,
 		0,
@@ -94,7 +98,7 @@ func (h *RateService) ObtainListOfLastRateUserEvent(ctx context.Context, limit i
 	return items, nil
 }
 
-func (h *RateService) ObtainFailedListOfRateUserEvent(ctx context.Context, offset, limit int64) ([]domain.RateUserEvent, error) {
+func (h *RateRestApi) ObtainFailedListOfRateUserEvent(ctx context.Context, offset, limit int64) ([]domain.RateUserEvent, error) {
 	items, err := h.rateUserEventRepository.ObtainLastNRateUserEvents(
 		ctx,
 		offset,
@@ -109,7 +113,7 @@ func (h *RateService) ObtainFailedListOfRateUserEvent(ctx context.Context, offse
 }
 
 // ObtainPendingRateUserEvents returns up to 1000 pending events (default-page widget).
-func (h *RateService) ObtainPendingRateUserEvents(ctx context.Context) ([]domain.RateUserEvent, error) {
+func (h *RateRestApi) ObtainPendingRateUserEvents(ctx context.Context) ([]domain.RateUserEvent, error) {
 	items, err := h.rateUserEventRepository.ObtainLastNRateUserEvents(
 		ctx, 0, 1000, domain.RateUserEventStatusPending,
 	)
@@ -120,7 +124,7 @@ func (h *RateService) ObtainPendingRateUserEvents(ctx context.Context) ([]domain
 }
 
 // ObtainRateValueChartBySourceName returns aggregated chart data for the given source and period.
-func (h *RateService) ObtainRateValueChartBySourceName(
+func (h *RateRestApi) ObtainRateValueChartBySourceName(
 	ctx context.Context, name string, period repository.ChartPeriod,
 ) ([]repository.ChartPoint, error) {
 	items, err := h.rateValueRepository.ObtainRateValueChartBySourceName(ctx, name, period)
@@ -131,7 +135,7 @@ func (h *RateService) ObtainRateValueChartBySourceName(
 }
 
 // ObtainFailedRateUserEventsBySourceName returns a single page of failed events for a source.
-func (h *RateService) ObtainFailedRateUserEventsBySourceName(
+func (h *RateRestApi) ObtainFailedRateUserEventsBySourceName(
 	ctx context.Context, sourceName string, page, pageSize int64,
 ) ([]domain.RateUserEvent, error) {
 	offset := (page - 1) * pageSize
@@ -145,7 +149,7 @@ func (h *RateService) ObtainFailedRateUserEventsBySourceName(
 }
 
 // ObtainSubscriptionSummaryBySource returns grouped subscription + event statistics for a source.
-func (h *RateService) ObtainSubscriptionSummaryBySource(
+func (h *RateRestApi) ObtainSubscriptionSummaryBySource(
 	ctx context.Context, sourceName string,
 ) ([]repository.SubscriptionSummary, error) {
 	items, err := h.rateUserSubscriptionRepository.ObtainSubscriptionSummaryBySource(ctx, sourceName)

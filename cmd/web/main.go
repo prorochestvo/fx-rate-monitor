@@ -16,9 +16,10 @@ import (
 
 	"github.com/prorochestvo/dsninjector"
 	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/application/api"
+	"github.com/seilbekskindirov/monitor/internal/application/service"
 	"github.com/seilbekskindirov/monitor/internal/gateway"
 	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
+	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
 	"github.com/seilbekskindirov/monitor/internal/repository"
 	_ "modernc.org/sqlite"
 )
@@ -35,7 +36,8 @@ var (
 )
 
 const (
-	envDsnSqliteDB = "SQLITEDB_DSN"
+	envDsnSqliteDB    = "SQLITEDB_DSN"
+	envDsnTelegramBOT = "TELEGRAMBOT_DSN"
 )
 
 func main() {
@@ -53,6 +55,11 @@ func main() {
 		log.Fatalf("settings: %s, %s", envDsnSqliteDB, err.Error())
 		return
 	}
+	dsnTelegramBOT, err := dsninjector.Unmarshal(envDsnTelegramBOT)
+	if err != nil {
+		log.Fatalf("settings: %s, %s", envDsnTelegramBOT, err.Error())
+		return
+	}
 	log.Println("settings: initiated")
 
 	// init dependencies
@@ -66,6 +73,11 @@ func main() {
 			log.Printf("close sqlite client: %v", e)
 		}
 	}(db)
+	tbot, err := integration.NewTBotClient(dsnTelegramBOT, l.WriterAs(internal.LogLevelInfo))
+	if err != nil {
+		log.Fatalf("dependencies: telegram bot connection is failed, %s", err.Error())
+		return
+	}
 	log.Println("dependencies: initiated")
 
 	// init repositories
@@ -93,7 +105,7 @@ func main() {
 	}
 	log.Println("repositories: initiated")
 
-	restAPI, err := api.NewWebRestAPI(
+	restAPI, err := service.NewRateRestAPI(
 		rExecutionHistory,
 		rRateSource,
 		rRateValue,
@@ -110,7 +122,15 @@ func main() {
 		return
 	}
 	mux.Handle("/", http.FileServer(http.Dir(StaticDir)))
+	tbotAPI, err := service.NewTelegramApi(tbot, rRateUserSubscription, rRateSource)
+	if err != nil {
+		log.Fatalf("services: telegram api is failed, %s", err.Error())
+		return
+	}
 	log.Println("services: initiated")
+
+	// run telegram server
+	tbotAPI.Run(context.Background())
 
 	// run http server
 	srv := &http.Server{

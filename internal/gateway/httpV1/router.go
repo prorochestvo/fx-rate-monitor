@@ -3,16 +3,16 @@ package httpV1
 import (
 	"net/http"
 
-	"github.com/seilbekskindirov/monitor/internal/application/api"
+	"github.com/seilbekskindirov/monitor/internal/application/service"
 	v1 "github.com/seilbekskindirov/monitor/internal/gateway/httpV1/handlers"
 	"github.com/seilbekskindirov/monitor/internal/gateway/httpV1/routes"
 )
 
 func NewRouter(
 	mux *http.ServeMux,
-	srvRate *api.RateService,
+	srvRateRestApi *service.RateRestApi,
 ) (*http.ServeMux, error) {
-	h, err := v1.NewHandler(srvRate)
+	h, err := v1.NewHandler(srvRateRestApi)
 	if err != nil {
 		return nil, err
 	}
