@@ -114,8 +114,10 @@ func TestRateAgent_notification(t *testing.T) {
 			},
 			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
 				subs: []domain.RateUserSubscription{{
-					UserType: domain.UserTypeTelegram,
-					UserID:   "111",
+					UserType:       domain.UserTypeTelegram,
+					UserID:         "111",
+					ConditionType:  domain.ConditionTypeDelta,
+					ConditionValue: "0",
 				}},
 			},
 			rateUserEventRepository: eventRepo,
@@ -138,8 +140,10 @@ func TestRateAgent_notification(t *testing.T) {
 			},
 			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
 				subs: []domain.RateUserSubscription{{
-					UserType: domain.UserTypeTelegram,
-					UserID:   "222",
+					UserType:       domain.UserTypeTelegram,
+					UserID:         "222",
+					ConditionType:  domain.ConditionTypeDelta,
+					ConditionValue: "0",
 				}},
 			},
 			rateUserEventRepository: eventRepo,
@@ -231,8 +235,10 @@ func TestRateAgent_notification(t *testing.T) {
 			},
 			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
 				subs: []domain.RateUserSubscription{{
-					UserType: domain.UserTypeTelegram,
-					UserID:   "115818690",
+					UserType:       domain.UserTypeTelegram,
+					UserID:         "115818690",
+					ConditionType:  domain.ConditionTypeDelta,
+					ConditionValue: "0",
 				}},
 			},
 			rateUserEventRepository: eventRepo,
@@ -317,8 +323,10 @@ func TestRateAgent_Run(t *testing.T) {
 			},
 			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
 				subs: []domain.RateUserSubscription{{
-					UserType: domain.UserTypeTelegram,
-					UserID:   "999",
+					UserType:       domain.UserTypeTelegram,
+					UserID:         "999",
+					ConditionType:  domain.ConditionTypeDelta,
+					ConditionValue: "0",
 				}},
 			},
 			rateUserEventRepository: eventRepo,
@@ -368,11 +376,6 @@ func TestRateAgent_Run(t *testing.T) {
 
 		require.Error(t, a.Run(t.Context()))
 	})
-}
-
-func TestSatisfaction(t *testing.T) {
-	t.Parallel()
-	t.Fail()
 }
 
 func TestBuildAlertMessage(t *testing.T) {
@@ -539,6 +542,12 @@ type mockRateUserSubscriptionRepository struct {
 
 func (m *mockRateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySource(_ context.Context, _ string) ([]domain.RateUserSubscription, error) {
 	return m.subs, m.err
+}
+
+func (m *mockRateUserSubscriptionRepository) RetainRateUserSubscription(
+	_ context.Context, _ *domain.RateUserSubscription,
+) error {
+	return m.err
 }
 
 type mockRateUserEventRepository struct {

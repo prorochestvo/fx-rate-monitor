@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -204,7 +203,7 @@ func (a *RateAgent) notification(ctx context.Context, sources []domain.RateSourc
 				delta = 0
 			}
 
-			if ok, err := satisfaction(&subscription, delta); err != nil {
+			if ok, err := subscription.IsDue(now, delta); err != nil {
 				err = errors.Join(err, internal.NewTraceError())
 				errs[source.Name] = errors.Join(errs[source.Name], err)
 				continue
@@ -318,46 +317,6 @@ const (
 
 	telegramMaxMessageLen = 2048
 )
-
-// satisfaction is not implemented yet
-func satisfaction(subscription *domain.RateUserSubscription, delta float64) (bool, error) {
-	if subscription == nil {
-		err := fmt.Errorf("subscription is nil")
-		err = errors.Join(err, internal.NewTraceError())
-		return false, err
-	}
-
-	//now := time.Now().UTC()
-
-	switch subscription.ConditionType {
-	case domain.ConditionTypeDelta:
-		userDeltaThreshold, err := subscription.DeltaThreshold()
-		if err != nil {
-			err = errors.Join(err, internal.NewTraceError())
-			return false, err
-		}
-		userDeltaThreshold = math.Abs(userDeltaThreshold)
-
-		if d := math.Abs(delta); d != 0 && d < userDeltaThreshold {
-			return false, nil
-		}
-	case domain.ConditionTypeInterval:
-		// TODO: not implemented yet
-		return false, fmt.Errorf("condition type %q is not implemented yet", subscription.ConditionType)
-	case domain.ConditionTypeDaily:
-		// TODO: not implemented yet
-		return false, fmt.Errorf("condition type %q is not implemented yet", subscription.ConditionType)
-	case domain.ConditionTypeCron:
-		// TODO: not implemented yet
-		return false, fmt.Errorf("condition type %q is not implemented yet", subscription.ConditionType)
-	default:
-		err := fmt.Errorf("unknown condition type: %q", subscription.ConditionType)
-		err = errors.Join(err, internal.NewTraceError())
-		return false, err
-	}
-
-	return true, nil
-}
 
 // buildAlertMessage renders alerts into the builder as a single HTML Telegram message.
 func buildAlertMessage(alerts ...alert) ([]string, error) {

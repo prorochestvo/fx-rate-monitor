@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -33,7 +34,7 @@ func (rus *RateUserSubscription) Validate() error {
 		_, err := rus.IntervalDuration()
 		return err
 	case ConditionTypeCron:
-		_, err := rus.CronDuration()
+		_, err := parseCronSchedule(rus.ConditionValue)
 		return err
 	default:
 		return fmt.Errorf("unknown condition type: %q", rus.ConditionType)
@@ -61,24 +62,6 @@ func (rus *RateUserSubscription) DeltaThreshold() (float64, error) {
 	return d, nil
 }
 
-func (rus *RateUserSubscription) CronDuration() (time.Duration, error) {
-	if rus.ConditionType != ConditionTypeCron {
-		return 0, fmt.Errorf("invalid condition type: %s", rus.ConditionType)
-	}
-
-	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-
-	schedule, err := parser.Parse(rus.ConditionValue)
-	if err != nil {
-		return 0, err
-	}
-
-	now := time.Now().UTC()
-	next := schedule.Next(now)
-
-	return next.Sub(now), nil
-}
-
 func (rus *RateUserSubscription) IntervalDuration() (time.Duration, error) {
 	if rus.ConditionType != ConditionTypeInterval {
 		return 0, fmt.Errorf("invalid condition type: %s", rus.ConditionType)
@@ -91,6 +74,102 @@ func (rus *RateUserSubscription) IntervalDuration() (time.Duration, error) {
 		return 0, fmt.Errorf("invalid interval: %s", rus.ConditionValue)
 	}
 	return d, nil
+}
+
+// parseCronSchedule is an unexported helper shared by IsCronDue and Validate.
+func parseCronSchedule(expr string) (cron.Schedule, error) {
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	return parser.Parse(expr)
+}
+
+// IsCronDue reports whether the cron schedule has fired at least once since the
+// last notification (rus.UpdatedAt). now must be UTC.
+func (rus *RateUserSubscription) IsCronDue(now time.Time) (bool, error) {
+	if rus.ConditionType != ConditionTypeCron {
+		return false, fmt.Errorf("invalid condition type: %s", rus.ConditionType)
+	}
+	schedule, err := parseCronSchedule(rus.ConditionValue)
+	if err != nil {
+		return false, err
+	}
+	return !schedule.Next(rus.UpdatedAt).After(now), nil
+}
+
+// IsIntervalDue reports whether enough time has elapsed since the last notification.
+// now must be UTC.
+func (rus *RateUserSubscription) IsIntervalDue(now time.Time) (bool, error) {
+	if rus.ConditionType != ConditionTypeInterval {
+		return false, fmt.Errorf("invalid condition type: %s", rus.ConditionType)
+	}
+	interval, err := rus.IntervalDuration()
+	if err != nil {
+		return false, err
+	}
+	if rus.UpdatedAt.IsZero() {
+		return true, nil
+	}
+	return now.Sub(rus.UpdatedAt) >= interval, nil
+}
+
+// IsDailyDue reports whether the daily notification time has passed today and the
+// subscription has not yet been notified today. now must be UTC.
+func (rus *RateUserSubscription) IsDailyDue(now time.Time) (bool, error) {
+	if rus.ConditionType != ConditionTypeDaily {
+		return false, fmt.Errorf("invalid condition type: %s", rus.ConditionType)
+	}
+	t, err := rus.DailyTime()
+	if err != nil {
+		return false, err
+	}
+	year, month, day := now.Date()
+	todayFire := time.Date(year, month, day, t.Hour(), t.Minute(), t.Second(), 0, time.UTC)
+
+	if now.Before(todayFire) {
+		return false, nil
+	}
+	if rus.UpdatedAt.IsZero() {
+		return true, nil
+	}
+	return rus.UpdatedAt.Before(todayFire), nil
+}
+
+// IsDue reports whether the subscription condition is satisfied and a notification
+// should be sent. now must be UTC. delta is the signed price change since the last
+// notification; it is only used for ConditionTypeDelta.
+func (rus *RateUserSubscription) IsDue(now time.Time, delta float64) (bool, error) {
+	if rus == nil {
+		return false, fmt.Errorf("subscription is nil")
+	}
+	switch rus.ConditionType {
+	case ConditionTypeDelta:
+		return rus.IsDeltaSatisfied(delta)
+	case ConditionTypeInterval:
+		return rus.IsIntervalDue(now)
+	case ConditionTypeDaily:
+		return rus.IsDailyDue(now)
+	case ConditionTypeCron:
+		return rus.IsCronDue(now)
+	default:
+		return false, fmt.Errorf("unknown condition type: %q", rus.ConditionType)
+	}
+}
+
+// IsDeltaSatisfied reports whether the absolute rate change meets the threshold.
+// A delta of exactly zero always satisfies the condition (first-run: LatestNotifiedRate
+// was ≤ 0, so delta was forced to 0 by the caller).
+func (rus *RateUserSubscription) IsDeltaSatisfied(delta float64) (bool, error) {
+	if rus.ConditionType != ConditionTypeDelta {
+		return false, fmt.Errorf("invalid condition type: %s", rus.ConditionType)
+	}
+	threshold, err := rus.DeltaThreshold()
+	if err != nil {
+		return false, err
+	}
+	d := math.Abs(delta)
+	if d != 0 && d < threshold {
+		return false, nil
+	}
+	return true, nil
 }
 
 type SubscriptionConditionType string
