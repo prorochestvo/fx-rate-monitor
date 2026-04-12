@@ -16,6 +16,7 @@ type RateUserSubscription struct {
 	ConditionType      SubscriptionConditionType `json:"condition_type"`
 	ConditionValue     string                    `json:"condition_value"`
 	LatestNotifiedRate float64                   `json:"latest_notified_rate"`
+	UpdatedAt          time.Time                 `json:"updated_at"`
 	CreatedAt          time.Time                 `json:"created_at"`
 }
 

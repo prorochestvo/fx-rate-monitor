@@ -11,6 +11,7 @@ import (
 
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	"github.com/seilbekskindirov/monitor/internal/repository"
+	"github.com/seilbekskindirov/monitor/internal/tools/threadsafe"
 	"github.com/stretchr/testify/require"
 )
 
@@ -19,12 +20,16 @@ var _ rateValueRepository = &repository.RateValueRepository{}
 
 func TestNewRateExtractorWithHTTPClient(t *testing.T) {
 	t.Parallel()
+
+	logger := threadsafe.NewBuffer(nil)
+
 	t.Run("Valid", func(t *testing.T) {
 		t.Parallel()
 
 		ext, err := NewRateExtractorWithHTTPClient(
 			&mockRateValueRepository{},
 			&http.Client{},
+			logger,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, ext)
@@ -35,6 +40,7 @@ func TestNewRateExtractorWithHTTPClient(t *testing.T) {
 		_, err := NewRateExtractorWithHTTPClient(
 			&mockRateValueRepository{},
 			nil,
+			logger,
 		)
 		require.Error(t, err)
 	})
@@ -42,6 +48,9 @@ func TestNewRateExtractorWithHTTPClient(t *testing.T) {
 
 func TestNewRateExtractor(t *testing.T) {
 	t.Parallel()
+
+	logger := threadsafe.NewBuffer(nil)
+
 	t.Run("NoProxy", func(t *testing.T) {
 		t.Parallel()
 
@@ -49,6 +58,7 @@ func TestNewRateExtractor(t *testing.T) {
 			&mockRateValueRepository{},
 			"",
 			5*time.Second,
+			logger,
 		)
 		require.NoError(t, err)
 		require.NotNil(t, ext)
@@ -60,6 +70,7 @@ func TestNewRateExtractor(t *testing.T) {
 			&mockRateValueRepository{},
 			"://bad url",
 			5*time.Second,
+			logger,
 		)
 		require.Error(t, err)
 	})
@@ -68,9 +79,12 @@ func TestNewRateExtractor(t *testing.T) {
 func TestRateExtractor_Name(t *testing.T) {
 	t.Parallel()
 
+	logger := threadsafe.NewBuffer(nil)
+
 	ext, err := NewRateExtractorWithHTTPClient(
 		&mockRateValueRepository{},
 		&http.Client{},
+		logger,
 	)
 	require.NoError(t, err)
 	require.Equal(t, "rate_extractor", ext.Name())
@@ -78,6 +92,8 @@ func TestRateExtractor_Name(t *testing.T) {
 
 func TestRateExtractor_Run(t *testing.T) {
 	t.Parallel()
+
+	logger := threadsafe.NewBuffer(nil)
 
 	t.Run("happy path", func(t *testing.T) {
 		t.Parallel()
@@ -99,7 +115,7 @@ func TestRateExtractor_Run(t *testing.T) {
 			},
 		}
 
-		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second})
+		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second}, logger)
 		require.NoError(t, err)
 
 		require.NoError(t, ext.Run(t.Context(), source))
@@ -128,7 +144,7 @@ func TestRateExtractor_Run(t *testing.T) {
 			},
 		}
 
-		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second})
+		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second}, logger)
 		require.NoError(t, err)
 
 		require.NoError(t, ext.Run(t.Context(), source))
@@ -151,7 +167,7 @@ func TestRateExtractor_Run(t *testing.T) {
 			Rules: []domain.RateSourceRule{{Method: domain.MethodStoreToRate}},
 		}
 
-		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second})
+		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second}, logger)
 		require.NoError(t, err)
 
 		require.NoError(t, ext.Run(t.Context(), source))
@@ -177,7 +193,7 @@ func TestRateExtractor_Run(t *testing.T) {
 			},
 		}
 
-		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second})
+		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second}, logger)
 		require.NoError(t, err)
 
 		require.NoError(t, ext.Run(t.Context(), source))
@@ -194,7 +210,7 @@ func TestRateExtractor_Run(t *testing.T) {
 
 		source := &domain.RateSource{Name: "fail_src", URL: srv.URL}
 
-		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 5 * time.Second})
+		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 5 * time.Second}, logger)
 		require.NoError(t, err)
 
 		require.Error(t, ext.Run(t.Context(), source))
@@ -204,7 +220,7 @@ func TestRateExtractor_Run(t *testing.T) {
 
 		source := &domain.RateSource{Name: "bad_url_src", URL: "http://127.0.0.1:1"} // nothing listening
 
-		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 500 * time.Millisecond})
+		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 500 * time.Millisecond}, logger)
 		require.NoError(t, err)
 
 		require.Error(t, ext.Run(t.Context(), source))
@@ -225,7 +241,7 @@ func TestRateExtractor_Run(t *testing.T) {
 			},
 		}
 
-		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 5 * time.Second})
+		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 5 * time.Second}, logger)
 		require.NoError(t, err)
 
 		require.Error(t, ext.Run(t.Context(), source))
@@ -246,7 +262,7 @@ func TestRateExtractor_Run(t *testing.T) {
 			},
 		}
 
-		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 5 * time.Second})
+		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 5 * time.Second}, logger)
 		require.NoError(t, err)
 
 		require.Error(t, ext.Run(t.Context(), source))
@@ -267,7 +283,7 @@ func TestRateExtractor_Run(t *testing.T) {
 			},
 		}
 
-		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 5 * time.Second})
+		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 5 * time.Second}, logger)
 		require.NoError(t, err)
 
 		require.Error(t, ext.Run(t.Context(), source))
@@ -288,7 +304,7 @@ func TestRateExtractor_Run(t *testing.T) {
 			},
 		}
 
-		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 5 * time.Second})
+		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 5 * time.Second}, logger)
 		require.NoError(t, err)
 
 		require.Error(t, ext.Run(t.Context(), source))
@@ -309,7 +325,7 @@ func TestRateExtractor_Run(t *testing.T) {
 			},
 		}
 
-		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 5 * time.Second})
+		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 5 * time.Second}, logger)
 		require.NoError(t, err)
 
 		require.Error(t, ext.Run(t.Context(), source))
@@ -332,10 +348,33 @@ func TestRateExtractor_Run(t *testing.T) {
 			},
 		}
 
-		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second})
+		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second}, logger)
 		require.NoError(t, err)
 
 		require.Error(t, ext.Run(t.Context(), source))
+	})
+}
+
+func TestRateExtractor_fetchHtmlPage(t *testing.T) {
+	t.Parallel()
+
+	//logger := threadsafe.NewBuffer(nil)
+
+	t.Run("bring page", func(t *testing.T) {
+		t.Parallel()
+		t.Fail()
+	})
+	t.Run("cache page", func(t *testing.T) {
+		t.Parallel()
+		t.Fail()
+	})
+	t.Run("invalid url", func(t *testing.T) {
+		t.Parallel()
+		t.Fail()
+	})
+	t.Run("cache is failed but process is not interrupted", func(t *testing.T) {
+		t.Parallel()
+		t.Fail()
 	})
 }
 

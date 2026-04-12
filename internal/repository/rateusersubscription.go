@@ -70,6 +70,7 @@ func (r *RateUserSubscriptionRepository) Migration() (map[string]string, error) 
  	` + rateUserSubscriptionConditionTypeFieldName + `       TEXT NOT NULL DEFAULT 'delta',
  	` + rateUserSubscriptionConditionValueFieldName + `      TEXT NOT NULL DEFAULT '10',
  	` + rateUserSubscriptionLatestNotifiedRateFieldName + `  REAL NOT NULL DEFAULT 0,
+	` + rateUserSubscriptionUpdatedAtFieldName + `           TEXT NOT NULL,
 	` + rateUserSubscriptionCreatedAtFieldName + `           TEXT NOT NULL,
 	PRIMARY KEY (` + rateUserSubscriptionUserTypeFieldName + `, ` + rateUserSubscriptionUserIDFieldName + `, ` + rateUserSubscriptionSourceNameFieldName + `)
 );
@@ -130,9 +131,12 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 		return err
 	}
 
+	now := time.Now().UTC()
+
 	if record.CreatedAt.IsZero() {
-		record.CreatedAt = time.Now().UTC()
+		record.CreatedAt = now
 	}
+	record.UpdatedAt = now
 
 	tx, err := r.db.Transaction(ctx)
 	if err != nil {
@@ -151,13 +155,15 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 		cmd := "UPDATE" + " " + rateUserSubscriptionTableName + " SET " +
 			rateUserSubscriptionConditionTypeFieldName + " = ?, " +
 			rateUserSubscriptionConditionValueFieldName + " = ?, " +
-			rateUserSubscriptionLatestNotifiedRateFieldName + " = ? " +
+			rateUserSubscriptionLatestNotifiedRateFieldName + " = ?, " +
+			rateUserSubscriptionUpdatedAtFieldName + " = ? " +
 			" WHERE " + rateUserSubscriptionUserTypeFieldName + " = ? AND " + rateUserSubscriptionUserIDFieldName + " = ? AND " + rateUserSubscriptionSourceNameFieldName + " = ?;"
 		_, err = tx.ExecContext(
 			ctx, cmd,
 			record.ConditionType,
 			record.ConditionValue,
 			record.LatestNotifiedRate,
+			record.UpdatedAt.Format(time.RFC3339),
 			record.UserType,
 			record.UserID,
 			record.SourceName,
@@ -171,8 +177,9 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 			rateUserSubscriptionConditionTypeFieldName + ", " +
 			rateUserSubscriptionConditionValueFieldName + ", " +
 			rateUserSubscriptionLatestNotifiedRateFieldName + ", " +
+			rateUserSubscriptionUpdatedAtFieldName + ", " +
 			rateUserSubscriptionCreatedAtFieldName +
-			") VALUES (?, ?, ?, ?, ?, ?, ?);"
+			") VALUES (?, ?, ?, ?, ?, ?, ?, ?);"
 		_, err = tx.ExecContext(
 			ctx, cmd,
 			record.UserType,
@@ -181,6 +188,7 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 			record.ConditionType,
 			record.ConditionValue,
 			record.LatestNotifiedRate,
+			record.UpdatedAt.Format(time.RFC3339),
 			record.CreatedAt.Format(time.RFC3339),
 		)
 	}
@@ -298,6 +306,7 @@ const (
 	rateUserSubscriptionConditionTypeFieldName      = "condition_type"
 	rateUserSubscriptionConditionValueFieldName     = "condition_value"
 	rateUserSubscriptionLatestNotifiedRateFieldName = "latest_notified_rate"
+	rateUserSubscriptionUpdatedAtFieldName          = "updated_at"
 	rateUserSubscriptionCreatedAtFieldName          = "created_at"
 
 	rateUserSubscriptionSqlSelect = "SELECT\n" +
@@ -307,6 +316,7 @@ const (
 		rateUserSubscriptionConditionTypeFieldName + ", " +
 		rateUserSubscriptionConditionValueFieldName + ", " +
 		rateUserSubscriptionLatestNotifiedRateFieldName + ", " +
+		rateUserSubscriptionUpdatedAtFieldName + ", " +
 		rateUserSubscriptionCreatedAtFieldName +
 		"\nFROM " + rateUserSubscriptionTableName
 )
@@ -354,7 +364,7 @@ func rateUserSubscriptionQueryContext(tx *sql.Tx, ctx context.Context, condition
 
 	for rows.Next() {
 		var item domain.RateUserSubscription
-		var createdAt string
+		var createdAt, updatedAt string
 
 		err = rows.Scan(
 			&item.UserType,
@@ -363,6 +373,7 @@ func rateUserSubscriptionQueryContext(tx *sql.Tx, ctx context.Context, condition
 			&item.ConditionType,
 			&item.ConditionValue,
 			&item.LatestNotifiedRate,
+			&updatedAt,
 			&createdAt,
 		)
 		if err != nil {
@@ -376,6 +387,12 @@ func rateUserSubscriptionQueryContext(tx *sql.Tx, ctx context.Context, condition
 			return
 		}
 
+		item.UpdatedAt, err = time.Parse(time.RFC3339, updatedAt)
+		if err != nil {
+			err = errors.Join(err, internal.NewTraceError())
+			return nil, err
+		}
+
 		items = append(items, item)
 	}
 
@@ -386,7 +403,7 @@ func rateUserSubscriptionQueryRowContext(tx *sql.Tx, ctx context.Context, condit
 	query := rateUserSubscriptionSqlSelect + "\n" + condition
 
 	var item domain.RateUserSubscription
-	var createdAt string
+	var createdAt, updatedAt string
 	err := tx.QueryRowContext(ctx, query, args...).Scan(
 		&item.UserType,
 		&item.UserID,
@@ -394,6 +411,7 @@ func rateUserSubscriptionQueryRowContext(tx *sql.Tx, ctx context.Context, condit
 		&item.ConditionType,
 		&item.ConditionValue,
 		&item.LatestNotifiedRate,
+		&updatedAt,
 		&createdAt,
 	)
 	if err != nil && errors.Is(err, sql.ErrNoRows) {
@@ -405,6 +423,12 @@ func rateUserSubscriptionQueryRowContext(tx *sql.Tx, ctx context.Context, condit
 	}
 
 	item.CreatedAt, err = time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+
+	item.UpdatedAt, err = time.Parse(time.RFC3339, updatedAt)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return nil, err

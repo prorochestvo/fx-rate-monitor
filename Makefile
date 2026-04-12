@@ -35,16 +35,27 @@ deploy_environment:
 claude_dev_test:
 	claude ./.claude/logs/task_20260329232102.s02.plan.md --allowedTools "Edit,Write" --system-prompt "$$(cat ./.claude/prompts/developer.md)" 2>&1 | tee -a ./.claude/logs/task_20260329232102.s03.implementation.md
 
-## claude_task:
-claude_task:
+## claude_implement:
+claude_implement:
 	$(eval TIME_NUM := $(shell date -u +%Y%m%d%H%M%S))
 	vi ./.claude/logs/task_$(TIME_NUM).design.md
 	echo "Implement this plan. step by step, following the order of tasks and phases. Do not skip any steps. Do not change the task descriptions or acceptance criteria. Do not add any new tasks. Focus on correctness and completeness for each task before moving to the next one. " | tee ./.claude/plans/task_$(TIME_NUM).md
 	claude ./.claude/logs/task_$(TIME_NUM).design.md --allowedTools "Read" --system-prompt "$$(cat ./.claude/prompts/architect.md)" 2>&1 | tee -a ./.claude/plans/task_$(TIME_NUM).md
 	claude ./.claude/plans/task_$(TIME_NUM).md --allowedTools "Edit,Write" --system-prompt "$$(cat ./.claude/prompts/developer.md)" 2>&1 | tee -a ./.claude/logs/task_$(TIME_NUM).implementation.md
 
-## claude_task:
-claude_evaluates_project:
+## claude_implement_plan:
+claude_implement_plan:
+	$(eval TIME_NUM := $(shell date -u +%Y%m%d%H%M%S))
+	vi ./.claude/logs/task_$(TIME_NUM).design.md
+	echo "Implement this plan. step by step, following the order of tasks and phases. Do not skip any steps. Do not change the task descriptions or acceptance criteria. Do not add any new tasks. Focus on correctness and completeness for each task before moving to the next one. " | tee ./.claude/plans/task_$(TIME_NUM).md
+	claude ./.claude/logs/task_$(TIME_NUM).design.md --allowedTools "Read" --system-prompt "$$(cat ./.claude/prompts/architect.md)" 2>&1 | tee -a ./.claude/plans/task_$(TIME_NUM).md
+
+## claude_implement_task:
+claude_implement_task:
+	claude ./.claude/plans/task_20260412054316.md --allowedTools "Edit,Write" --system-prompt "$$(cat ./.claude/prompts/developer.md)" 2>&1 | tee -a ./.claude/logs/task_$(TIME_NUM).implementation.md
+
+## claude_evaluate:
+claude_evaluate:
 	$(eval TIME_NUM := $(shell date -u +%Y%m%d%H%M%S))
 	claude "you need to evaluate the project. pros and cons." --allowedTools "Read" --system-prompt "$$(cat ./.claude/prompts/architect.md)" 2>&1 | tee -a ./.claude/logs/task_$(TIME_NUM).evaluation.md
 

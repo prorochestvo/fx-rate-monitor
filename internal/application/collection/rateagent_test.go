@@ -258,6 +258,123 @@ func TestRateAgent_notification(t *testing.T) {
 	})
 }
 
+func TestRateAgent_Run(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no sources — returns nil", func(t *testing.T) {
+		t.Parallel()
+
+		a := &RateAgent{
+			rateSourceRepository:           &mockRateSourceRepository{sources: nil},
+			executionHistoryRepository:     &mockExecutionHistoryRepository{},
+			rateValueRepository:            &mockRateValueRepository{},
+			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{},
+			rateUserEventRepository:        &mockRateUserEventRepository{},
+			rateExtractor:                  &mockRateExtractor{},
+			logger:                         io.Discard,
+		}
+
+		require.NoError(t, a.Run(t.Context()))
+	})
+
+	t.Run("source not due — extractor never called", func(t *testing.T) {
+		t.Parallel()
+
+		extractor := &mockRateExtractor{}
+		histRepo := &mockExecutionHistoryRepository{
+			records: []domain.ExecutionHistory{{
+				SourceName: "src1",
+				Success:    true,
+				Timestamp:  time.Now().UTC(),
+			}},
+		}
+		a := &RateAgent{
+			rateSourceRepository:           &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1h"}}},
+			executionHistoryRepository:     histRepo,
+			rateValueRepository:            &mockRateValueRepository{},
+			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{},
+			rateUserEventRepository:        &mockRateUserEventRepository{},
+			rateExtractor:                  extractor,
+			logger:                         io.Discard,
+		}
+
+		require.NoError(t, a.Run(t.Context()))
+		require.Equal(t, 0, extractor.calls)
+	})
+
+	t.Run("source due — execution and notification run", func(t *testing.T) {
+		t.Parallel()
+
+		histRepo := &mockExecutionHistoryRepository{records: nil}
+		eventRepo := &mockRateUserEventRepository{}
+		a := &RateAgent{
+			rateSourceRepository: &mockRateSourceRepository{
+				sources: []domain.RateSource{{Name: "src1", Interval: "1m", Title: "SRC"}},
+			},
+			executionHistoryRepository: histRepo,
+			rateValueRepository: &mockRateValueRepository{
+				values: []domain.RateValue{{Price: 100}},
+			},
+			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
+				subs: []domain.RateUserSubscription{{
+					UserType: domain.UserTypeTelegram,
+					UserID:   "999",
+				}},
+			},
+			rateUserEventRepository: eventRepo,
+			rateExtractor:           &mockRateExtractor{},
+			logger:                  io.Discard,
+		}
+
+		require.NoError(t, a.Run(t.Context()))
+		require.NotEmpty(t, histRepo.retained)
+		require.NotEmpty(t, eventRepo.retained)
+	})
+
+	t.Run("invalid interval — error returned", func(t *testing.T) {
+		t.Parallel()
+
+		a := &RateAgent{
+			rateSourceRepository: &mockRateSourceRepository{
+				sources: []domain.RateSource{{Name: "src1", Interval: "bad"}},
+			},
+			executionHistoryRepository:     &mockExecutionHistoryRepository{},
+			rateValueRepository:            &mockRateValueRepository{},
+			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{},
+			rateUserEventRepository:        &mockRateUserEventRepository{},
+			rateExtractor:                  &mockRateExtractor{},
+			logger:                         io.Discard,
+		}
+
+		require.Error(t, a.Run(t.Context()))
+	})
+
+	t.Run("extractor error and value-repo error both surfaced", func(t *testing.T) {
+		t.Parallel()
+
+		a := &RateAgent{
+			rateSourceRepository: &mockRateSourceRepository{
+				sources: []domain.RateSource{{Name: "src1", Interval: "1m"}},
+			},
+			executionHistoryRepository: &mockExecutionHistoryRepository{},
+			rateValueRepository:        &mockRateValueRepository{err: errors.New("db fail")},
+			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
+				subs: []domain.RateUserSubscription{{UserType: domain.UserTypeTelegram, UserID: "1"}},
+			},
+			rateUserEventRepository: &mockRateUserEventRepository{},
+			rateExtractor:           &mockRateExtractor{err: errors.New("fetch error")},
+			logger:                  io.Discard,
+		}
+
+		require.Error(t, a.Run(t.Context()))
+	})
+}
+
+func TestSatisfaction(t *testing.T) {
+	t.Parallel()
+	t.Fail()
+}
+
 func TestBuildAlertMessage(t *testing.T) {
 	t.Parallel()
 
@@ -370,118 +487,6 @@ func TestBuildAlertMessage(t *testing.T) {
 		require.NoError(t, err)
 		require.Greater(t, len(msgs), 1)
 		require.Equal(t, 2, len(msgs))
-	})
-}
-
-func TestRateAgent_Run(t *testing.T) {
-	t.Parallel()
-
-	t.Run("no sources — returns nil", func(t *testing.T) {
-		t.Parallel()
-
-		a := &RateAgent{
-			rateSourceRepository:           &mockRateSourceRepository{sources: nil},
-			executionHistoryRepository:     &mockExecutionHistoryRepository{},
-			rateValueRepository:            &mockRateValueRepository{},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{},
-			rateUserEventRepository:        &mockRateUserEventRepository{},
-			rateExtractor:                  &mockRateExtractor{},
-			logger:                         io.Discard,
-		}
-
-		require.NoError(t, a.Run(t.Context()))
-	})
-
-	t.Run("source not due — extractor never called", func(t *testing.T) {
-		t.Parallel()
-
-		extractor := &mockRateExtractor{}
-		histRepo := &mockExecutionHistoryRepository{
-			records: []domain.ExecutionHistory{{
-				SourceName: "src1",
-				Success:    true,
-				Timestamp:  time.Now().UTC(),
-			}},
-		}
-		a := &RateAgent{
-			rateSourceRepository:           &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1h"}}},
-			executionHistoryRepository:     histRepo,
-			rateValueRepository:            &mockRateValueRepository{},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{},
-			rateUserEventRepository:        &mockRateUserEventRepository{},
-			rateExtractor:                  extractor,
-			logger:                         io.Discard,
-		}
-
-		require.NoError(t, a.Run(t.Context()))
-		require.Equal(t, 0, extractor.calls)
-	})
-
-	t.Run("source due — execution and notification run", func(t *testing.T) {
-		t.Parallel()
-
-		histRepo := &mockExecutionHistoryRepository{records: nil}
-		eventRepo := &mockRateUserEventRepository{}
-		a := &RateAgent{
-			rateSourceRepository: &mockRateSourceRepository{
-				sources: []domain.RateSource{{Name: "src1", Interval: "1m", Title: "SRC"}},
-			},
-			executionHistoryRepository: histRepo,
-			rateValueRepository: &mockRateValueRepository{
-				values: []domain.RateValue{{Price: 100}},
-			},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
-				subs: []domain.RateUserSubscription{{
-					UserType: domain.UserTypeTelegram,
-					UserID:   "999",
-				}},
-			},
-			rateUserEventRepository: eventRepo,
-			rateExtractor:           &mockRateExtractor{},
-			logger:                  io.Discard,
-		}
-
-		require.NoError(t, a.Run(t.Context()))
-		require.NotEmpty(t, histRepo.retained)
-		require.NotEmpty(t, eventRepo.retained)
-	})
-
-	t.Run("invalid interval — error returned", func(t *testing.T) {
-		t.Parallel()
-
-		a := &RateAgent{
-			rateSourceRepository: &mockRateSourceRepository{
-				sources: []domain.RateSource{{Name: "src1", Interval: "bad"}},
-			},
-			executionHistoryRepository:     &mockExecutionHistoryRepository{},
-			rateValueRepository:            &mockRateValueRepository{},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{},
-			rateUserEventRepository:        &mockRateUserEventRepository{},
-			rateExtractor:                  &mockRateExtractor{},
-			logger:                         io.Discard,
-		}
-
-		require.Error(t, a.Run(t.Context()))
-	})
-
-	t.Run("extractor error and value-repo error both surfaced", func(t *testing.T) {
-		t.Parallel()
-
-		a := &RateAgent{
-			rateSourceRepository: &mockRateSourceRepository{
-				sources: []domain.RateSource{{Name: "src1", Interval: "1m"}},
-			},
-			executionHistoryRepository: &mockExecutionHistoryRepository{},
-			rateValueRepository:        &mockRateValueRepository{err: errors.New("db fail")},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
-				subs: []domain.RateUserSubscription{{UserType: domain.UserTypeTelegram, UserID: "1"}},
-			},
-			rateUserEventRepository: &mockRateUserEventRepository{},
-			rateExtractor:           &mockRateExtractor{err: errors.New("fetch error")},
-			logger:                  io.Discard,
-		}
-
-		require.Error(t, a.Run(t.Context()))
 	})
 }
 

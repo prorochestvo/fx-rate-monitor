@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -16,12 +15,14 @@ import (
 
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
+	"github.com/seilbekskindirov/monitor/internal/tools/threadsafe"
 )
 
 func NewRateExtractor(
 	rateValueRepository rateValueRepository,
 	proxyURL string,
 	timeout time.Duration,
+	logger io.Writer,
 ) (*RateExtractor, error) {
 	transport := &http.Transport{}
 
@@ -38,7 +39,7 @@ func NewRateExtractor(
 		Transport: transport,
 	}
 
-	extractor, err := NewRateExtractorWithHTTPClient(rateValueRepository, httpClient)
+	extractor, err := NewRateExtractorWithHTTPClient(rateValueRepository, httpClient, logger)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return nil, err
@@ -50,6 +51,7 @@ func NewRateExtractor(
 func NewRateExtractorWithHTTPClient(
 	rateValueRepository rateValueRepository,
 	httpClient *http.Client,
+	logger io.Writer,
 ) (*RateExtractor, error) {
 	if httpClient == nil {
 		err := errors.New("http client cannot be nil")
@@ -59,7 +61,9 @@ func NewRateExtractorWithHTTPClient(
 
 	p := &RateExtractor{
 		RateValueRepository: rateValueRepository,
+		cache:               threadsafe.NewCache(30 * time.Minute),
 		httpClient:          httpClient,
+		logger:              logger,
 	}
 
 	return p, nil
@@ -67,7 +71,9 @@ func NewRateExtractorWithHTTPClient(
 
 type RateExtractor struct {
 	RateValueRepository rateValueRepository
+	cache               *threadsafe.Cache
 	httpClient          *http.Client
+	logger              io.Writer
 }
 
 func (extractor *RateExtractor) Name() string {
@@ -146,6 +152,13 @@ func (extractor *RateExtractor) fetchHtmlPage(ctx context.Context, rawURL string
 	ctx, cancel := context.WithTimeout(ctx, extractor.httpClient.Timeout)
 	defer cancel()
 
+	cacheKey := fmt.Sprintf("GET:%s", rawURL)
+	if page, err := extractor.cache.Fetch(cacheKey); err == nil {
+		if b, ok := page.([]byte); ok && len(b) > 0 {
+			return b, nil
+		}
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		err = fmt.Errorf("create request: %w", err)
@@ -155,7 +168,7 @@ func (extractor *RateExtractor) fetchHtmlPage(ctx context.Context, rawURL string
 
 	req.Header.Set("User-Agent", "FXRateMonitor/1.0 (+https://github.com/seilbekskindirov/monitor)")
 
-	log.Printf("rate_extractor: fetching url %s\n", rawURL)
+	_, _ = fmt.Fprintf(extractor.logger, "rate_extractor: fetching url %s\n", rawURL)
 
 	resp, err := extractor.httpClient.Do(req)
 	if err != nil {
@@ -176,6 +189,12 @@ func (extractor *RateExtractor) fetchHtmlPage(ctx context.Context, rawURL string
 		err = fmt.Errorf("read response body: %w", err)
 		err = errors.Join(err, internal.NewTraceError())
 		return nil, err
+	}
+
+	if err = extractor.cache.Push(cacheKey, body); err != nil {
+		_, _ = extractor.cache.Pull(cacheKey) // ensure cache is clean if push failed
+		err = errors.Join(err, internal.NewTraceError())
+		_, _ = fmt.Fprintf(extractor.logger, "rate_extractor: could not push response payload to cache: %v", err)
 	}
 
 	return body, nil
