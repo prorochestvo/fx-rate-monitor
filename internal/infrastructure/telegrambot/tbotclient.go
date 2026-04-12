@@ -160,6 +160,30 @@ func (tbot *TelegramBotClient) EditMessageText(_ context.Context, chatID Telegra
 	return nil
 }
 
+// EditHTMLMessageWithKeyboard replaces the text and inline keyboard of an existing message.
+// "message is not modified" and "message to edit not found" errors are silently ignored
+// so callers do not need to handle them.
+func (tbot *TelegramBotClient) EditHTMLMessageWithKeyboard(
+	_ context.Context,
+	chatID TelegramChatID,
+	messageID int,
+	text string,
+	keyboard tgbotapi.InlineKeyboardMarkup,
+) error {
+	edit := tgbotapi.NewEditMessageText(int64(chatID), messageID, text)
+	edit.ParseMode = tgbotapi.ModeHTML
+	edit.ReplyMarkup = &keyboard
+	if _, err := tbot.bot.Send(edit); err != nil {
+		s := err.Error()
+		if strings.Contains(s, "message is not modified") ||
+			strings.Contains(s, "message to edit not found") {
+			return nil
+		}
+		return errors.Join(err, internal.NewTraceError())
+	}
+	return nil
+}
+
 // Listen starts long-polling and dispatches every incoming update to handler.
 // Blocks until ctx is cancelled — run it in a goroutine.
 func (tbot *TelegramBotClient) Listen(ctx context.Context, handler UpdateHandler) {

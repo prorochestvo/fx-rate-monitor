@@ -52,7 +52,7 @@ func (h *TelegramApi) handleMessage(ctx context.Context, msg *tgbotapi.Message) 
 	lower := strings.TrimSpace(strings.ToLower(msg.Text))
 
 	if lower == commandSubscriptions || lower == commandStart {
-		h.sendMainMenu(ctx, chatID)
+		h.sendMainMenu(ctx, chatID, 0)
 		return
 	}
 
@@ -85,19 +85,19 @@ func (h *TelegramApi) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 
 	switch {
 	case data == cbBack:
-		h.sendMainMenu(ctx, chatID)
+		h.sendMainMenu(ctx, chatID, msgID)
 
 	case data == cbShow:
 		h.handleShow(ctx, chatID, msgID)
 
 	case data == cbLatest:
-		h.handleLatestUpdates(ctx, chatID)
+		h.handleLatestUpdates(ctx, chatID, msgID)
 
 	case data == cbAdd:
-		h.handleAddSourceList(ctx, chatID)
+		h.handleAddSourceList(ctx, chatID, msgID)
 
 	case strings.HasPrefix(data, cbAddSrcPrefix):
-		h.routeAddFlow(ctx, chatID, strings.TrimPrefix(data, cbAddSrcPrefix))
+		h.routeAddFlow(ctx, chatID, msgID, strings.TrimPrefix(data, cbAddSrcPrefix))
 
 	case data == cbDelete:
 		h.handleDeleteList(ctx, chatID, msgID)
@@ -105,14 +105,14 @@ func (h *TelegramApi) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 	// sub:del:yes: must be checked before sub:del: — the latter is a prefix of the former
 	case strings.HasPrefix(data, "sub:del:yes:"):
 		sourceName, _ := url.QueryUnescape(strings.TrimPrefix(data, "sub:del:yes:"))
-		h.handleDeleteConfirm(ctx, chatID, sourceName)
+		h.handleDeleteConfirm(ctx, chatID, msgID, sourceName)
 
 	case strings.HasPrefix(data, "sub:del:"):
 		sourceName, _ := url.QueryUnescape(strings.TrimPrefix(data, "sub:del:"))
 		h.handleDeleteAsk(ctx, chatID, msgID, sourceName)
 
 	case data == cbDelNo:
-		h.sendMainMenu(ctx, chatID)
+		h.sendMainMenu(ctx, chatID, msgID)
 	}
 }
 
@@ -122,7 +122,7 @@ func (h *TelegramApi) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 //	1 segment  → source chosen
 //	2 segments → condition type chosen
 //	3 segments → value chosen → save
-func (h *TelegramApi) routeAddFlow(ctx context.Context, chatID int64, rest string) {
+func (h *TelegramApi) routeAddFlow(ctx context.Context, chatID int64, msgID int, rest string) {
 	// rest examples:
 	//   "Halyk%20Bank"
 	//   "Halyk%20Bank:delta"
@@ -135,7 +135,7 @@ func (h *TelegramApi) routeAddFlow(ctx context.Context, chatID int64, rest strin
 	switch len(parts) {
 	case 1:
 		// source selected → show condition types
-		h.handleAddSourceSelect(ctx, chatID, sourceName)
+		h.handleAddSourceSelect(ctx, chatID, msgID, sourceName)
 
 	case 2:
 		// condition type selected → show value buttons
@@ -143,7 +143,7 @@ func (h *TelegramApi) routeAddFlow(ctx context.Context, chatID int64, rest strin
 		if ct == "" {
 			return
 		}
-		h.handleAddValueSelect(ctx, chatID, sourceName, ct)
+		h.handleAddValueSelect(ctx, chatID, msgID, sourceName, ct)
 
 	case 3:
 		// value selected → save subscription
@@ -152,7 +152,7 @@ func (h *TelegramApi) routeAddFlow(ctx context.Context, chatID int64, rest strin
 		if ct == "" || value == "" {
 			return
 		}
-		h.saveSubscription(ctx, chatID, &domain.RateUserSubscription{
+		h.saveSubscription(ctx, chatID, msgID, &domain.RateUserSubscription{
 			UserType:       domain.UserTypeTelegram,
 			UserID:         strconv.FormatInt(chatID, 10),
 			SourceName:     sourceName,
@@ -162,9 +162,9 @@ func (h *TelegramApi) routeAddFlow(ctx context.Context, chatID int64, rest strin
 	}
 }
 
-// sendMainMenu sends the top-level four-button inline keyboard.
-// Called on /start, /subscriptions, or « Back from any sub-screen.
-func (h *TelegramApi) sendMainMenu(ctx context.Context, chatID int64) {
+// sendMainMenu shows the top-level keyboard. When msgID > 0 the existing message is edited
+// in place (callback flow); when 0 a new message is sent (text-command flow).
+func (h *TelegramApi) sendMainMenu(ctx context.Context, chatID int64, msgID int) {
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("📋 My subscriptions", cbShow),
@@ -177,16 +177,12 @@ func (h *TelegramApi) sendMainMenu(ctx context.Context, chatID int64) {
 			tgbotapi.NewInlineKeyboardButtonData("📈 Latest updates", cbLatest),
 		),
 	)
-	_ = h.telegramClient.SendHTMLMessageWithKeyboard(
-		ctx,
-		integration.TelegramChatID(chatID),
-		"<b>Subscription Management</b>\nChoose an action:",
-		kb,
-	)
+	const text = "<b>Subscription Management</b>\nChoose an action:"
+	h.sendOrEditWithKeyboard(ctx, chatID, msgID, text, kb)
 }
 
 // handleShow lists the caller's active subscriptions.
-func (h *TelegramApi) handleShow(ctx context.Context, chatID int64, _ int) {
+func (h *TelegramApi) handleShow(ctx context.Context, chatID int64, msgID int) {
 	subs, err := h.subRepo.ObtainRateUserSubscriptionsByUserID(
 		ctx, domain.UserTypeTelegram, strconv.FormatInt(chatID, 10),
 	)
@@ -196,9 +192,7 @@ func (h *TelegramApi) handleShow(ctx context.Context, chatID int64, _ int) {
 		return
 	}
 	if len(subs) == 0 {
-		_ = h.telegramClient.SendHTMLMessageWithKeyboard(ctx,
-			integration.TelegramChatID(chatID),
-			"You have no active subscriptions.", backKeyboard())
+		h.sendOrEditWithKeyboard(ctx, chatID, msgID, "You have no active subscriptions.", backKeyboard())
 		return
 	}
 	var sb strings.Builder
@@ -207,14 +201,13 @@ func (h *TelegramApi) handleShow(ctx context.Context, chatID int64, _ int) {
 		sb.WriteString(fmt.Sprintf(" • <b>%s</b> — %s\n",
 			s.SourceName, subscriptionConditionLabel(s)))
 	}
-	_ = h.telegramClient.SendHTMLMessageWithKeyboard(ctx,
-		integration.TelegramChatID(chatID), sb.String(), backKeyboard())
+	h.sendOrEditWithKeyboard(ctx, chatID, msgID, sb.String(), backKeyboard())
 }
 
 // handleLatestUpdates shows the last known rate for each of the caller's subscriptions.
 // It displays the rate at the time of the last notification (LatestNotifiedRate + UpdatedAt),
 // not the live market rate — this is intentional for MVP.
-func (h *TelegramApi) handleLatestUpdates(ctx context.Context, chatID int64) {
+func (h *TelegramApi) handleLatestUpdates(ctx context.Context, chatID int64, msgID int) {
 	subs, err := h.subRepo.ObtainRateUserSubscriptionsByUserID(
 		ctx, domain.UserTypeTelegram, strconv.FormatInt(chatID, 10),
 	)
@@ -224,9 +217,7 @@ func (h *TelegramApi) handleLatestUpdates(ctx context.Context, chatID int64) {
 		return
 	}
 	if len(subs) == 0 {
-		_ = h.telegramClient.SendHTMLMessageWithKeyboard(ctx,
-			integration.TelegramChatID(chatID),
-			"You have no subscriptions yet.", backKeyboard())
+		h.sendOrEditWithKeyboard(ctx, chatID, msgID, "You have no subscriptions yet.", backKeyboard())
 		return
 	}
 	var sb strings.Builder
@@ -242,8 +233,7 @@ func (h *TelegramApi) handleLatestUpdates(ctx context.Context, chatID int64) {
 			))
 		}
 	}
-	_ = h.telegramClient.SendHTMLMessageWithKeyboard(ctx,
-		integration.TelegramChatID(chatID), sb.String(), backKeyboard())
+	h.sendOrEditWithKeyboard(ctx, chatID, msgID, sb.String(), backKeyboard())
 }
 
 // handleAddSourceList fetches all rate sources and presents them as an inline keyboard.
@@ -252,7 +242,7 @@ func (h *TelegramApi) handleLatestUpdates(ctx context.Context, chatID int64) {
 // NOTE: Telegram enforces a hard 64-byte limit on callback_data. Source names longer than
 // ~30 characters may exceed this limit after URL-encoding. Buttons with overlong callback
 // data are skipped and a warning is printed to stderr.
-func (h *TelegramApi) handleAddSourceList(ctx context.Context, chatID int64) {
+func (h *TelegramApi) handleAddSourceList(ctx context.Context, chatID int64, msgID int) {
 	sources, err := h.sourceRepo.ObtainAllRateSources(ctx)
 	if err != nil {
 		_ = h.telegramClient.SendHTMLMessage(ctx,
@@ -260,9 +250,7 @@ func (h *TelegramApi) handleAddSourceList(ctx context.Context, chatID int64) {
 		return
 	}
 	if len(sources) == 0 {
-		_ = h.telegramClient.SendHTMLMessageWithKeyboard(ctx,
-			integration.TelegramChatID(chatID),
-			"No rate sources are configured yet.", backKeyboard())
+		h.sendOrEditWithKeyboard(ctx, chatID, msgID, "No rate sources are configured yet.", backKeyboard())
 		return
 	}
 	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(sources)+1)
@@ -281,15 +269,14 @@ func (h *TelegramApi) handleAddSourceList(ctx context.Context, chatID int64) {
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("« Back", cbBack),
 	))
-	_ = h.telegramClient.SendHTMLMessageWithKeyboard(ctx,
-		integration.TelegramChatID(chatID),
+	h.sendOrEditWithKeyboard(ctx, chatID, msgID,
 		"Choose a <b>rate source</b> to subscribe to:",
 		tgbotapi.NewInlineKeyboardMarkup(rows...))
 }
 
 // handleAddSourceSelect shows the condition type buttons after a source is chosen.
 // Callback data format: sub:add:<urlencoded_source>:delta or :interval
-func (h *TelegramApi) handleAddSourceSelect(ctx context.Context, chatID int64, sourceName string) {
+func (h *TelegramApi) handleAddSourceSelect(ctx context.Context, chatID int64, msgID int, sourceName string) {
 	encoded := url.QueryEscape(sourceName)
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
@@ -312,10 +299,8 @@ func (h *TelegramApi) handleAddSourceSelect(ctx context.Context, chatID int64, s
 			tgbotapi.NewInlineKeyboardButtonData("« Back", cbBack),
 		),
 	)
-	_ = h.telegramClient.SendHTMLMessageWithKeyboard(ctx,
-		integration.TelegramChatID(chatID),
-		fmt.Sprintf("Choose notification condition for <b>%s</b>:", sourceName),
-		kb)
+	h.sendOrEditWithKeyboard(ctx, chatID, msgID,
+		fmt.Sprintf("Choose notification condition for <b>%s</b>:", sourceName), kb)
 }
 
 // handleAddValueSelect presents preset value buttons for the chosen condition type.
@@ -323,6 +308,7 @@ func (h *TelegramApi) handleAddSourceSelect(ctx context.Context, chatID int64, s
 func (h *TelegramApi) handleAddValueSelect(
 	ctx context.Context,
 	chatID int64,
+	msgID int,
 	sourceName string,
 	ct domain.SubscriptionConditionType,
 ) {
@@ -382,10 +368,7 @@ func (h *TelegramApi) handleAddValueSelect(
 		tgbotapi.NewInlineKeyboardButtonData("« Back", cbBack),
 	))
 
-	_ = h.telegramClient.SendHTMLMessageWithKeyboard(ctx,
-		integration.TelegramChatID(chatID),
-		prompt,
-		tgbotapi.NewInlineKeyboardMarkup(rows...))
+	h.sendOrEditWithKeyboard(ctx, chatID, msgID, prompt, tgbotapi.NewInlineKeyboardMarkup(rows...))
 }
 
 // saveSubscription persists the subscription, notifies the user, and returns to the main menu.
@@ -393,31 +376,30 @@ func (h *TelegramApi) handleAddValueSelect(
 func (h *TelegramApi) saveSubscription(
 	ctx context.Context,
 	chatID int64,
+	msgID int,
 	sub *domain.RateUserSubscription,
 ) {
 	if err := h.subRepo.RetainRateUserSubscription(ctx, sub); err != nil {
 		_ = h.telegramClient.SendHTMLMessage(ctx,
 			integration.TelegramChatID(chatID), "⚠️ Failed to save subscription.")
-		h.sendMainMenu(ctx, chatID)
+		h.sendMainMenu(ctx, chatID, msgID)
 		return
 	}
 	_ = h.telegramClient.SendHTMLMessage(ctx,
 		integration.TelegramChatID(chatID),
 		fmt.Sprintf("✅ Subscribed to <b>%s</b>.", sub.SourceName))
-	h.sendMainMenu(ctx, chatID)
+	h.sendMainMenu(ctx, chatID, msgID)
 }
 
 // handleDeleteList fetches the caller's subscriptions and shows each as a delete button.
 // Callback data format: sub:del:<urlencoded_source_name>
 // No state is stored — the source name travels in the callback data.
-func (h *TelegramApi) handleDeleteList(ctx context.Context, chatID int64, _ int) {
+func (h *TelegramApi) handleDeleteList(ctx context.Context, chatID int64, msgID int) {
 	subs, err := h.subRepo.ObtainRateUserSubscriptionsByUserID(
 		ctx, domain.UserTypeTelegram, strconv.FormatInt(chatID, 10),
 	)
 	if err != nil || len(subs) == 0 {
-		_ = h.telegramClient.SendHTMLMessageWithKeyboard(ctx,
-			integration.TelegramChatID(chatID),
-			"You have no subscriptions to delete.", backKeyboard())
+		h.sendOrEditWithKeyboard(ctx, chatID, msgID, "You have no subscriptions to delete.", backKeyboard())
 		return
 	}
 	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(subs)+1)
@@ -431,8 +413,7 @@ func (h *TelegramApi) handleDeleteList(ctx context.Context, chatID int64, _ int)
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("« Back", cbBack),
 	))
-	_ = h.telegramClient.SendHTMLMessageWithKeyboard(ctx,
-		integration.TelegramChatID(chatID),
+	h.sendOrEditWithKeyboard(ctx, chatID, msgID,
 		"Select a subscription to <b>delete</b>:",
 		tgbotapi.NewInlineKeyboardMarkup(rows...))
 }
@@ -440,7 +421,7 @@ func (h *TelegramApi) handleDeleteList(ctx context.Context, chatID int64, _ int)
 // handleDeleteAsk asks for confirmation before deletion.
 // sourceName is already URL-decoded by the caller (handleCallback) — re-encode it
 // when building the "yes" button callback data.
-func (h *TelegramApi) handleDeleteAsk(ctx context.Context, chatID int64, _ int, sourceName string) {
+func (h *TelegramApi) handleDeleteAsk(ctx context.Context, chatID int64, msgID int, sourceName string) {
 	kb := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("✅ Yes, delete",
@@ -448,19 +429,42 @@ func (h *TelegramApi) handleDeleteAsk(ctx context.Context, chatID int64, _ int, 
 			tgbotapi.NewInlineKeyboardButtonData("❌ Cancel", cbDelNo),
 		),
 	)
-	_ = h.telegramClient.SendHTMLMessageWithKeyboard(ctx,
-		integration.TelegramChatID(chatID),
+	h.sendOrEditWithKeyboard(ctx, chatID, msgID,
 		fmt.Sprintf("Delete subscription to <b>%s</b>?", sourceName), kb)
 }
 
-// handleDeleteConfirm deletes the subscription, notifies the user, and returns to the main menu.
-func (h *TelegramApi) handleDeleteConfirm(ctx context.Context, chatID int64, sourceName string) {
-	sub := &domain.RateUserSubscription{
-		UserType:   domain.UserTypeTelegram,
-		UserID:     strconv.FormatInt(chatID, 10),
-		SourceName: sourceName,
+// handleDeleteConfirm looks up the subscription by source name, deletes it by its real ID,
+// notifies the user, and returns to the main menu.
+//
+// Fix: previously this function passed an empty ID to RemoveRateUserSubscription, making
+// every delete a silent no-op (DELETE WHERE id = ” matches nothing). The fix fetches the
+// full subscription list first, finds the matching record, and passes its real ID.
+func (h *TelegramApi) handleDeleteConfirm(ctx context.Context, chatID int64, msgID int, sourceName string) {
+	userID := strconv.FormatInt(chatID, 10)
+
+	subs, err := h.subRepo.ObtainRateUserSubscriptionsByUserID(ctx, domain.UserTypeTelegram, userID)
+	if err != nil {
+		_ = h.telegramClient.SendHTMLMessage(ctx,
+			integration.TelegramChatID(chatID), "⚠️ Failed to delete subscription.")
+		h.sendMainMenu(ctx, chatID, msgID)
+		return
 	}
-	if err := h.subRepo.RemoveRateUserSubscription(ctx, sub); err != nil {
+
+	var target *domain.RateUserSubscription
+	for i := range subs {
+		if subs[i].SourceName == sourceName {
+			target = &subs[i]
+			break
+		}
+	}
+	if target == nil {
+		_ = h.telegramClient.SendHTMLMessage(ctx,
+			integration.TelegramChatID(chatID), "⚠️ Subscription not found.")
+		h.sendMainMenu(ctx, chatID, msgID)
+		return
+	}
+
+	if err := h.subRepo.RemoveRateUserSubscription(ctx, target); err != nil {
 		_ = h.telegramClient.SendHTMLMessage(ctx,
 			integration.TelegramChatID(chatID), "⚠️ Failed to delete subscription.")
 	} else {
@@ -468,7 +472,26 @@ func (h *TelegramApi) handleDeleteConfirm(ctx context.Context, chatID int64, sou
 			integration.TelegramChatID(chatID),
 			fmt.Sprintf("🗑 Subscription to <b>%s</b> deleted.", sourceName))
 	}
-	h.sendMainMenu(ctx, chatID)
+	h.sendMainMenu(ctx, chatID, msgID)
+}
+
+// sendOrEditWithKeyboard sends a new message with keyboard when msgID is zero (text-command
+// flow) or edits the existing message in place when msgID > 0 (callback flow). This keeps
+// the chat clean by avoiding new chat bubbles on every inline button press.
+func (h *TelegramApi) sendOrEditWithKeyboard(
+	ctx context.Context,
+	chatID int64,
+	msgID int,
+	text string,
+	kb tgbotapi.InlineKeyboardMarkup,
+) {
+	if msgID > 0 {
+		_ = h.telegramClient.EditHTMLMessageWithKeyboard(
+			ctx, integration.TelegramChatID(chatID), msgID, text, kb)
+		return
+	}
+	_ = h.telegramClient.SendHTMLMessageWithKeyboard(
+		ctx, integration.TelegramChatID(chatID), text, kb)
 }
 
 const (
@@ -495,6 +518,7 @@ type telegramClient interface {
 	SendMarkdownMessage(context.Context, integration.TelegramChatID, string) error
 	SendHTMLMessage(context.Context, integration.TelegramChatID, string) error
 	SendHTMLMessageWithKeyboard(context.Context, integration.TelegramChatID, string, tgbotapi.InlineKeyboardMarkup) error
+	EditHTMLMessageWithKeyboard(context.Context, integration.TelegramChatID, int, string, tgbotapi.InlineKeyboardMarkup) error
 	AnswerCallbackQuery(context.Context, string, string) error
 }
 
