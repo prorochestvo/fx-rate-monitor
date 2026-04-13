@@ -93,10 +93,28 @@ func (extractor *RateExtractor) Run(ctx context.Context, source *domain.RateSour
 
 	for i, rule := range source.Rules {
 		switch rule.Method {
+		case domain.MethodParseFloat:
+			var f float64
+			p := bytes.ReplaceAll(payload, []byte(" "), []byte(""))
+			p = bytes.ReplaceAll(p, []byte(","), []byte("."))
+			f, err = strconv.ParseFloat(string(p), 10)
+			if err != nil {
+				err = fmt.Errorf("could not parse rate value %s: %s", string(payload), err.Error())
+				err = errors.Join(err, internal.NewTraceError())
+				return err
+			}
+			payload = []byte(fmt.Sprintf("%.3f", f))
 		case domain.MethodRegex:
 			payload, err = extractor.fetchRegexPage(ctx, rule.Pattern, payload)
 			if err != nil {
 				err = errors.Join(err, fmt.Errorf("rule %d: apply regex pattern %q: %w", i, rule.Pattern, err))
+				err = errors.Join(err, internal.NewTraceError())
+				return err
+			}
+		case domain.MethodJSONPath:
+			payload, err = extractor.extractJSONPath(rule.Pattern, payload)
+			if err != nil {
+				err = errors.Join(err, fmt.Errorf("rule %d: apply json_path %q: %w", i, rule.Pattern, err))
 				err = errors.Join(err, internal.NewTraceError())
 				return err
 			}

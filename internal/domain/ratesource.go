@@ -26,6 +26,8 @@ type RateSourceOptions struct {
 type Method string
 
 const (
+	MethodParseFloat  Method = "parse_float"
 	MethodRegex       Method = "regex"
+	MethodJSONPath    Method = "json"
 	MethodStoreToRate Method = "store_as_rate"
 )

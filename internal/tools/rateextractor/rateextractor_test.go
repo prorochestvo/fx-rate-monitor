@@ -330,6 +330,132 @@ func TestRateExtractor_Run(t *testing.T) {
 
 		require.Error(t, ext.Run(t.Context(), source))
 	})
+	t.Run("json_path happy path", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = fmt.Fprint(w, `{"data":{"rate":450.75}}`)
+		}))
+		defer srv.Close()
+
+		rateRepo := &mockRateValueRepository{}
+
+		source := &domain.RateSource{
+			Name:          "json_src",
+			URL:           srv.URL,
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			Rules: []domain.RateSourceRule{
+				{Method: domain.MethodJSONPath, Pattern: "data.rate"},
+			},
+		}
+
+		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second}, logger)
+		require.NoError(t, err)
+
+		require.NoError(t, ext.Run(t.Context(), source))
+		require.Len(t, rateRepo.retained, 1)
+		require.InDelta(t, 450.75, rateRepo.retained[0].Price, 0.001)
+	})
+	t.Run("json_path array result", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = fmt.Fprint(w, `{"rates":[{"value":1.23}]}`)
+		}))
+		defer srv.Close()
+
+		rateRepo := &mockRateValueRepository{}
+
+		source := &domain.RateSource{
+			Name: "json_arr_src",
+			URL:  srv.URL,
+			Rules: []domain.RateSourceRule{
+				{Method: domain.MethodJSONPath, Pattern: "rates[0].value"},
+			},
+		}
+
+		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second}, logger)
+		require.NoError(t, err)
+
+		require.NoError(t, ext.Run(t.Context(), source))
+		require.Len(t, rateRepo.retained, 1)
+		require.InDelta(t, 1.23, rateRepo.retained[0].Price, 0.001)
+	})
+	t.Run("json_path key not found", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = fmt.Fprint(w, `{"other":1}`)
+		}))
+		defer srv.Close()
+
+		rateRepo := &mockRateValueRepository{}
+
+		source := &domain.RateSource{
+			Name: "json_notfound_src",
+			URL:  srv.URL,
+			Rules: []domain.RateSourceRule{
+				{Method: domain.MethodJSONPath, Pattern: "rate"},
+			},
+		}
+
+		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second}, logger)
+		require.NoError(t, err)
+
+		require.Error(t, ext.Run(t.Context(), source))
+		require.Empty(t, rateRepo.retained)
+	})
+	t.Run("json_path invalid JSON response", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = fmt.Fprint(w, `not-json`)
+		}))
+		defer srv.Close()
+
+		rateRepo := &mockRateValueRepository{}
+
+		source := &domain.RateSource{
+			Name: "json_badjson_src",
+			URL:  srv.URL,
+			Rules: []domain.RateSourceRule{
+				{Method: domain.MethodJSONPath, Pattern: "rate"},
+			},
+		}
+
+		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second}, logger)
+		require.NoError(t, err)
+
+		require.Error(t, ext.Run(t.Context(), source))
+		require.Empty(t, rateRepo.retained)
+	})
+	t.Run("json_path combined with parse_float", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = fmt.Fprint(w, `{"r":"1 234,56"}`)
+		}))
+		defer srv.Close()
+
+		rateRepo := &mockRateValueRepository{}
+
+		source := &domain.RateSource{
+			Name: "json_combined_src",
+			URL:  srv.URL,
+			Rules: []domain.RateSourceRule{
+				{Method: domain.MethodJSONPath, Pattern: "r"},
+				{Method: domain.MethodParseFloat},
+			},
+		}
+
+		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second}, logger)
+		require.NoError(t, err)
+
+		require.NoError(t, ext.Run(t.Context(), source))
+		require.Len(t, rateRepo.retained, 1)
+		require.InDelta(t, 1234.56, rateRepo.retained[0].Price, 0.001)
+	})
 	t.Run("retain rate value fails", func(t *testing.T) {
 		t.Parallel()
 
