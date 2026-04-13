@@ -77,12 +77,41 @@ func TestRateUserSubscription_IntervalDuration(t *testing.T) {
 func TestRateUserSubscription_IsDeltaSatisfied(t *testing.T) {
 	t.Parallel()
 
-	t.Run("delta zero always passes", func(t *testing.T) {
+	t.Run("first run LatestNotifiedRate zero always fires", func(t *testing.T) {
 		t.Parallel()
-		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "5"}
+		// Regression: github.com/seilbekskindirov/monitor — notifications sent every tick
+		rus := &RateUserSubscription{
+			ConditionType:      ConditionTypeDelta,
+			ConditionValue:     "5",
+			LatestNotifiedRate: 0, // never notified
+		}
 		ok, err := rus.IsDeltaSatisfied(0)
 		require.NoError(t, err)
 		require.True(t, ok)
+	})
+	t.Run("first run LatestNotifiedRate negative always fires", func(t *testing.T) {
+		t.Parallel()
+		rus := &RateUserSubscription{
+			ConditionType:      ConditionTypeDelta,
+			ConditionValue:     "5",
+			LatestNotifiedRate: -1,
+		}
+		ok, err := rus.IsDeltaSatisfied(0)
+		require.NoError(t, err)
+		require.True(t, ok)
+	})
+	t.Run("rate unchanged after first notification does not fire", func(t *testing.T) {
+		t.Parallel()
+		// Regression: github.com/seilbekskindirov/monitor — notifications sent every tick
+		// delta == 0 but LatestNotifiedRate > 0 means rate has not changed → must NOT fire
+		rus := &RateUserSubscription{
+			ConditionType:      ConditionTypeDelta,
+			ConditionValue:     "5",
+			LatestNotifiedRate: 470.0,
+		}
+		ok, err := rus.IsDeltaSatisfied(0)
+		require.NoError(t, err)
+		require.False(t, ok)
 	})
 	t.Run("delta above threshold", func(t *testing.T) {
 		t.Parallel()
@@ -100,14 +129,14 @@ func TestRateUserSubscription_IsDeltaSatisfied(t *testing.T) {
 	})
 	t.Run("delta below threshold", func(t *testing.T) {
 		t.Parallel()
-		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "5"}
+		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "5", LatestNotifiedRate: 100}
 		ok, err := rus.IsDeltaSatisfied(3)
 		require.NoError(t, err)
 		require.False(t, ok)
 	})
 	t.Run("negative delta above threshold", func(t *testing.T) {
 		t.Parallel()
-		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "5"}
+		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "5", LatestNotifiedRate: 100}
 		ok, err := rus.IsDeltaSatisfied(-6)
 		require.NoError(t, err)
 		require.True(t, ok)
@@ -121,7 +150,7 @@ func TestRateUserSubscription_IsDeltaSatisfied(t *testing.T) {
 	})
 	t.Run("non-parseable ConditionValue propagates DeltaThreshold error", func(t *testing.T) {
 		t.Parallel()
-		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "not-a-number"}
+		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "not-a-number", LatestNotifiedRate: 100}
 		ok, err := rus.IsDeltaSatisfied(10)
 		require.Error(t, err)
 		require.False(t, ok)
@@ -319,24 +348,39 @@ func TestRateUserSubscription_IsDue(t *testing.T) {
 	})
 	t.Run("delta above threshold", func(t *testing.T) {
 		t.Parallel()
-		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "5"}
+		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "5", LatestNotifiedRate: 100}
 		ok, err := rus.IsDue(now, 10)
 		require.NoError(t, err)
 		require.True(t, ok)
 	})
 	t.Run("delta below threshold", func(t *testing.T) {
 		t.Parallel()
-		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "5"}
+		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "5", LatestNotifiedRate: 100}
 		ok, err := rus.IsDue(now, 3)
 		require.NoError(t, err)
 		require.False(t, ok)
 	})
-	t.Run("delta zero always passes", func(t *testing.T) {
+	t.Run("delta zero first run fires", func(t *testing.T) {
 		t.Parallel()
-		rus := &RateUserSubscription{ConditionType: ConditionTypeDelta, ConditionValue: "5"}
+		rus := &RateUserSubscription{
+			ConditionType:      ConditionTypeDelta,
+			ConditionValue:     "5",
+			LatestNotifiedRate: 0,
+		}
 		ok, err := rus.IsDue(now, 0)
 		require.NoError(t, err)
 		require.True(t, ok)
+	})
+	t.Run("delta zero rate unchanged after first notification does not fire", func(t *testing.T) {
+		t.Parallel()
+		rus := &RateUserSubscription{
+			ConditionType:      ConditionTypeDelta,
+			ConditionValue:     "5",
+			LatestNotifiedRate: 470.0,
+		}
+		ok, err := rus.IsDue(now, 0)
+		require.NoError(t, err)
+		require.False(t, ok)
 	})
 	t.Run("interval never notified", func(t *testing.T) {
 		t.Parallel()

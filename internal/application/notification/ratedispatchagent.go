@@ -13,12 +13,12 @@ import (
 	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
 )
 
-func NewRateAgent(
+func NewRateDispatchAgent(
 	cltTelegram telegramClient,
 	rRateUserEvent rateUserEventRepository,
-) (*RateAgent, error) {
+) (*RateDispatchAgent, error) {
 
-	a := &RateAgent{
+	a := &RateDispatchAgent{
 		rateUserEventRepository: rRateUserEvent,
 		telegramClient:          cltTelegram,
 		ttl:                     24 * time.Hour,
@@ -27,13 +27,13 @@ func NewRateAgent(
 	return a, nil
 }
 
-type RateAgent struct {
+type RateDispatchAgent struct {
 	telegramClient          telegramClient
 	rateUserEventRepository rateUserEventRepository
 	ttl                     time.Duration
 }
 
-func (a *RateAgent) Run(ctx context.Context) error {
+func (a *RateDispatchAgent) Run(ctx context.Context) error {
 	events, err := a.rateUserEventRepository.ObtainUnprocessedRateUserEvents(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
@@ -80,7 +80,7 @@ func (a *RateAgent) Run(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (a *RateAgent) runUserTypeTelegram(ctx context.Context, event *domain.RateUserEvent) error {
+func (a *RateDispatchAgent) runUserTypeTelegram(ctx context.Context, event *domain.RateUserEvent) error {
 	if event == nil {
 		err := errors.New("notification record is nil")
 		err = errors.Join(err, internal.NewTraceError())
@@ -107,7 +107,7 @@ func (a *RateAgent) runUserTypeTelegram(ctx context.Context, event *domain.RateU
 }
 
 // Vacuum removes all non-pending records older than 180 days.
-func (a *RateAgent) Vacuum(ctx context.Context) error {
+func (a *RateDispatchAgent) Vacuum(ctx context.Context) error {
 	return a.rateUserEventRepository.RemoveRateUserEventOlderThan(ctx, 180*24*time.Hour)
 }
 

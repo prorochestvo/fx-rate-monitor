@@ -14,19 +14,19 @@ import (
 
 var _ rateUserEventRepository = &repository.RateUserEventRepository{}
 
-func TestNewRateAgent(t *testing.T) {
+func TestNewRateDispatchAgent(t *testing.T) {
 	t.Parallel()
 
 	t.Run("success", func(t *testing.T) {
 		t.Parallel()
 
-		agent, err := NewRateAgent(&mockTelegramClient{}, &mockRateUserEventRepository{})
+		agent, err := NewRateDispatchAgent(&mockTelegramClient{}, &mockRateUserEventRepository{})
 		require.NoError(t, err)
 		require.NotNil(t, agent)
 	})
 }
 
-func TestRateAgent_Run(t *testing.T) {
+func TestRateDispatchAgent_Run(t *testing.T) {
 	t.Parallel()
 
 	t.Run("pending telegram event is sent and marked sent", func(t *testing.T) {
@@ -45,7 +45,7 @@ func TestRateAgent_Run(t *testing.T) {
 		}
 		tg := &mockTelegramClient{}
 
-		agent, err := NewRateAgent(tg, repo)
+		agent, err := NewRateDispatchAgent(tg, repo)
 		require.NoError(t, err)
 
 		require.NoError(t, agent.Run(t.Context()))
@@ -70,7 +70,7 @@ func TestRateAgent_Run(t *testing.T) {
 		}
 		tg := &mockTelegramClient{err: errors.New("send failed")}
 
-		agent, err := NewRateAgent(tg, repo)
+		agent, err := NewRateDispatchAgent(tg, repo)
 		require.NoError(t, err)
 
 		_ = agent.Run(t.Context())
@@ -95,7 +95,7 @@ func TestRateAgent_Run(t *testing.T) {
 		}
 		tg := &mockTelegramClient{}
 
-		agent, err := NewRateAgent(tg, repo)
+		agent, err := NewRateDispatchAgent(tg, repo)
 		require.NoError(t, err)
 
 		require.NoError(t, agent.Run(t.Context()))
@@ -119,7 +119,7 @@ func TestRateAgent_Run(t *testing.T) {
 			},
 		}
 
-		agent, err := NewRateAgent(&mockTelegramClient{}, repo)
+		agent, err := NewRateDispatchAgent(&mockTelegramClient{}, repo)
 		require.NoError(t, err)
 
 		err = agent.Run(t.Context())
@@ -130,7 +130,7 @@ func TestRateAgent_Run(t *testing.T) {
 		t.Parallel()
 
 		repo := &mockRateUserEventRepository{events: []domain.RateUserEvent{}}
-		agent, err := NewRateAgent(&mockTelegramClient{}, repo)
+		agent, err := NewRateDispatchAgent(&mockTelegramClient{}, repo)
 		require.NoError(t, err)
 
 		require.NoError(t, agent.Run(t.Context()))
@@ -139,21 +139,21 @@ func TestRateAgent_Run(t *testing.T) {
 		t.Parallel()
 
 		repo := &mockRateUserEventRepository{obtainErr: errors.New("db down")}
-		agent, err := NewRateAgent(&mockTelegramClient{}, repo)
+		agent, err := NewRateDispatchAgent(&mockTelegramClient{}, repo)
 		require.NoError(t, err)
 
 		require.Error(t, agent.Run(t.Context()))
 	})
 }
 
-func TestRateAgent_runUserTypeTelegram(t *testing.T) {
+func TestRateDispatchAgent_runUserTypeTelegram(t *testing.T) {
 	t.Parallel()
 
 	t.Run("valid chat ID sends message", func(t *testing.T) {
 		t.Parallel()
 
 		tg := &mockTelegramClient{}
-		agent, err := NewRateAgent(tg, &mockRateUserEventRepository{})
+		agent, err := NewRateDispatchAgent(tg, &mockRateUserEventRepository{})
 		require.NoError(t, err)
 
 		event := &domain.RateUserEvent{UserID: "123456", Message: "hi"}
@@ -164,7 +164,7 @@ func TestRateAgent_runUserTypeTelegram(t *testing.T) {
 	t.Run("non-numeric UserID returns error", func(t *testing.T) {
 		t.Parallel()
 
-		agent, err := NewRateAgent(&mockTelegramClient{}, &mockRateUserEventRepository{})
+		agent, err := NewRateDispatchAgent(&mockTelegramClient{}, &mockRateUserEventRepository{})
 		require.NoError(t, err)
 
 		event := &domain.RateUserEvent{UserID: "abc", Message: "hi"}
@@ -174,7 +174,7 @@ func TestRateAgent_runUserTypeTelegram(t *testing.T) {
 	t.Run("zero UserID returns error", func(t *testing.T) {
 		t.Parallel()
 
-		agent, err := NewRateAgent(&mockTelegramClient{}, &mockRateUserEventRepository{})
+		agent, err := NewRateDispatchAgent(&mockTelegramClient{}, &mockRateUserEventRepository{})
 		require.NoError(t, err)
 
 		event := &domain.RateUserEvent{UserID: "0", Message: "hi"}
@@ -185,7 +185,7 @@ func TestRateAgent_runUserTypeTelegram(t *testing.T) {
 		t.Parallel()
 
 		tg := &mockTelegramClient{err: errors.New("network error")}
-		agent, err := NewRateAgent(tg, &mockRateUserEventRepository{})
+		agent, err := NewRateDispatchAgent(tg, &mockRateUserEventRepository{})
 		require.NoError(t, err)
 
 		event := &domain.RateUserEvent{UserID: "123456", Message: "hi"}
@@ -195,21 +195,21 @@ func TestRateAgent_runUserTypeTelegram(t *testing.T) {
 	t.Run("nil event returns error", func(t *testing.T) {
 		t.Parallel()
 
-		agent, err := NewRateAgent(&mockTelegramClient{}, &mockRateUserEventRepository{})
+		agent, err := NewRateDispatchAgent(&mockTelegramClient{}, &mockRateUserEventRepository{})
 		require.NoError(t, err)
 
 		require.Error(t, agent.runUserTypeTelegram(t.Context(), nil))
 	})
 }
 
-func TestRateAgent_Vacuum(t *testing.T) {
+func TestRateDispatchAgent_Vacuum(t *testing.T) {
 	t.Parallel()
 
 	t.Run("calls repo with 180-day duration", func(t *testing.T) {
 		t.Parallel()
 
 		repo := &mockRateUserEventRepository{}
-		agent, err := NewRateAgent(&mockTelegramClient{}, repo)
+		agent, err := NewRateDispatchAgent(&mockTelegramClient{}, repo)
 		require.NoError(t, err)
 
 		require.NoError(t, agent.Vacuum(t.Context()))
@@ -221,7 +221,7 @@ func TestRateAgent_Vacuum(t *testing.T) {
 
 		repo := &mockRateUserEventRepository{retainErr: errors.New("db error")}
 		repo.removeErr = errors.New("remove failed")
-		agent, err := NewRateAgent(&mockTelegramClient{}, repo)
+		agent, err := NewRateDispatchAgent(&mockTelegramClient{}, repo)
 		require.NoError(t, err)
 
 		require.Error(t, agent.Vacuum(t.Context()))

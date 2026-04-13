@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,8 +15,6 @@ import (
 var _ executionHistoryRepository = &repository.ExecutionHistoryRepository{}
 var _ rateSourceRepository = &repository.RateSourceRepository{}
 var _ rateValueRepository = &repository.RateValueRepository{}
-var _ rateUserSubscriptionRepository = &repository.RateUserSubscriptionRepository{}
-var _ rateUserEventRepository = &repository.RateUserEventRepository{}
 
 func TestNewRateAgent(t *testing.T) {
 	t.Parallel()
@@ -30,8 +27,6 @@ func TestNewRateAgent(t *testing.T) {
 			&mockRateSourceRepository{},
 			&mockExecutionHistoryRepository{},
 			&mockRateValueRepository{},
-			&mockRateUserSubscriptionRepository{},
-			&mockRateUserEventRepository{},
 			io.Discard,
 		)
 		require.NoError(t, err)
@@ -58,7 +53,6 @@ func TestRateAgent_execution(t *testing.T) {
 		require.Empty(t, histRepo.retained[0].Error)
 		require.False(t, histRepo.retained[0].Timestamp.IsZero())
 	})
-
 	t.Run("extractor fails — history retained as failure", func(t *testing.T) {
 		t.Parallel()
 
@@ -73,7 +67,6 @@ func TestRateAgent_execution(t *testing.T) {
 		require.False(t, histRepo.retained[0].Success)
 		require.NotEmpty(t, histRepo.retained[0].Error)
 	})
-
 	t.Run("failing source appears in returned error map", func(t *testing.T) {
 		t.Parallel()
 
@@ -85,7 +78,6 @@ func TestRateAgent_execution(t *testing.T) {
 		errs := a.execution(t.Context(), []domain.RateSource{{Name: "src1"}})
 		require.NotNil(t, errs["src1"])
 	})
-
 	t.Run("multiple sources each get their own history record", func(t *testing.T) {
 		t.Parallel()
 
@@ -101,232 +93,6 @@ func TestRateAgent_execution(t *testing.T) {
 	})
 }
 
-func TestRateAgent_notification(t *testing.T) {
-	t.Parallel()
-
-	t.Run("two values — telegram event retained with empty SourceName for consolidated event", func(t *testing.T) {
-		t.Parallel()
-
-		eventRepo := &mockRateUserEventRepository{}
-		a := &RateAgent{
-			rateValueRepository: &mockRateValueRepository{
-				values: []domain.RateValue{{Price: 100}, {Price: 99}},
-			},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
-				subs: []domain.RateUserSubscription{{
-					UserType:       domain.UserTypeTelegram,
-					UserID:         "111",
-					ConditionType:  domain.ConditionTypeDelta,
-					ConditionValue: "0",
-				}},
-			},
-			rateUserEventRepository: eventRepo,
-			logger:                  io.Discard,
-		}
-
-		errs := a.notification(t.Context(), []domain.RateSource{{Name: "src1"}})
-		require.Empty(t, errs)
-		require.Len(t, eventRepo.retained, 1)
-		require.Equal(t, "", eventRepo.retained[0].SourceName)
-	})
-
-	t.Run("one value — event retained with empty SourceName for consolidated event", func(t *testing.T) {
-		t.Parallel()
-
-		eventRepo := &mockRateUserEventRepository{}
-		a := &RateAgent{
-			rateValueRepository: &mockRateValueRepository{
-				values: []domain.RateValue{{Price: 100}},
-			},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
-				subs: []domain.RateUserSubscription{{
-					UserType:       domain.UserTypeTelegram,
-					UserID:         "222",
-					ConditionType:  domain.ConditionTypeDelta,
-					ConditionValue: "0",
-				}},
-			},
-			rateUserEventRepository: eventRepo,
-			logger:                  io.Discard,
-		}
-
-		errs := a.notification(t.Context(), []domain.RateSource{{Name: "src1"}})
-		require.Empty(t, errs)
-		require.Len(t, eventRepo.retained, 1)
-		require.Equal(t, "", eventRepo.retained[0].SourceName)
-	})
-
-	t.Run("no values — no event retained", func(t *testing.T) {
-		t.Parallel()
-
-		eventRepo := &mockRateUserEventRepository{}
-		a := &RateAgent{
-			rateValueRepository: &mockRateValueRepository{values: []domain.RateValue{}},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
-				subs: []domain.RateUserSubscription{{
-					UserType: domain.UserTypeTelegram,
-					UserID:   "333",
-				}},
-			},
-			rateUserEventRepository: eventRepo,
-			logger:                  io.Discard,
-		}
-
-		errs := a.notification(t.Context(), []domain.RateSource{{Name: "src1"}})
-		require.Empty(t, errs)
-		require.Len(t, eventRepo.retained, 0)
-	})
-
-	t.Run("no subscriptions — no event retained", func(t *testing.T) {
-		t.Parallel()
-
-		eventRepo := &mockRateUserEventRepository{}
-		a := &RateAgent{
-			rateValueRepository:            &mockRateValueRepository{values: []domain.RateValue{{Price: 100}}},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{subs: nil},
-			rateUserEventRepository:        eventRepo,
-			logger:                         io.Discard,
-		}
-
-		errs := a.notification(t.Context(), []domain.RateSource{{Name: "src1"}})
-		require.Empty(t, errs)
-		require.Len(t, eventRepo.retained, 0)
-	})
-
-	t.Run("unsupported UserType — error map entry", func(t *testing.T) {
-		t.Parallel()
-
-		a := &RateAgent{
-			rateValueRepository: &mockRateValueRepository{values: []domain.RateValue{{Price: 100}}},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
-				subs: []domain.RateUserSubscription{{
-					UserType: "bogus",
-					UserID:   "444",
-				}},
-			},
-			rateUserEventRepository: &mockRateUserEventRepository{},
-			logger:                  io.Discard,
-		}
-
-		errs := a.notification(t.Context(), []domain.RateSource{{Name: "src1"}})
-		require.NotNil(t, errs["src1"])
-	})
-
-	t.Run("subscription repo obtain error — error map entry", func(t *testing.T) {
-		t.Parallel()
-
-		a := &RateAgent{
-			rateValueRepository: &mockRateValueRepository{
-				values: []domain.RateValue{{Price: 100}},
-			},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
-				err: errors.New("subscription db fail"),
-			},
-			rateUserEventRepository: &mockRateUserEventRepository{},
-			logger:                  io.Discard,
-		}
-
-		errs := a.notification(t.Context(), []domain.RateSource{{Name: "src1"}})
-		require.NotNil(t, errs["src1"])
-	})
-	t.Run("rate value repo error — error map entry", func(t *testing.T) {
-		t.Parallel()
-
-		a := &RateAgent{
-			rateValueRepository:            &mockRateValueRepository{err: errors.New("db fail")},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{},
-			rateUserEventRepository:        &mockRateUserEventRepository{},
-			logger:                         io.Discard,
-		}
-
-		errs := a.notification(t.Context(), []domain.RateSource{{Name: "src1"}})
-		require.NotNil(t, errs["src1"])
-	})
-	t.Run("subscription retain error appears in error map", func(t *testing.T) {
-		t.Parallel()
-
-		a := &RateAgent{
-			rateValueRepository: &mockRateValueRepository{
-				values: []domain.RateValue{{Price: 100}},
-			},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
-				subs: []domain.RateUserSubscription{{
-					UserType:       domain.UserTypeTelegram,
-					UserID:         "555",
-					ConditionType:  domain.ConditionTypeDelta,
-					ConditionValue: "0",
-				}},
-				retainErr: errors.New("retain fail"),
-			},
-			rateUserEventRepository: &mockRateUserEventRepository{},
-			logger:                  io.Discard,
-		}
-
-		errs := a.notification(t.Context(), []domain.RateSource{{Name: "src1"}})
-		require.NotNil(t, errs["src1"])
-	})
-	t.Run("retain event error is absorbed and not propagated", func(t *testing.T) {
-		t.Parallel()
-
-		a := &RateAgent{
-			rateValueRepository: &mockRateValueRepository{
-				values: []domain.RateValue{{Price: 100}},
-			},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
-				subs: []domain.RateUserSubscription{{
-					UserType:       domain.UserTypeTelegram,
-					UserID:         "666",
-					ConditionType:  domain.ConditionTypeDelta,
-					ConditionValue: "0",
-				}},
-			},
-			rateUserEventRepository: &mockRateUserEventRepository{err: errors.New("event fail")},
-			logger:                  io.Discard,
-		}
-
-		// RetainRateUserEvent error is logged but not returned in the errs map.
-		errs := a.notification(t.Context(), []domain.RateSource{{Name: "src1"}})
-		require.Empty(t, errs)
-	})
-	t.Run("two sources same user — consolidated into one event", func(t *testing.T) {
-		t.Parallel()
-
-		eventRepo := &mockRateUserEventRepository{}
-		a := &RateAgent{
-			rateValueRepository: &mockRateValueRepository{
-				values: []domain.RateValue{{Price: 475}, {Price: 472}},
-			},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
-				subs: []domain.RateUserSubscription{{
-					UserType:       domain.UserTypeTelegram,
-					UserID:         "115818690",
-					ConditionType:  domain.ConditionTypeDelta,
-					ConditionValue: "0",
-				}},
-			},
-			rateUserEventRepository: eventRepo,
-			logger:                  io.Discard,
-		}
-
-		sources := []domain.RateSource{
-			{Name: "KAZ_NATIONALBANK_USD_KZT", Title: "National Bank of Kazakhstan",
-				BaseCurrency: "USD", QuoteCurrency: "KZT"},
-			{Name: "KAZ_BANKCENTERCREDIT_USD_KZT", Title: "Center Credit Bank",
-				BaseCurrency: "USD", QuoteCurrency: "KZT"},
-		}
-
-		errs := a.notification(t.Context(), sources)
-		require.Empty(t, errs)
-		// Both sources must be merged into exactly one RateUserEvent.
-		require.Len(t, eventRepo.retained, 1)
-		// The consolidated event covers all sources so SourceName is empty.
-		require.Equal(t, "", eventRepo.retained[0].SourceName)
-		// The single message must contain both source titles.
-		require.Contains(t, eventRepo.retained[0].Message, "National Bank of Kazakhstan")
-		require.Contains(t, eventRepo.retained[0].Message, "Center Credit Bank")
-	})
-}
-
 func TestRateAgent_Run(t *testing.T) {
 	t.Parallel()
 
@@ -334,18 +100,15 @@ func TestRateAgent_Run(t *testing.T) {
 		t.Parallel()
 
 		a := &RateAgent{
-			rateSourceRepository:           &mockRateSourceRepository{sources: nil},
-			executionHistoryRepository:     &mockExecutionHistoryRepository{},
-			rateValueRepository:            &mockRateValueRepository{},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{},
-			rateUserEventRepository:        &mockRateUserEventRepository{},
-			rateExtractor:                  &mockRateExtractor{},
-			logger:                         io.Discard,
+			rateSourceRepository:       &mockRateSourceRepository{sources: nil},
+			executionHistoryRepository: &mockExecutionHistoryRepository{},
+			rateValueRepository:        &mockRateValueRepository{},
+			rateExtractor:              &mockRateExtractor{},
+			logger:                     io.Discard,
 		}
 
 		require.NoError(t, a.Run(t.Context()))
 	})
-
 	t.Run("source not due — extractor never called", func(t *testing.T) {
 		t.Parallel()
 
@@ -358,83 +121,53 @@ func TestRateAgent_Run(t *testing.T) {
 			}},
 		}
 		a := &RateAgent{
-			rateSourceRepository:           &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1h"}}},
-			executionHistoryRepository:     histRepo,
-			rateValueRepository:            &mockRateValueRepository{},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{},
-			rateUserEventRepository:        &mockRateUserEventRepository{},
-			rateExtractor:                  extractor,
-			logger:                         io.Discard,
+			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1h"}}},
+			executionHistoryRepository: histRepo,
+			rateValueRepository:        &mockRateValueRepository{},
+			rateExtractor:              extractor,
+			logger:                     io.Discard,
 		}
 
 		require.NoError(t, a.Run(t.Context()))
 		require.Equal(t, 0, extractor.calls)
 	})
-
-	t.Run("source due — execution and notification run", func(t *testing.T) {
+	t.Run("source due — execution runs and history is retained", func(t *testing.T) {
 		t.Parallel()
 
 		histRepo := &mockExecutionHistoryRepository{records: nil}
-		eventRepo := &mockRateUserEventRepository{}
 		a := &RateAgent{
-			rateSourceRepository: &mockRateSourceRepository{
-				sources: []domain.RateSource{{Name: "src1", Interval: "1m", Title: "SRC"}},
-			},
+			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1m", Title: "SRC"}}},
 			executionHistoryRepository: histRepo,
-			rateValueRepository: &mockRateValueRepository{
-				values: []domain.RateValue{{Price: 100}},
-			},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
-				subs: []domain.RateUserSubscription{{
-					UserType:       domain.UserTypeTelegram,
-					UserID:         "999",
-					ConditionType:  domain.ConditionTypeDelta,
-					ConditionValue: "0",
-				}},
-			},
-			rateUserEventRepository: eventRepo,
-			rateExtractor:           &mockRateExtractor{},
-			logger:                  io.Discard,
+			rateValueRepository:        &mockRateValueRepository{values: []domain.RateValue{{Price: 100}}},
+			rateExtractor:              &mockRateExtractor{},
+			logger:                     io.Discard,
 		}
 
 		require.NoError(t, a.Run(t.Context()))
 		require.NotEmpty(t, histRepo.retained)
-		require.NotEmpty(t, eventRepo.retained)
 	})
-
 	t.Run("invalid interval — error returned", func(t *testing.T) {
 		t.Parallel()
 
 		a := &RateAgent{
-			rateSourceRepository: &mockRateSourceRepository{
-				sources: []domain.RateSource{{Name: "src1", Interval: "bad"}},
-			},
-			executionHistoryRepository:     &mockExecutionHistoryRepository{},
-			rateValueRepository:            &mockRateValueRepository{},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{},
-			rateUserEventRepository:        &mockRateUserEventRepository{},
-			rateExtractor:                  &mockRateExtractor{},
-			logger:                         io.Discard,
+			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "bad"}}},
+			executionHistoryRepository: &mockExecutionHistoryRepository{},
+			rateValueRepository:        &mockRateValueRepository{},
+			rateExtractor:              &mockRateExtractor{},
+			logger:                     io.Discard,
 		}
 
 		require.Error(t, a.Run(t.Context()))
 	})
-
-	t.Run("extractor error and value-repo error both surfaced", func(t *testing.T) {
+	t.Run("extractor error surfaced", func(t *testing.T) {
 		t.Parallel()
 
 		a := &RateAgent{
-			rateSourceRepository: &mockRateSourceRepository{
-				sources: []domain.RateSource{{Name: "src1", Interval: "1m"}},
-			},
+			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1m"}}},
 			executionHistoryRepository: &mockExecutionHistoryRepository{},
-			rateValueRepository:        &mockRateValueRepository{err: errors.New("db fail")},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{
-				subs: []domain.RateUserSubscription{{UserType: domain.UserTypeTelegram, UserID: "1"}},
-			},
-			rateUserEventRepository: &mockRateUserEventRepository{},
-			rateExtractor:           &mockRateExtractor{err: errors.New("fetch error")},
-			logger:                  io.Discard,
+			rateValueRepository:        &mockRateValueRepository{},
+			rateExtractor:              &mockRateExtractor{err: errors.New("fetch error")},
+			logger:                     io.Discard,
 		}
 
 		require.Error(t, a.Run(t.Context()))
@@ -443,13 +176,11 @@ func TestRateAgent_Run(t *testing.T) {
 		t.Parallel()
 
 		a := &RateAgent{
-			rateSourceRepository:           &mockRateSourceRepository{err: errors.New("db fail")},
-			executionHistoryRepository:     &mockExecutionHistoryRepository{},
-			rateValueRepository:            &mockRateValueRepository{},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{},
-			rateUserEventRepository:        &mockRateUserEventRepository{},
-			rateExtractor:                  &mockRateExtractor{},
-			logger:                         io.Discard,
+			rateSourceRepository:       &mockRateSourceRepository{err: errors.New("db fail")},
+			executionHistoryRepository: &mockExecutionHistoryRepository{},
+			rateValueRepository:        &mockRateValueRepository{},
+			rateExtractor:              &mockRateExtractor{},
+			logger:                     io.Discard,
 		}
 
 		require.Error(t, a.Run(t.Context()))
@@ -462,134 +193,15 @@ func TestRateAgent_Run(t *testing.T) {
 		// isDue returns true → source is treated as due and extractor is called.
 		histRepo := &mockExecutionHistoryRepository{obtainErr: errors.New("hist fail")}
 		a := &RateAgent{
-			rateSourceRepository: &mockRateSourceRepository{
-				sources: []domain.RateSource{{Name: "src1", Interval: "1h"}},
-			},
-			executionHistoryRepository:     histRepo,
-			rateValueRepository:            &mockRateValueRepository{},
-			rateUserSubscriptionRepository: &mockRateUserSubscriptionRepository{},
-			rateUserEventRepository:        &mockRateUserEventRepository{},
-			rateExtractor:                  extractor,
-			logger:                         io.Discard,
+			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1h"}}},
+			executionHistoryRepository: histRepo,
+			rateValueRepository:        &mockRateValueRepository{},
+			rateExtractor:              extractor,
+			logger:                     io.Discard,
 		}
 
 		require.NoError(t, a.Run(t.Context()))
 		require.Equal(t, 1, extractor.calls, "source must be treated as due when history fetch fails")
-	})
-}
-
-func TestBuildAlertMessage(t *testing.T) {
-	t.Parallel()
-
-	t.Run("single alert produces one message", func(t *testing.T) {
-		t.Parallel()
-
-		msgs, err := buildAlertMessage(alert{
-			SourceTitle:   "National Bank",
-			BaseCurrency:  "USD",
-			QuoteCurrency: "KZT",
-			CurrentPrice:  470.46,
-		})
-		require.NoError(t, err)
-		require.Len(t, msgs, 1)
-		require.True(t, strings.Contains(msgs[0], "USD/KZT"))
-	})
-	t.Run("delta zero — no arrow in message", func(t *testing.T) {
-		t.Parallel()
-
-		msgs, err := buildAlertMessage(alert{
-			SourceTitle:   "Bank",
-			BaseCurrency:  "USD",
-			QuoteCurrency: "KZT",
-			CurrentPrice:  470.46,
-			Delta:         0,
-		})
-		require.NoError(t, err)
-		require.Len(t, msgs, 1)
-		require.False(t, strings.Contains(msgs[0], telegramBotArrowUp))
-		require.False(t, strings.Contains(msgs[0], telegramBotArrowDown))
-	})
-	t.Run("positive delta — up arrow shown", func(t *testing.T) {
-		t.Parallel()
-
-		msgs, err := buildAlertMessage(alert{
-			SourceTitle:   "Bank",
-			BaseCurrency:  "USD",
-			QuoteCurrency: "KZT",
-			CurrentPrice:  100,
-			Delta:         1.5,
-		})
-		require.NoError(t, err)
-		require.Len(t, msgs, 1)
-		require.True(t, strings.Contains(msgs[0], telegramBotArrowUp))
-	})
-	t.Run("negative delta — down arrow shown", func(t *testing.T) {
-		t.Parallel()
-
-		msgs, err := buildAlertMessage(alert{
-			SourceTitle:   "Bank",
-			BaseCurrency:  "USD",
-			QuoteCurrency: "KZT",
-			CurrentPrice:  100,
-			Delta:         -1.5,
-		})
-		require.NoError(t, err)
-		require.Len(t, msgs, 1)
-		require.True(t, strings.Contains(msgs[0], telegramBotArrowDown))
-	})
-	t.Run("forecast shown when ForecastMethod non-empty", func(t *testing.T) {
-		t.Parallel()
-
-		msgs, err := buildAlertMessage(alert{
-			SourceTitle:    "Bank",
-			BaseCurrency:   "USD",
-			QuoteCurrency:  "KZT",
-			CurrentPrice:   100,
-			ForecastMethod: "composite",
-			ForecastPrice:  99.9,
-		})
-		require.NoError(t, err)
-		require.Len(t, msgs, 1)
-		require.True(t, strings.Contains(msgs[0], telegramBotForecast))
-	})
-	t.Run("forecast absent when ForecastMethod empty", func(t *testing.T) {
-		t.Parallel()
-
-		msgs, err := buildAlertMessage(alert{
-			SourceTitle:    "Bank",
-			BaseCurrency:   "USD",
-			QuoteCurrency:  "KZT",
-			CurrentPrice:   100,
-			ForecastMethod: "",
-		})
-		require.NoError(t, err)
-		require.Len(t, msgs, 1)
-		require.False(t, strings.Contains(msgs[0], telegramBotForecast))
-	})
-	t.Run("no alerts — empty slice", func(t *testing.T) {
-		t.Parallel()
-
-		msgs, err := buildAlertMessage()
-		require.NoError(t, err)
-		require.Len(t, msgs, 0)
-	})
-	t.Run("messages split above 2048 chars", func(t *testing.T) {
-		t.Parallel()
-
-		alerts := make([]alert, 50)
-		for i := range alerts {
-			alerts[i] = alert{
-				SourceTitle:   strings.Repeat("X", 40) + string(rune('A'+i%26)),
-				BaseCurrency:  "USD",
-				QuoteCurrency: "KZT",
-				CurrentPrice:  float64(400 + i),
-			}
-		}
-
-		msgs, err := buildAlertMessage(alerts...)
-		require.NoError(t, err)
-		require.Greater(t, len(msgs), 1)
-		require.Equal(t, 2, len(msgs))
 	})
 }
 
@@ -636,36 +248,6 @@ func (m *mockRateValueRepository) ObtainLastNRateValuesBySourceName(_ context.Co
 }
 
 func (m *mockRateValueRepository) RetainRateValue(_ context.Context, _ *domain.RateValue) error {
-	return m.err
-}
-
-type mockRateUserSubscriptionRepository struct {
-	subs      []domain.RateUserSubscription
-	err       error
-	retainErr error
-}
-
-func (m *mockRateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySource(_ context.Context, _ string) ([]domain.RateUserSubscription, error) {
-	return m.subs, m.err
-}
-
-func (m *mockRateUserSubscriptionRepository) RetainRateUserSubscription(
-	_ context.Context, _ *domain.RateUserSubscription,
-) error {
-	if m.retainErr != nil {
-		return m.retainErr
-	}
-	return m.err
-}
-
-type mockRateUserEventRepository struct {
-	retained []*domain.RateUserEvent
-	err      error
-}
-
-func (m *mockRateUserEventRepository) RetainRateUserEvent(_ context.Context, e *domain.RateUserEvent) error {
-	cp := *e
-	m.retained = append(m.retained, &cp)
 	return m.err
 }
 

@@ -11,7 +11,7 @@ TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 BUILD_OPTIONS := "-s -w -X main.BuildVersion=${BRANCH} -X main.BuildTime=${TIME} -X main.BuildHash=${BUILD}"
 
-.PHONY: all claude_task claude_evaluates_project claude_auto_fix_tests run build build-collector build-web build-wasm test lint format swagger clean deploy_environment
+.PHONY: all claude_task claude_evaluates_project claude_auto_fix_tests run build build-collector build-notifier build-web build-wasm test lint format swagger clean deploy_environment
 
 
 deploy_environment:
@@ -73,6 +73,7 @@ claude_auto_fix_tests:
 run:
 	@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/web/main.go --static-dir ./build/static --logs-dir ./build/logs
 	@#set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/collector/main.go --logs-dir ./build/logs
+	@#set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/notifier/main.go --logs-dir ./build/logs
 
 
 
@@ -82,6 +83,7 @@ build:
 	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" ./build/static/wasm_exec.js
 	CGO_ENABLED=0 GOOS=js GOARCH=wasm go build -o ./build/static/app.wasm ./cmd/wasm/main.go
 	CGO_ENABLED=0 go build -o ./build/collector -ldflags ${BUILD_OPTIONS} ./cmd/collector/main.go
+	CGO_ENABLED=0 go build -o ./build/notifier -ldflags ${BUILD_OPTIONS} ./cmd/notifier/main.go
 	CGO_ENABLED=0 go build -o ./build/web -ldflags ${BUILD_OPTIONS} ./cmd/web/main.go
 
 
@@ -110,5 +112,5 @@ format:
 
 ## clean:
 clean:
-	rm -f ./build/monitor ./build/collector ./build/web ./build/monitor.db
+	rm -f ./build/monitor ./build/collector ./build/notifier ./build/web ./build/monitor.db
 	go mod tidy

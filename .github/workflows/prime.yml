@@ -49,6 +49,7 @@ jobs:
       SSH_USERNAME: ${{ vars.SSH_USERNAME }}
       BINARY_COLLECTOR_NAME: stage_monitor_collector
       BINARY_WEBAPP_NAME: stage_monitor_webapp
+      BINARY_NOTIFIER_NAME: stage_monitor_notifier
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -66,8 +67,10 @@ jobs:
         run: |
           BINARY_TMP_COLLECTOR_NAME="${BINARY_COLLECTOR_NAME}_${INSTRUCTION_ID}"
           BINARY_TMP_WEBAPP_NAME="${BINARY_WEBAPP_NAME}_${INSTRUCTION_ID}"
+          BINARY_TMP_NOTIFIER_NAME="${BINARY_NOTIFIER_NAME}_${INSTRUCTION_ID}"
           echo "BINARY_TMP_COLLECTOR_NAME=${BINARY_TMP_COLLECTOR_NAME}" >> $GITHUB_ENV
           echo "BINARY_TMP_WEBAPP_NAME=${BINARY_TMP_WEBAPP_NAME}" >> $GITHUB_ENV
+          echo "BINARY_TMP_NOTIFIER_NAME=${BINARY_TMP_NOTIFIER_NAME}" >> $GITHUB_ENV
           echo "commit_hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
           echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
       - name: Build (linux/amd64)
@@ -79,6 +82,7 @@ jobs:
           CGO_ENABLED=0 GOOS=js GOARCH=wasm go build -o ./cmd/web/static/app.wasm ./cmd/wasm/main.go
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="${APP_BUILD_OPTIONS}" -o "${BINARY_TMP_COLLECTOR_NAME}" ./cmd/collector/main.go
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="${APP_BUILD_OPTIONS}" -o "${BINARY_TMP_WEBAPP_NAME}" ./cmd/web/main.go
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="${APP_BUILD_OPTIONS}" -o "${BINARY_TMP_NOTIFIER_NAME}" ./cmd/notifier/main.go
       - name: Setup SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATEKEY }}
@@ -94,6 +98,7 @@ jobs:
           SCP="scp -P $SSH_HOSTPORT -i /tmp/deploy_key"
           $SCP "$BINARY_TMP_COLLECTOR_NAME" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME"
           $SCP "$BINARY_TMP_WEBAPP_NAME" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME"
+          $SCP "$BINARY_TMP_NOTIFIER_NAME" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_NOTIFIER_NAME"
           $SCP -r "./cmd/web/static/." "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$WEB_STATIC_SOURCE"
 
       - name: Verify binary
@@ -104,21 +109,26 @@ jobs:
           # compute sha256 of local binary
           sha256sum "$BINARY_TMP_COLLECTOR_NAME" > "$BINARY_TMP_COLLECTOR_NAME.sha256"
           sha256sum "$BINARY_TMP_WEBAPP_NAME" > "$BINARY_TMP_WEBAPP_NAME.sha256"
+          sha256sum "$BINARY_TMP_NOTIFIER_NAME" > "$BINARY_TMP_NOTIFIER_NAME.sha256"
 
           # upload checksum file next to binary
           $SCP "$BINARY_TMP_COLLECTOR_NAME.sha256" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME.sha256"
           $SCP "$BINARY_TMP_WEBAPP_NAME.sha256" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME.sha256"
+          $SCP "$BINARY_TMP_NOTIFIER_NAME.sha256" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_NOTIFIER_NAME.sha256"
 
           # verify checksum on remote — abort if mismatch
           $SSH "cd $REMOTE_DIR && sha256sum -c $BINARY_TMP_COLLECTOR_NAME.sha256 || (echo 'checksum mismatch, aborting'; exit 1)"
           $SSH "cd $REMOTE_DIR && sha256sum -c $BINARY_TMP_WEBAPP_NAME.sha256 || (echo 'checksum mismatch, aborting'; exit 1)"
+          $SSH "cd $REMOTE_DIR && sha256sum -c $BINARY_TMP_NOTIFIER_NAME.sha256 || (echo 'checksum mismatch, aborting'; exit 1)"
 
           # cleanup checksum file on remote
           $SSH "rm -f $REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME.sha256"
           $SSH "rm -f $REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME.sha256"
+          $SSH "rm -f $REMOTE_DIR/$BINARY_TMP_NOTIFIER_NAME.sha256"
 
           rm -f "$BINARY_TMP_COLLECTOR_NAME.sha256"
           rm -f "$BINARY_TMP_WEBAPP_NAME.sha256"
+          rm -f "$BINARY_TMP_NOTIFIER_NAME.sha256"
 
       - name: Swap and restart
         run: |
@@ -128,9 +138,13 @@ jobs:
           # abort if uploaded binary is missing — do not touch running service
           $SSH "test -f $REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME || (echo 'binary not found, aborting'; exit 1)"
           $SSH "test -f $REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME || (echo 'binary not found, aborting'; exit 1)"
+          $SSH "test -f $REMOTE_DIR/$BINARY_TMP_NOTIFIER_NAME || (echo 'binary not found, aborting'; exit 1)"
 
           $SSH "chmod +x $REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME && \
                 mv $REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME $REMOTE_DIR/$BINARY_COLLECTOR_NAME"
+
+          $SSH "chmod +x $REMOTE_DIR/$BINARY_TMP_NOTIFIER_NAME && \
+                mv $REMOTE_DIR/$BINARY_TMP_NOTIFIER_NAME $REMOTE_DIR/$BINARY_NOTIFIER_NAME"
 
           $SSH "chmod +x $REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME && \
                 sudo systemctl stop $SERVICE_NAME && \

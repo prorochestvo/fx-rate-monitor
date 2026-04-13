@@ -11,8 +11,9 @@ import (
 
 	"github.com/prorochestvo/dsninjector"
 	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/application/collection"
+	"github.com/seilbekskindirov/monitor/internal/application/notification"
 	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
+	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
 	"github.com/seilbekskindirov/monitor/internal/repository"
 	_ "modernc.org/sqlite"
 )
@@ -22,86 +23,99 @@ var (
 	BuildTime    = "unknown"
 	BuildHash    = "undefined"
 	LogsDir      = path.Join(os.TempDir(), "logs")
-	ProxyURL     = os.Getenv(envProxyUrl)
 	LogVerbosity = internal.LogLevelWarning
 )
 
 const (
-	envProxyUrl    = "PROXY_URL"
-	envDsnSqliteDB = "SQLITEDB_DSN"
+	envDsnTelegramBOT = "TELEGRAMBOT_DSN"
+	envDsnSqliteDB    = "SQLITEDB_DSN"
 )
 
 func main() {
 	log.Printf("build: %s (%s) at %s\n", BuildVersion, BuildHash, BuildTime)
 
-	// init logger
-	l, err := internal.NewLogger(LogsDir, "collector", LogVerbosity)
+	l, err := internal.NewLogger(LogsDir, "notifier", LogVerbosity)
 	if err != nil {
 		log.Fatalf("logger: %s", err.Error())
 	}
 	log.Println("logger: initiated")
 
-	// init settings
 	dsnSQLiteDB, err := dsninjector.Unmarshal(envDsnSqliteDB)
 	if err != nil {
 		log.Fatalf("settings: %s, %s", envDsnSqliteDB, err.Error())
-		return
+	}
+	dsnTelegramBOT, err := dsninjector.Unmarshal(envDsnTelegramBOT)
+	if err != nil {
+		log.Fatalf("settings: %s, %s", envDsnTelegramBOT, err.Error())
 	}
 	log.Println("settings: initiated")
 
-	// init dependencies
 	db, err := sqlitedb.NewSQLiteClient(dsnSQLiteDB, l.WriterAs(internal.LogLevelInfo))
 	if err != nil {
 		log.Fatalf("dependencies: sqlite connection is failed, %s", err.Error())
-		return
 	}
 	defer func(c io.Closer) {
 		if e := c.Close(); e != nil {
 			log.Printf("close sqlite client: %v", e)
 		}
 	}(db)
+
+	tbot, err := integration.NewTBotClient(dsnTelegramBOT, l.WriterAs(internal.LogLevelInfo))
+	if err != nil {
+		log.Fatalf("dependencies: telegram bot connection is failed, %s", err.Error())
+	}
 	log.Println("dependencies: initiated")
 
-	// init repositories
 	rRateSource, err := repository.NewRateSourceRepository(db)
 	if err != nil {
 		log.Fatalf("repositories: rate source build is failed, %s", err.Error())
-		return
-	}
-	rExecutionHistory, err := repository.NewExecutionHistoryRepository(db)
-	if err != nil {
-		log.Fatalf("repositories: execution history build is failed, %s", err.Error())
-		return
 	}
 	rRateValue, err := repository.NewRateValueRepository(db)
 	if err != nil {
 		log.Fatalf("repositories: rate value build is failed, %s", err.Error())
-		return
+	}
+	rRateUserSubscription, err := repository.NewRateUserSubscriptionRepository(db)
+	if err != nil {
+		log.Fatalf("repositories: subscription build is failed, %s", err.Error())
+	}
+	rRateUserEvent, err := repository.NewRateUserEventRepository(db)
+	if err != nil {
+		log.Fatalf("repositories: notification pool build is failed, %s", err.Error())
 	}
 	log.Println("repositories: initiated")
 
-	runners, err := buildRunners(
+	ctx := context.Background()
+
+	checkAgent, err := notification.NewRateCheckAgent(
 		rRateSource,
-		rExecutionHistory,
 		rRateValue,
+		rRateUserSubscription,
+		rRateUserEvent,
 		l.WriterAs(internal.LogLevelWarning),
 	)
 	if err != nil {
-		log.Fatalf("runners: runners building is failed: %s", err)
-		return
+		log.Fatalf("runners: check agent build is failed: %s", err)
+	}
+
+	dispatchAgent, err := notification.NewRateDispatchAgent(tbot, rRateUserEvent)
+	if err != nil {
+		log.Fatalf("runners: dispatch agent build is failed: %s", err)
+	}
+
+	if err = dispatchAgent.Vacuum(ctx); err != nil {
+		log.Fatalf("runners: vacuum failed: %s", err)
 	}
 	log.Println("runners: initiated")
 
-	ctx := context.Background()
-
-	errs := make([]error, 0, len(runners))
-	for _, r := range runners {
-		if err = r.Run(ctx); err != nil {
-			errs = append(errs, err)
-		}
+	var errs []error
+	if err = checkAgent.Run(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	if err = dispatchAgent.Run(ctx); err != nil {
+		errs = append(errs, err)
 	}
 	if err = errors.Join(errs...); err != nil {
-		log.Fatalf("execution:  %s", err)
+		log.Fatalf("execution: %s", err)
 	}
 
 	log.Println("execution: done")
@@ -115,32 +129,7 @@ func init() {
 	if dir := *logsDir; dir != "" {
 		LogsDir = dir
 	}
-
 	if v := *verbosity; v != "" {
 		LogVerbosity = internal.ParseLogLevel(*verbosity)
 	}
-}
-
-// runner is the minimal interface that the scheduler needs from each agent.
-type runner interface {
-	Run(context.Context) error
-}
-
-func buildRunners(
-	rRateSource *repository.RateSourceRepository,
-	rExecutionHistory *repository.ExecutionHistoryRepository,
-	rRateValue *repository.RateValueRepository,
-	logger io.Writer,
-) ([]runner, error) {
-	collectionRateAgent, err := collection.NewRateAgent(
-		ProxyURL,
-		rRateSource,
-		rExecutionHistory,
-		rRateValue,
-		logger,
-	)
-	if err != nil {
-		return nil, errors.Join(err, internal.NewTraceError())
-	}
-	return []runner{collectionRateAgent}, nil
 }

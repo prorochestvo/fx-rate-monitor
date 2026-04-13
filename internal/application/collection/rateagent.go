@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/seilbekskindirov/monitor/internal"
@@ -20,8 +17,6 @@ func NewRateAgent(
 	rRateSource rateSourceRepository,
 	rExecutionHistory executionHistoryRepository,
 	rRateValue rateValueRepository,
-	rRateUserSubscription rateUserSubscriptionRepository,
-	rRateUserEvent rateUserEventRepository,
 	logger io.Writer,
 ) (*RateAgent, error) {
 	extractor, err := rateextractor.NewRateExtractor(rRateValue, proxyURL, time.Minute, logger)
@@ -30,26 +25,22 @@ func NewRateAgent(
 	}
 
 	a := &RateAgent{
-		rateValueRepository:            rRateValue,
-		rateSourceRepository:           rRateSource,
-		executionHistoryRepository:     rExecutionHistory,
-		rateUserSubscriptionRepository: rRateUserSubscription,
-		rateUserEventRepository:        rRateUserEvent,
-		rateExtractor:                  extractor,
-		logger:                         logger,
+		rateValueRepository:        rRateValue,
+		rateSourceRepository:       rRateSource,
+		executionHistoryRepository: rExecutionHistory,
+		rateExtractor:              extractor,
+		logger:                     logger,
 	}
 
 	return a, nil
 }
 
 type RateAgent struct {
-	rateValueRepository            rateValueRepository
-	rateSourceRepository           rateSourceRepository
-	executionHistoryRepository     executionHistoryRepository
-	rateUserSubscriptionRepository rateUserSubscriptionRepository
-	rateUserEventRepository        rateUserEventRepository
-	rateExtractor                  rateExtractor
-	logger                         io.Writer
+	rateValueRepository        rateValueRepository
+	rateSourceRepository       rateSourceRepository
+	executionHistoryRepository executionHistoryRepository
+	rateExtractor              rateExtractor
+	logger                     io.Writer
 }
 
 func (a *RateAgent) Run(ctx context.Context) (err error) {
@@ -103,41 +94,15 @@ func (a *RateAgent) Run(ctx context.Context) (err error) {
 		return
 	}
 
-	errExecution := a.execution(ctx, sources)
-	errNotification := a.notification(ctx, sources)
+	errs := a.execution(ctx, sources)
 
-	l := len(errExecution)
-	if extra := len(errNotification); extra > l {
-		l = extra
-	}
-
-	m := make(map[string]error, l)
-	for k, e := range errExecution {
-		err, ok := m[k]
-		if !ok {
-			err = nil
+	combined := make([]error, 0, len(errs))
+	for k, e := range errs {
+		if e != nil {
+			combined = append(combined, fmt.Errorf("source %s: %w", k, e))
 		}
-		m[k] = errors.Join(err, e)
 	}
-	for k, e := range errNotification {
-		err, ok := m[k]
-		if !ok {
-			err = nil
-		}
-		m[k] = errors.Join(err, e)
-	}
-
-	errs := make([]error, 0, len(m))
-	for k, e := range m {
-		if e == nil {
-			continue
-		}
-		errs = append(errs, fmt.Errorf("source %s: %s", k, e.Error()))
-	}
-
-	err = errors.Join(err, errors.Join(errs...))
-
-	return
+	return errors.Join(err, errors.Join(combined...))
 }
 
 func (a *RateAgent) execution(ctx context.Context, sources []domain.RateSource) map[string]error {
@@ -167,107 +132,6 @@ func (a *RateAgent) execution(ctx context.Context, sources []domain.RateSource) 
 	return errs
 }
 
-func (a *RateAgent) notification(ctx context.Context, sources []domain.RateSource) map[string]error {
-	now := time.Now().UTC()
-	errs := make(map[string]error, len(sources))
-
-	telegramBotAlerts := make(map[string][]alert, len(sources))
-
-	for _, source := range sources {
-		var currentValue float64
-
-		if values, err := a.rateValueRepository.ObtainLastNRateValuesBySourceName(ctx, source.Name, 1); err != nil {
-			err = errors.Join(err, internal.NewTraceError())
-			errs[source.Name] = errors.Join(errs[source.Name], err)
-			continue
-		} else if l := len(values); l == 0 {
-			continue
-		} else if l >= 2 {
-			currentValue = values[0].Price
-		} else if l >= 1 {
-			currentValue = values[0].Price
-		} else {
-			continue
-		}
-
-		subscriptions, err := a.rateUserSubscriptionRepository.ObtainRateUserSubscriptionsBySource(ctx, source.Name)
-		if err != nil {
-			err = errors.Join(err, internal.NewTraceError())
-			errs[source.Name] = errors.Join(errs[source.Name], err)
-			continue
-		}
-
-		for _, subscription := range subscriptions {
-			delta := currentValue - subscription.LatestNotifiedRate
-			if subscription.LatestNotifiedRate <= 0 {
-				delta = 0
-			}
-
-			if ok, err := subscription.IsDue(now, delta); err != nil {
-				err = errors.Join(err, internal.NewTraceError())
-				errs[source.Name] = errors.Join(errs[source.Name], err)
-				continue
-			} else if !ok {
-				continue
-			}
-
-			switch subscription.UserType {
-			case domain.UserTypeTelegram:
-				telegramBotAlerts[subscription.UserID] = append(telegramBotAlerts[subscription.UserID], alert{
-					SourceName:     source.Name,
-					SourceTitle:    source.Title,
-					BaseCurrency:   source.BaseCurrency,
-					QuoteCurrency:  source.QuoteCurrency,
-					CurrentPrice:   currentValue,
-					Delta:          delta,
-					ForecastPrice:  0.0,
-					ForecastMethod: "",
-					Timestamp:      now,
-				})
-			default:
-				errs[source.Name] = errors.Join(errs[source.Name], fmt.Errorf("unsupported user type: %s", subscription.UserType))
-			}
-
-			subscription.LatestNotifiedRate = currentValue
-			if err = a.rateUserSubscriptionRepository.RetainRateUserSubscription(ctx, &subscription); err != nil {
-				err = errors.Join(err, internal.NewTraceError())
-				errs[source.Name] = errors.Join(errs[source.Name], err)
-				continue
-			}
-		}
-	}
-
-	for tbotChatID, tbotAlerts := range telegramBotAlerts {
-		var errMessages []error
-
-		msgs, err := buildAlertMessage(tbotAlerts...)
-		if err == nil {
-			errMessages = make([]error, 0, len(msgs))
-			for _, msg := range msgs {
-				err = a.rateUserEventRepository.RetainRateUserEvent(ctx, &domain.RateUserEvent{
-					SourceName: "",
-					UserType:   domain.UserTypeTelegram,
-					UserID:     tbotChatID,
-					Message:    msg,
-				})
-				if err != nil {
-					errMessages = append(errMessages, err)
-				}
-			}
-			err = errors.Join(errMessages...)
-		}
-
-		res := ""
-		if err != nil {
-			res = " " + err.Error()
-		}
-
-		log.Printf("notification: telegram chat_id=%s queued: %d/%d%s", tbotChatID, len(msgs)-len(errMessages), len(msgs), res)
-	}
-
-	return errs
-}
-
 type rateExtractor interface {
 	Run(context.Context, *domain.RateSource) error
 }
@@ -285,83 +149,4 @@ type rateSourceRepository interface {
 type rateValueRepository interface {
 	ObtainLastNRateValuesBySourceName(context.Context, string, int64) ([]domain.RateValue, error)
 	RetainRateValue(context.Context, *domain.RateValue) error
-}
-
-type rateUserSubscriptionRepository interface {
-	ObtainRateUserSubscriptionsBySource(context.Context, string) ([]domain.RateUserSubscription, error)
-	RetainRateUserSubscription(ctx context.Context, record *domain.RateUserSubscription) error
-}
-
-type rateUserEventRepository interface {
-	RetainRateUserEvent(ctx context.Context, record *domain.RateUserEvent) error
-}
-
-type alert struct {
-	UserID         string
-	SourceName     string
-	SourceTitle    string    // human-readable source name, e.g. "National Bank of Kazakhstan"
-	BaseCurrency   string    // e.g. "USD"
-	QuoteCurrency  string    // e.g. "KZT"
-	CurrentPrice   float64   // newest price, e.g. 470.46
-	Delta          float64   // signed delta: positive = up, negative = down
-	ForecastPrice  float64   //
-	ForecastMethod string    //
-	Timestamp      time.Time // timestamp of the newest rate record
-}
-
-// https://apps.timwhitlock.info/emoji/tables/unicode
-const (
-	telegramBotArrowUp   string = "🔼"
-	telegramBotArrowDown string = "🔽"
-	telegramBotForecast  string = "✨"
-
-	telegramMaxMessageLen = 2048
-)
-
-// buildAlertMessage renders alerts into the builder as a single HTML Telegram message.
-func buildAlertMessage(alerts ...alert) ([]string, error) {
-	rates := make(map[string][]string, len(alerts))
-	for _, alertItem := range alerts {
-		key := strings.TrimSpace(alertItem.SourceTitle)
-		val := fmt.Sprintf(" • <b>%s/%s</b>: %.2f", alertItem.BaseCurrency, alertItem.QuoteCurrency, alertItem.CurrentPrice)
-		if alertItem.Delta != 0 {
-			arrow := telegramBotArrowUp
-			if alertItem.Delta < 0 {
-				arrow = telegramBotArrowDown
-			}
-			val += fmt.Sprintf(" (%.2f %s)", alertItem.Delta, arrow)
-		}
-		if alertItem.ForecastMethod != "" && alertItem.ForecastPrice != 0.0 {
-			val += fmt.Sprintf(" | %s %.2f <i>%s</i>", telegramBotForecast, alertItem.ForecastPrice, alertItem.ForecastMethod)
-		}
-		values := rates[key]
-		values = append(values, val)
-		sort.Strings(values)
-		rates[key] = values
-	}
-
-	sources := make([]string, 0, len(rates))
-	for title, values := range rates {
-		sources = append(sources, fmt.Sprintf("%s:\n%s\n", title, strings.Join(values, "\n")))
-	}
-	sort.Strings(sources)
-
-	now := time.Now().UTC().Format(time.RFC850)
-
-	var buffer strings.Builder
-	messages := make([]string, 0, len(sources))
-	for _, message := range sources {
-		if l := buffer.Len() + len(message); l < telegramMaxMessageLen {
-			buffer.WriteString(message)
-			continue
-		}
-		messages = append(messages, fmt.Sprintf("#COLLECTOR %s\n%s", now, buffer.String()))
-		buffer.Reset()
-	}
-	if buffer.Len() > 0 {
-		messages = append(messages, fmt.Sprintf("#COLLECTOR %s\n%s", now, buffer.String()))
-		buffer.Reset()
-	}
-
-	return messages, nil
 }
