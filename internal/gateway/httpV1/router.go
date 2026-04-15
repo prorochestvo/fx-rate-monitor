@@ -18,6 +18,7 @@ func NewRouter(
 	}
 
 	mux.HandleFunc("GET "+routes.Sources, h.ListSources)
+	mux.HandleFunc("PATCH "+routes.SourceToggleActive, h.ToggleSourceActive)
 
 	// SourceRatesChart must come before SourceRates: the chart path is more specific
 	// and Go's ServeMux selects the longest-matching literal prefix first.
@@ -25,8 +26,13 @@ func NewRouter(
 	mux.HandleFunc("GET "+routes.SourceRates, h.ListRates)
 	mux.HandleFunc("GET "+routes.SourceHistory, h.ListHistory)
 	mux.HandleFunc("GET "+routes.SourceEventsFailed, h.ListSourceFailedEvents)
+	// SourceSubscriptionsList must come before SourceSubscriptions to avoid prefix clash.
+	mux.HandleFunc("GET "+routes.SourceSubscriptionsList, h.ListSourceSubscriptionDetails)
 	mux.HandleFunc("GET "+routes.SourceSubscriptions, h.ListSourceSubscriptions)
+	mux.HandleFunc("GET "+routes.SourceEventsDaily, h.ListSourceDailyEvents)
 
+	mux.HandleFunc("GET "+routes.Stats, h.ListStats)
+	mux.HandleFunc("GET "+routes.ErrorsExecution, h.ListExecutionErrors)
 	mux.HandleFunc("GET "+routes.EventsPending, h.ListPendingEvents)
 
 	// NotificationsFailed must be registered before Notifications so that

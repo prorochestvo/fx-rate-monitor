@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	"github.com/stretchr/testify/require"
 )
@@ -234,6 +235,60 @@ func TestSourceRepository_ObtainAllSources(t *testing.T) {
 		result, err := emptyRepo.ObtainAllRateSources(t.Context())
 		require.NoError(t, err)
 		require.Empty(t, result)
+	})
+}
+
+func TestRateSourceRepository_UpdateRateSourceActive(t *testing.T) {
+	t.Parallel()
+
+	// TODO: rethink
+	newRepo := func(t *testing.T) (*RateSourceRepository, *domain.RateSource) {
+		t.Helper()
+		r, err := NewRateSourceRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+		src := &domain.RateSource{
+			Name:          "toggle-src-" + t.Name(),
+			Title:         "Toggle Source",
+			URL:           "https://example.com/toggle",
+			Interval:      "10m",
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			Rules:         []domain.RateSourceRule{},
+		}
+		require.NoError(t, r.RetainRateSource(t.Context(), src))
+		return r, src
+	}
+
+	t.Run("sets active to true", func(t *testing.T) {
+		t.Parallel()
+		r, src := newRepo(t)
+
+		require.NoError(t, r.UpdateRateSourceActive(t.Context(), src.Name, true))
+
+		result, err := r.ObtainRateSourceByName(t.Context(), src.Name)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.True(t, result.Active)
+	})
+	t.Run("sets active to false", func(t *testing.T) {
+		t.Parallel()
+		r, src := newRepo(t)
+
+		require.NoError(t, r.UpdateRateSourceActive(t.Context(), src.Name, true))
+		require.NoError(t, r.UpdateRateSourceActive(t.Context(), src.Name, false))
+
+		result, err := r.ObtainRateSourceByName(t.Context(), src.Name)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.False(t, result.Active)
+	})
+	t.Run("returns ErrNotFound for unknown source", func(t *testing.T) {
+		t.Parallel()
+		r, err := NewRateSourceRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		err = r.UpdateRateSourceActive(t.Context(), "no-such-source", true)
+		require.ErrorIs(t, err, internal.ErrNotFound)
 	})
 }
 

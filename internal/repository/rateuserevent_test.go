@@ -795,3 +795,72 @@ func TestRateUserEventRepository_TransactionErrors(t *testing.T) {
 		require.Error(t, err)
 	})
 }
+
+func TestRateUserEventRepository_ObtainDailyBySource(t *testing.T) {
+	t.Parallel()
+
+	r, err := NewRateUserEventRepository(stubSQLiteDB(t))
+	require.NoError(t, err)
+
+	srcName := "daily-source"
+	day1 := time.Date(2026, 4, 12, 10, 0, 0, 0, time.UTC)
+	day2 := time.Date(2026, 4, 13, 10, 0, 0, 0, time.UTC)
+
+	events := []domain.RateUserEvent{
+		{ID: uuid.NewV4().String(), UserType: domain.UserTypeTelegram, UserID: "u1", SourceName: srcName, Message: "msg", Status: domain.RateUserEventStatusSent, SentAt: day1, CreatedAt: day1},
+		{ID: uuid.NewV4().String(), UserType: domain.UserTypeTelegram, UserID: "u2", SourceName: srcName, Message: "msg", Status: domain.RateUserEventStatusFailed, SentAt: day1, CreatedAt: day1},
+		{ID: uuid.NewV4().String(), UserType: domain.UserTypeTelegram, UserID: "u3", SourceName: srcName, Message: "msg", Status: domain.RateUserEventStatusSent, SentAt: day2, CreatedAt: day2},
+		{ID: uuid.NewV4().String(), UserType: domain.UserTypeTelegram, UserID: "u4", SourceName: srcName, Message: "msg", Status: domain.RateUserEventStatusSent, SentAt: day2, CreatedAt: day2},
+		{ID: uuid.NewV4().String(), UserType: domain.UserTypeTelegram, UserID: "u5", SourceName: srcName, Message: "msg", Status: domain.RateUserEventStatusPending, CreatedAt: day2},
+	}
+	for _, e := range events {
+		require.NoError(t, r.RetainRateUserEvent(t.Context(), &e))
+	}
+
+	t.Run("returns rows grouped by date excluding pending", func(t *testing.T) {
+		t.Parallel()
+
+		items, err := r.ObtainDailyEventSummaryBySource(t.Context(), srcName, 0, 25)
+		require.NoError(t, err)
+		require.NotEmpty(t, items)
+		// pending events must never appear
+		for _, item := range items {
+			require.NotEmpty(t, item.Date)
+			require.NotEmpty(t, item.UserType)
+		}
+	})
+	t.Run("counts match fixtures", func(t *testing.T) {
+		t.Parallel()
+
+		items, err := r.ObtainDailyEventSummaryBySource(t.Context(), srcName, 0, 25)
+		require.NoError(t, err)
+
+		totSent, totFailed := int64(0), int64(0)
+		for _, item := range items {
+			totSent += item.SuccessCount
+			totFailed += item.FailedCount
+		}
+		require.Equal(t, int64(3), totSent)
+		require.Equal(t, int64(1), totFailed)
+	})
+	t.Run("returns empty slice when source has no non-pending events", func(t *testing.T) {
+		t.Parallel()
+
+		items, err := r.ObtainDailyEventSummaryBySource(t.Context(), "nonexistent-source", 0, 25)
+		require.NoError(t, err)
+		require.NotNil(t, items)
+		require.Empty(t, items)
+	})
+	t.Run("pagination offset works", func(t *testing.T) {
+		t.Parallel()
+
+		all, err := r.ObtainDailyEventSummaryBySource(t.Context(), srcName, 0, 25)
+		require.NoError(t, err)
+		if len(all) < 2 {
+			t.Skip("not enough date groups to test pagination")
+		}
+		page2, err := r.ObtainDailyEventSummaryBySource(t.Context(), srcName, 1, 25)
+		require.NoError(t, err)
+		require.Len(t, page2, len(all)-1)
+	})
+}

@@ -76,6 +76,9 @@ func (a *RateAgent) Run(ctx context.Context) (err error) {
 		now := time.Now().UTC()
 		sources = make([]domain.RateSource, 0, len(s))
 		for _, source := range s {
+			if !source.Active {
+				continue
+			}
 			interval, errInterval := time.ParseDuration(source.Interval)
 			if errInterval != nil {
 				errInterval = fmt.Errorf("invalid interval %q, %s", source.Interval, errInterval.Error())

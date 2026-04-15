@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"embed"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -32,7 +34,7 @@ var (
 	LogVerbosity = internal.LogLevelWarning
 	HttpPort     = 8080
 	HttpTimeOut  = 30 * time.Second
-	StaticDir    = "./static"
+	StaticDir    = ""
 )
 
 const (
@@ -42,7 +44,11 @@ const (
 
 func main() {
 	log.Printf("build: %s (%s) at %s\n", BuildVersion, BuildHash, BuildTime)
-	log.Printf("static directory: %s\n", StaticDir)
+	if StaticDir != "" {
+		log.Printf("static directory (override): %s\n", StaticDir)
+	} else {
+		log.Println("static directory: embedded FS")
+	}
 
 	l, err := internal.NewLogger(LogsDir, "web", LogVerbosity)
 	if err != nil {
@@ -121,7 +127,17 @@ func main() {
 		log.Fatalf("services: mux api is failed, %s", err.Error())
 		return
 	}
-	mux.Handle("/", http.FileServer(http.Dir(StaticDir)))
+	var fsys http.FileSystem
+	if StaticDir != "" {
+		fsys = http.Dir(StaticDir)
+	} else {
+		sub, err := fs.Sub(staticFS, "static")
+		if err != nil {
+			log.Fatalf("embed sub: %v", err)
+		}
+		fsys = http.FS(sub)
+	}
+	mux.Handle("/", http.FileServer(fsys))
 	tbotAPI, err := service.NewTelegramApi(tbot, rRateUserSubscription, rRateSource)
 	if err != nil {
 		log.Fatalf("services: telegram api is failed, %s", err.Error())
@@ -162,6 +178,9 @@ func main() {
 		log.Printf("http server: forced shutdown failed, %s", err)
 	}
 }
+
+//go:embed static
+var staticFS embed.FS
 
 func init() {
 	port := flag.Int("port", HttpPort, "http server port")

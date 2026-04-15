@@ -59,6 +59,10 @@ claude_evaluate:
 	$(eval TIME_NUM := $(shell date -u +%Y%m%d%H%M%S))
 	claude "you need to evaluate the project. pros and cons." --allowedTools "Read" --system-prompt "$$(cat ./.claude/prompts/architect.md)" 2>&1 | tee -a ./.claude/logs/task_$(TIME_NUM).evaluation.md
 
+claude_reviewer:
+	$(eval TIME_NUM := $(shell date -u +%Y%m%d%H%M%S))
+	claude "could you review my changes. detaisl: - design: .claude/logs/task_20260414033233.design.md; - plan: .claude/plans/task_20260414033233.md; - implementation: .claude/logs/task_20260414033233.implementation.md" --allowedTools "Read" --system-prompt "$$(cat ./.claude/prompts/reviewer.md)" 2>&1 | tee -a ./.claude/logs/task_$(TIME_NUM).review.md
+
 ## claude_auto_fix_tests:
 claude_auto_fix_tests:
 	$(eval TIME_NUM := $(shell date -u +%Y%m%d%H%M%S))
@@ -71,20 +75,19 @@ claude_auto_fix_tests:
 
 ## run:
 run:
-	@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/web/main.go --static-dir ./build/static --logs-dir ./build/logs
-	@#set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/collector/main.go --logs-dir ./build/logs
-	@#set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/notifier/main.go --logs-dir ./build/logs
+	@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/web                 --logs-dir ./build/logs --static-dir ./cmd/web/static
+	@#set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/collector/main.go  --logs-dir ./build/logs
+	@#set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/notifier/main.go   --logs-dir ./build/logs
 
 
 
 ## build:
 build:
-	cp -R ./cmd/web/static ./build
-	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" ./build/static/wasm_exec.js
-	CGO_ENABLED=0 GOOS=js GOARCH=wasm go build -o ./build/static/app.wasm ./cmd/wasm/main.go
+	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" ./cmd/web/static/wasm_exec.js
+	CGO_ENABLED=0 GOOS=js GOARCH=wasm go build -o ./cmd/web/static/app.wasm ./cmd/wasm/main.go
 	CGO_ENABLED=0 go build -o ./build/collector -ldflags ${BUILD_OPTIONS} ./cmd/collector/main.go
-	CGO_ENABLED=0 go build -o ./build/notifier -ldflags ${BUILD_OPTIONS} ./cmd/notifier/main.go
-	CGO_ENABLED=0 go build -o ./build/web -ldflags ${BUILD_OPTIONS} ./cmd/web/main.go
+	CGO_ENABLED=0 go build -o ./build/notifier  -ldflags ${BUILD_OPTIONS} ./cmd/notifier/main.go
+	CGO_ENABLED=0 go build -o ./build/web       -ldflags ${BUILD_OPTIONS} ./cmd/web
 
 
 
@@ -113,4 +116,6 @@ format:
 ## clean:
 clean:
 	rm -f ./build/monitor ./build/collector ./build/notifier ./build/web ./build/monitor.db
+	rm -f ./cmd/web/static/app.wasm ./cmd/web/static/wasm_exec.js
+	rm -rf ./build/static
 	go mod tidy

@@ -215,6 +215,112 @@ func TestExecutionHistoryRepository_TransactionErrors(t *testing.T) {
 	})
 }
 
+func TestExecutionHistoryRepository_ObtainErrorCount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns zero when no records", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewExecutionHistoryRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		count, err := r.ObtainExecutionHistoryErrorCount(t.Context())
+		require.NoError(t, err)
+		require.Equal(t, int64(0), count)
+	})
+	t.Run("counts only failed records", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewExecutionHistoryRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		src := "count-errs-source"
+		now := time.Now().UTC()
+		for i, ok := range []bool{true, false, false, true, false} {
+			h := &domain.ExecutionHistory{
+				SourceName: src,
+				Success:    ok,
+				Timestamp:  now.Add(time.Duration(i) * time.Second),
+			}
+			require.NoError(t, r.RetainExecutionHistory(t.Context(), h))
+		}
+
+		count, err := r.ObtainExecutionHistoryErrorCount(t.Context())
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, count, int64(3))
+	})
+}
+
+func TestExecutionHistoryRepository_ObtainErrors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns empty slice when no failures", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewExecutionHistoryRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+		items, err := r.ObtainLastNExecutionHistoryErrors(t.Context(), 0, 50)
+		require.NoError(t, err)
+		require.NotNil(t, items)
+		require.Empty(t, items)
+	})
+	t.Run("returns only failed records newest-first", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewExecutionHistoryRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		src := "err-order-source"
+		now := time.Now().UTC()
+		records := []domain.ExecutionHistory{
+			{SourceName: src, Success: true, Timestamp: now.Add(-3 * time.Minute)},
+			{SourceName: src, Success: false, Error: "err-a", Timestamp: now.Add(-2 * time.Minute)},
+			{SourceName: src, Success: false, Error: "err-b", Timestamp: now.Add(-time.Minute)},
+			{SourceName: src, Success: true, Timestamp: now},
+		}
+		for _, rec := range records {
+			require.NoError(t, r.RetainExecutionHistory(t.Context(), &rec))
+		}
+
+		items, err := r.ObtainLastNExecutionHistoryErrors(t.Context(), 0, 50)
+		require.NoError(t, err)
+		require.Len(t, items, 2) // exactly 2 failures in this isolated DB
+		for _, item := range items {
+			require.False(t, item.Success)
+		}
+		// newest-first ordering
+		require.True(t, !items[0].Timestamp.Before(items[len(items)-1].Timestamp))
+	})
+	t.Run("pagination with offset respects limit", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewExecutionHistoryRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		src := "err-page-source"
+		now := time.Now().UTC()
+		for i := 0; i < 5; i++ {
+			h := &domain.ExecutionHistory{
+				SourceName: src,
+				Success:    false,
+				Error:      "oops",
+				Timestamp:  now.Add(time.Duration(i) * time.Second),
+			}
+			require.NoError(t, r.RetainExecutionHistory(t.Context(), h))
+		}
+
+		page1, err := r.ObtainLastNExecutionHistoryErrors(t.Context(), 0, 2)
+		require.NoError(t, err)
+		require.Len(t, page1, 2)
+
+		page2, err := r.ObtainLastNExecutionHistoryErrors(t.Context(), 2, 2)
+		require.NoError(t, err)
+		require.Len(t, page2, 2)
+
+		require.NotEqual(t, page1[0].ID, page2[0].ID)
+	})
+}
+
 func BenchmarkExecutionHistoryRepository_ObtainLastN(b *testing.B) {
 	r, err := NewExecutionHistoryRepository(stubSQLiteDB(b))
 	if err != nil {

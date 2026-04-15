@@ -63,13 +63,15 @@ func (h *TelegramApi) handleMessage(ctx context.Context, msg *tgbotapi.Message) 
 
 // handleCallback routes inline-keyboard presses to the correct handler.
 //
-// Add-flow callback_data layout (all segments after "sub:add:"):
+// Add-flow callback_data layout (all segments are URL-encoded where noted):
 //
-//	sub:add:<src>               — source chosen → show condition types
-//	sub:add:<src>:delta         — delta chosen  → show delta value buttons
-//	sub:add:<src>:interval      — interval chosen → show interval value buttons
-//	sub:add:<src>:delta:<val>   — value chosen  → save subscription
-//	sub:add:<src>:interval:<val>— value chosen  → save subscription
+//	sub:add                          — show unique source titles (step A)
+//	sub:add:title:<title>            — title chosen → show currency pairs (step B)
+//	sub:add:<src>                    — pair chosen  → show condition types (step C)
+//	sub:add:<src>:delta              — delta chosen  → show delta value buttons
+//	sub:add:<src>:interval           — interval chosen → show interval value buttons
+//	sub:add:<src>:delta:<val>        — value chosen  → save subscription
+//	sub:add:<src>:interval:<val>     — value chosen  → save subscription
 //
 // Delete-flow:
 //
@@ -95,6 +97,10 @@ func (h *TelegramApi) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 
 	case data == cbAdd:
 		h.handleAddSourceList(ctx, chatID, msgID)
+
+	case strings.HasPrefix(data, cbAddTitlePrefix):
+		title, _ := url.QueryUnescape(strings.TrimPrefix(data, cbAddTitlePrefix))
+		h.handleAddTitleSelect(ctx, chatID, msgID, title)
 
 	case strings.HasPrefix(data, cbAddSrcPrefix):
 		h.routeAddFlow(ctx, chatID, msgID, strings.TrimPrefix(data, cbAddSrcPrefix))
@@ -236,11 +242,12 @@ func (h *TelegramApi) handleLatestUpdates(ctx context.Context, chatID int64, msg
 	h.sendOrEditWithKeyboard(ctx, chatID, msgID, sb.String(), backKeyboard())
 }
 
-// handleAddSourceList fetches all rate sources and presents them as an inline keyboard.
-// Callback data format: sub:add:<urlencoded_source_name>
+// handleAddSourceList fetches all rate sources, deduplicates them by title (preserving
+// insertion order), and presents one button per unique title as an inline keyboard.
+// Callback data format: sub:add:title:<urlencoded_title>
 //
-// NOTE: Telegram enforces a hard 64-byte limit on callback_data. Source names longer than
-// ~30 characters may exceed this limit after URL-encoding. Buttons with overlong callback
+// NOTE: Telegram enforces a hard 64-byte limit on callback_data. Titles longer than
+// ~49 characters may exceed this limit after URL-encoding. Buttons with overlong callback
 // data are skipped and a warning is printed to stderr.
 func (h *TelegramApi) handleAddSourceList(ctx context.Context, chatID int64, msgID int) {
 	sources, err := h.sourceRepo.ObtainAllRateSources(ctx)
@@ -253,24 +260,73 @@ func (h *TelegramApi) handleAddSourceList(ctx context.Context, chatID int64, msg
 		h.sendOrEditWithKeyboard(ctx, chatID, msgID, "No rate sources are configured yet.", backKeyboard())
 		return
 	}
-	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(sources)+1)
+	seen := make(map[string]struct{})
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0)
 	for _, src := range sources {
-		data := cbAddSrcPrefix + url.QueryEscape(src.Name)
-		if len(data) > maxCallbackDataBytes {
-			fmt.Printf("telegramapi: skipping source %q: callback data %d bytes exceeds 64-byte limit\n",
-				src.Name, len(data))
+		if _, ok := seen[src.Title]; ok {
 			continue
 		}
-		label := fmt.Sprintf("%s (%s/%s)", src.Title, src.BaseCurrency, src.QuoteCurrency)
+		seen[src.Title] = struct{}{}
+		data := cbAddTitlePrefix + url.QueryEscape(src.Title)
+		if len(data) > maxCallbackDataBytes {
+			fmt.Printf("telegramapi: skipping title %q: callback_data %d bytes exceeds 64-byte limit\n",
+				src.Title, len(data))
+			continue
+		}
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(label, data),
+			tgbotapi.NewInlineKeyboardButtonData(src.Title, data),
 		))
 	}
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("« Back", cbBack),
 	))
 	h.sendOrEditWithKeyboard(ctx, chatID, msgID,
-		"Choose a <b>rate source</b> to subscribe to:",
+		"Choose a <b>source</b> to subscribe to:",
+		tgbotapi.NewInlineKeyboardMarkup(rows...))
+}
+
+// handleAddTitleSelect is called when the user picks a source title (step A→B).
+// It fetches all rate sources, filters to those matching the chosen title, and presents
+// their currency pairs as buttons that feed into the existing routeAddFlow.
+// The "Back" button re-fires cbAdd so the user returns to the title list.
+func (h *TelegramApi) handleAddTitleSelect(ctx context.Context, chatID int64, msgID int, title string) {
+	sources, err := h.sourceRepo.ObtainAllRateSources(ctx)
+	if err != nil {
+		_ = h.telegramClient.SendHTMLMessage(ctx,
+			integration.TelegramChatID(chatID), "⚠️ Failed to load rate sources.")
+		return
+	}
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0)
+	for _, src := range sources {
+		if src.Title != title {
+			continue
+		}
+		label := src.BaseCurrency + "/" + src.QuoteCurrency
+		data := cbAddSrcPrefix + url.QueryEscape(src.Name)
+		if len(data) > maxCallbackDataBytes {
+			fmt.Printf("telegramapi: skipping pair %q for title %q: callback_data %d bytes\n",
+				label, title, len(data))
+			continue
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, data),
+		))
+	}
+	if len(rows) == 0 {
+		h.sendOrEditWithKeyboard(ctx, chatID, msgID,
+			"No currency pairs found for this source.",
+			tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("« Back", cbAdd),
+				),
+			))
+		return
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("« Back", cbAdd),
+	))
+	h.sendOrEditWithKeyboard(ctx, chatID, msgID,
+		fmt.Sprintf("Choose a <b>currency pair</b> for <b>%s</b>:", title),
 		tgbotapi.NewInlineKeyboardMarkup(rows...))
 }
 
@@ -495,13 +551,14 @@ func (h *TelegramApi) sendOrEditWithKeyboard(
 }
 
 const (
-	cbShow         = "sub:show"
-	cbAdd          = "sub:add"
-	cbLatest       = "sub:latest"
-	cbAddSrcPrefix = "sub:add:" // prefix for stateless add flow: sub:add:<source>[:<ct>[:<value>]]
-	cbDelete       = "sub:delete"
-	cbBack         = "sub:back"
-	cbDelNo        = "sub:del:no"
+	cbShow           = "sub:show"
+	cbAdd            = "sub:add"
+	cbLatest         = "sub:latest"
+	cbAddSrcPrefix   = "sub:add:"       // prefix for stateless add flow: sub:add:<source>[:<ct>[:<value>]]
+	cbAddTitlePrefix = "sub:add:title:" // step A→B: title chosen, show currency pairs
+	cbDelete         = "sub:delete"
+	cbBack           = "sub:back"
+	cbDelNo          = "sub:del:no"
 
 	commandStart         = "/start"
 	commandSubscriptions = "/subscriptions"

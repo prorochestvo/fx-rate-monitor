@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -135,3 +136,6 @@ func init() {
 
 // debugOSDetails contains cached system and runtime information collected at init time.
 var debugOSDetails string
+
+// ErrNotFound is returned when a requested entity does not exist in the data store.
+var ErrNotFound = errors.New("not found")

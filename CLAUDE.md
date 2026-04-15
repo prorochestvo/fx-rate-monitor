@@ -146,3 +146,16 @@ t.Run("returns ErrNoRates when history is empty", func(t *testing.T) { ... })
 
 **Rationale:** Regression tests act as a living specification of known failure modes.
 They prevent silent re-introduction of the same bug in future refactors.
+
+## Mandatory Checks After Every Change
+
+After **any** code or configuration change — no matter how small — you MUST run both
+commands and confirm they pass before considering the task done:
+
+```bash
+make build   # must exit with code 0
+make test    # must exit with code 0
+```
+
+A change that breaks the build or any test is **not complete**, regardless of whether the
+logic looks correct.  Fix the breakage before moving on.

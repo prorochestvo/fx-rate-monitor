@@ -121,7 +121,7 @@ func TestRateAgent_Run(t *testing.T) {
 			}},
 		}
 		a := &RateAgent{
-			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1h"}}},
+			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1h", Active: true}}},
 			executionHistoryRepository: histRepo,
 			rateValueRepository:        &mockRateValueRepository{},
 			rateExtractor:              extractor,
@@ -136,7 +136,7 @@ func TestRateAgent_Run(t *testing.T) {
 
 		histRepo := &mockExecutionHistoryRepository{records: nil}
 		a := &RateAgent{
-			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1m", Title: "SRC"}}},
+			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1m", Title: "SRC", Active: true}}},
 			executionHistoryRepository: histRepo,
 			rateValueRepository:        &mockRateValueRepository{values: []domain.RateValue{{Price: 100}}},
 			rateExtractor:              &mockRateExtractor{},
@@ -150,7 +150,7 @@ func TestRateAgent_Run(t *testing.T) {
 		t.Parallel()
 
 		a := &RateAgent{
-			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "bad"}}},
+			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "bad", Active: true}}},
 			executionHistoryRepository: &mockExecutionHistoryRepository{},
 			rateValueRepository:        &mockRateValueRepository{},
 			rateExtractor:              &mockRateExtractor{},
@@ -163,7 +163,7 @@ func TestRateAgent_Run(t *testing.T) {
 		t.Parallel()
 
 		a := &RateAgent{
-			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1m"}}},
+			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1m", Active: true}}},
 			executionHistoryRepository: &mockExecutionHistoryRepository{},
 			rateValueRepository:        &mockRateValueRepository{},
 			rateExtractor:              &mockRateExtractor{err: errors.New("fetch error")},
@@ -171,6 +171,21 @@ func TestRateAgent_Run(t *testing.T) {
 		}
 
 		require.Error(t, a.Run(t.Context()))
+	})
+	t.Run("skips inactive source", func(t *testing.T) {
+		t.Parallel()
+
+		extractor := &mockRateExtractor{}
+		a := &RateAgent{
+			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1m", Active: false}}},
+			executionHistoryRepository: &mockExecutionHistoryRepository{},
+			rateValueRepository:        &mockRateValueRepository{},
+			rateExtractor:              extractor,
+			logger:                     io.Discard,
+		}
+
+		require.NoError(t, a.Run(t.Context()))
+		require.Equal(t, 0, extractor.calls, "inactive source must never be processed")
 	})
 	t.Run("source repo returns error", func(t *testing.T) {
 		t.Parallel()
@@ -193,7 +208,7 @@ func TestRateAgent_Run(t *testing.T) {
 		// isDue returns true → source is treated as due and extractor is called.
 		histRepo := &mockExecutionHistoryRepository{obtainErr: errors.New("hist fail")}
 		a := &RateAgent{
-			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1h"}}},
+			rateSourceRepository:       &mockRateSourceRepository{sources: []domain.RateSource{{Name: "src1", Interval: "1h", Active: true}}},
 			executionHistoryRepository: histRepo,
 			rateValueRepository:        &mockRateValueRepository{},
 			rateExtractor:              extractor,

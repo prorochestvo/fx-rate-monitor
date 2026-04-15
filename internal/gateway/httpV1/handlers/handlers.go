@@ -47,9 +47,11 @@ func (h *Handler) ListSources(w http.ResponseWriter, r *http.Request) {
 	for _, s := range sources {
 		item := dto.SourceResponse{
 			Name:          s.Name,
+			Title:         s.Title,
 			BaseCurrency:  s.BaseCurrency,
 			QuoteCurrency: s.QuoteCurrency,
 			Interval:      s.Interval,
+			Active:        s.Active,
 		}
 		if recs, _ := h.rateService.ObtainLastNExecutionHistoryBySourceName(r.Context(), s.Name, 1); len(recs) > 0 {
 			item.LastSuccess = recs[0].Success
@@ -119,10 +121,11 @@ func (h *Handler) ListHistory(w http.ResponseWriter, r *http.Request) {
 	resp := make([]dto.HistoryResponse, 0, len(recs))
 	for _, rec := range recs {
 		resp = append(resp, dto.HistoryResponse{
-			ID:        rec.ID,
-			Success:   rec.Success,
-			Error:     rec.Error,
-			Timestamp: rec.Timestamp.Format(time.RFC3339),
+			ID:         rec.ID,
+			SourceName: rec.SourceName,
+			Success:    rec.Success,
+			Error:      rec.Error,
+			Timestamp:  rec.Timestamp.Format(time.RFC3339),
 		})
 	}
 	writeJSON(w, resp)
@@ -306,6 +309,149 @@ func (h *Handler) ListSourceSubscriptions(w http.ResponseWriter, r *http.Request
 	writeJSON(w, resp)
 }
 
+// ToggleSourceActive enables or disables a named source.
+//
+// PATCH /api/sources/{name}/active
+func (h *Handler) ToggleSourceActive(w http.ResponseWriter, r *http.Request) {
+	name, err := extractName(r)
+	if err != nil {
+		http.Error(w, `{"error":"missing source name"}`, http.StatusBadRequest)
+		return
+	}
+
+	var body struct {
+		Active bool `json:"active"`
+	}
+	if err = json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	if err = h.rateService.UpdateRateSourceActive(r.Context(), name, body.Active); err != nil {
+		if errors.Is(err, internal.ErrNotFound) {
+			http.Error(w, `{"error":"source not found"}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ListStats returns global statistics: total/active source counts and total error count.
+//
+// GET /api/stats
+func (h *Handler) ListStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.rateService.ObtainStats(r.Context())
+	if err != nil {
+		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, dto.StatsResponse{
+		SourcesTotal:  stats.SourcesTotal,
+		SourcesActive: stats.SourcesActive,
+		ErrorsTotal:   stats.ErrorsTotal,
+	})
+}
+
+// ListSourceSubscriptionDetails returns paginated subscription details for a named source.
+//
+// GET /api/sources/{name}/subscriptions/list?page=N
+func (h *Handler) ListSourceSubscriptionDetails(w http.ResponseWriter, r *http.Request) {
+	name, err := extractName(r)
+	if err != nil {
+		http.Error(w, `{"error":"missing source name"}`, http.StatusBadRequest)
+		return
+	}
+	page, _ := strconv.ParseInt(r.URL.Query().Get("page"), 10, 64)
+	if page < 1 {
+		page = 1
+	}
+	const pageSize int64 = 25
+	offset := (page - 1) * pageSize
+
+	items, err := h.rateService.ObtainRateUserSubscriptionsBySourcePaged(r.Context(), name, offset, pageSize)
+	if err != nil {
+		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		return
+	}
+	resp := make([]dto.SubscriptionDetailResponse, 0, len(items))
+	for _, s := range items {
+		item := dto.SubscriptionDetailResponse{
+			ID:         s.ID,
+			UserType:   string(s.UserType),
+			SourceName: s.SourceName,
+			Condition:  s.ConditionType + ": " + s.ConditionValue,
+		}
+		if !s.LatestNotifiedAt.IsZero() {
+			item.LatestNotifiedAt = s.LatestNotifiedAt.Format(time.RFC3339)
+		}
+		resp = append(resp, item)
+	}
+	writeJSON(w, resp)
+}
+
+// ListSourceDailyEvents returns paginated daily event summaries for a named source.
+//
+// GET /api/sources/{name}/events/daily?page=N
+func (h *Handler) ListSourceDailyEvents(w http.ResponseWriter, r *http.Request) {
+	name, err := extractName(r)
+	if err != nil {
+		http.Error(w, `{"error":"missing source name"}`, http.StatusBadRequest)
+		return
+	}
+	page, _ := strconv.ParseInt(r.URL.Query().Get("page"), 10, 64)
+	if page < 1 {
+		page = 1
+	}
+	const pageSize int64 = 25
+	offset := (page - 1) * pageSize
+
+	items, err := h.rateService.ObtainDailyEventSummaryBySource(r.Context(), name, offset, pageSize)
+	if err != nil {
+		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		return
+	}
+	resp := make([]dto.DailyEventResponse, 0, len(items))
+	for _, s := range items {
+		resp = append(resp, dto.DailyEventResponse{
+			Type:         s.UserType,
+			Date:         s.Date,
+			SuccessCount: s.SuccessCount,
+			FailedCount:  s.FailedCount,
+		})
+	}
+	writeJSON(w, resp)
+}
+
+// ListExecutionErrors returns paginated failed execution history records from all sources.
+//
+// GET /api/errors/execution?page=N
+func (h *Handler) ListExecutionErrors(w http.ResponseWriter, r *http.Request) {
+	page, _ := strconv.ParseInt(r.URL.Query().Get("page"), 10, 64)
+	if page < 1 {
+		page = 1
+	}
+	const pageSize int64 = 50
+	offset := (page - 1) * pageSize
+
+	items, err := h.rateService.ObtainLastNExecutionHistoryErrors(r.Context(), offset, pageSize)
+	if err != nil {
+		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		return
+	}
+	resp := make([]dto.ExecutionErrorResponse, 0, len(items))
+	for _, rec := range items {
+		resp = append(resp, dto.ExecutionErrorResponse{
+			ID:         rec.ID,
+			SourceName: rec.SourceName,
+			Error:      rec.Error,
+			Timestamp:  rec.Timestamp.Format(time.RFC3339),
+		})
+	}
+	writeJSON(w, resp)
+}
+
 // writeJSON sets Content-Type and encodes v as JSON.
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -316,6 +462,7 @@ type rateService interface {
 	ObtainLastNExecutionHistoryBySourceName(ctx context.Context, name string, limit int64) ([]domain.ExecutionHistory, error)
 	ObtainLastSuccessNExecutionHistoryBySourceName(ctx context.Context, name string, limit int64) ([]domain.ExecutionHistory, error)
 	ObtainAllRateSources(ctx context.Context) ([]domain.RateSource, error)
+	UpdateRateSourceActive(ctx context.Context, name string, active bool) error
 	ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error)
 	ObtainListOfLastRateUserEvent(ctx context.Context, limit int64) ([]domain.RateUserEvent, error)
 	ObtainFailedListOfRateUserEvent(ctx context.Context, offset, limit int64) ([]domain.RateUserEvent, error)
@@ -323,6 +470,10 @@ type rateService interface {
 	ObtainRateValueChartBySourceName(ctx context.Context, name string, period repository.ChartPeriod) ([]repository.ChartPoint, error)
 	ObtainFailedRateUserEventsBySourceName(ctx context.Context, sourceName string, page, pageSize int64) ([]domain.RateUserEvent, error)
 	ObtainSubscriptionSummaryBySource(ctx context.Context, sourceName string) ([]repository.SubscriptionSummary, error)
+	ObtainStats(ctx context.Context) (repository.StatsResult, error)
+	ObtainRateUserSubscriptionsBySourcePaged(ctx context.Context, sourceName string, offset, limit int64) ([]repository.SubscriptionDetail, error)
+	ObtainDailyEventSummaryBySource(ctx context.Context, sourceName string, offset, limit int64) ([]repository.DailyEventSummary, error)
+	ObtainLastNExecutionHistoryErrors(ctx context.Context, offset, limit int64) ([]domain.ExecutionHistory, error)
 }
 
 // extractLimit reads the ?limit= query parameter, clamped to [10, 100], default 50.

@@ -8,6 +8,7 @@ type RateSource struct {
 	Interval      string            `json:"interval"`
 	BaseCurrency  string            `json:"base_currency"`
 	QuoteCurrency string            `json:"quote_currency"`
+	Active        bool              `json:"active"`
 	Options       RateSourceOptions `json:"options"`
 	Rules         []RateSourceRule  `json:"rules"`
 }

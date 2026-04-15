@@ -215,6 +215,66 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 	return nil
 }
 
+// SubscriptionDetail holds the detail of a single subscription for the UI list.
+type SubscriptionDetail struct {
+	ID               string
+	UserType         domain.UserType
+	SourceName       string
+	ConditionType    string
+	ConditionValue   string
+	LatestNotifiedAt time.Time // zero if never notified
+}
+
+// ObtainRateUserSubscriptionsBySourcePaged returns up to limit subscriptions for the
+// given source, ordered by updated_at DESC with OFFSET = (page-1)*limit.
+func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySourcePaged(
+	ctx context.Context, sourceName string, offset, limit int64,
+) ([]SubscriptionDetail, error) {
+	query := "SELECT " +
+		rateUserSubscriptionIdFieldName + ", " +
+		rateUserSubscriptionUserTypeFieldName + ", " +
+		rateUserSubscriptionSourceNameFieldName + ", " +
+		rateUserSubscriptionConditionTypeFieldName + ", " +
+		rateUserSubscriptionConditionValueFieldName + ", " +
+		rateUserSubscriptionUpdatedAtFieldName +
+		" FROM " + rateUserSubscriptionTableName +
+		" WHERE " + rateUserSubscriptionSourceNameFieldName + " = ?" +
+		" ORDER BY " + rateUserSubscriptionUpdatedAtFieldName + " DESC" +
+		" LIMIT ? OFFSET ?;"
+
+	tx, err := r.db.Transaction(ctx)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewStackTraceError())
+	}
+	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+
+	rows, err := tx.QueryContext(ctx, query, sourceName, limit, offset)
+	if err != nil {
+		return nil, errors.Join(err, fmt.Errorf("SQL: %s", query), internal.NewTraceError())
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	var items []SubscriptionDetail
+	for rows.Next() {
+		var item SubscriptionDetail
+		var updatedAt string
+		if scanErr := rows.Scan(
+			&item.ID, &item.UserType, &item.SourceName,
+			&item.ConditionType, &item.ConditionValue, &updatedAt,
+		); scanErr != nil {
+			return nil, errors.Join(scanErr, internal.NewTraceError())
+		}
+		item.LatestNotifiedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		items = append(items, item)
+	}
+
+	_ = tx.Rollback()
+	if items == nil {
+		items = []SubscriptionDetail{}
+	}
+	return items, nil
+}
+
 // SubscriptionSummary holds aggregated per-(source, user_type) notification statistics.
 type SubscriptionSummary struct {
 	SourceName        string

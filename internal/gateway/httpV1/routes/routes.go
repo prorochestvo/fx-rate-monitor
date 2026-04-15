@@ -32,4 +32,19 @@ const (
 
 	// NotificationsFailed returns all failed notification pool records.
 	NotificationsFailed = "/api/notifications/failed"
+
+	// SourceToggleActive enables or disables a named source.
+	SourceToggleActive = "/api/sources/{name}/active"
+
+	// SourceSubscriptionsList returns paginated subscription details for a named source.
+	SourceSubscriptionsList = "/api/sources/{name}/subscriptions/list"
+
+	// SourceEventsDaily returns daily aggregated event counts for a named source.
+	SourceEventsDaily = "/api/sources/{name}/events/daily"
+
+	// Stats returns global application statistics.
+	Stats = "/api/stats"
+
+	// ErrorsExecution returns the most recent failed execution history records.
+	ErrorsExecution = "/api/errors/execution"
 )

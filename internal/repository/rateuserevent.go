@@ -176,6 +176,64 @@ func (r *RateUserEventRepository) ObtainLastNRateUserEvents(ctx context.Context,
 	return items, nil
 }
 
+// DailyEventSummary holds per-(user_type, date) aggregated event counts for a source.
+type DailyEventSummary struct {
+	UserType     string
+	Date         string // YYYY-MM-DD
+	SuccessCount int64
+	FailedCount  int64
+}
+
+// ObtainDailyEventSummaryBySource returns aggregated event counts grouped by (user_type, date)
+// for the given source, excluding pending events. Ordered by date DESC with pagination.
+func (r *RateUserEventRepository) ObtainDailyEventSummaryBySource(
+	ctx context.Context, sourceName string, offset, limit int64,
+) ([]DailyEventSummary, error) {
+	query := `SELECT ` +
+		rateUserEventUserTypeFieldName + `, ` +
+		`date(` + rateUserEventSentAtFieldName + `) AS event_date, ` +
+		`SUM(CASE WHEN ` + rateUserEventStatusFieldName + ` = 'sent'   THEN 1 ELSE 0 END) AS success_count, ` +
+		`SUM(CASE WHEN ` + rateUserEventStatusFieldName + ` = 'failed' THEN 1 ELSE 0 END) AS failed_count ` +
+		`FROM ` + rateUserEventTableName + ` ` +
+		`WHERE ` + rateUserEventSourceNameFieldName + ` = ? ` +
+		`AND ` + rateUserEventStatusFieldName + ` != 'pending' ` +
+		`AND ` + rateUserEventSentAtFieldName + ` IS NOT NULL ` +
+		`GROUP BY ` + rateUserEventUserTypeFieldName + `, event_date ` +
+		`ORDER BY event_date DESC ` +
+		`LIMIT ? OFFSET ?;`
+
+	tx, err := r.db.Transaction(ctx)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewStackTraceError())
+	}
+	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+
+	rows, err := tx.QueryContext(ctx, query, sourceName, limit, offset)
+	if err != nil {
+		return nil, errors.Join(err, fmt.Errorf("SQL: %s", query), internal.NewTraceError())
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	var items []DailyEventSummary
+	for rows.Next() {
+		var item DailyEventSummary
+		var date *string
+		if scanErr := rows.Scan(&item.UserType, &date, &item.SuccessCount, &item.FailedCount); scanErr != nil {
+			return nil, errors.Join(scanErr, internal.NewTraceError())
+		}
+		if date != nil {
+			item.Date = *date
+		}
+		items = append(items, item)
+	}
+
+	_ = tx.Rollback()
+	if items == nil {
+		items = []DailyEventSummary{}
+	}
+	return items, nil
+}
+
 func (r *RateUserEventRepository) ObtainUnprocessedRateUserEvents(ctx context.Context) ([]domain.RateUserEvent, error) {
 	tx, err := r.db.Transaction(ctx)
 	if err != nil {

@@ -292,10 +292,19 @@ type mockExecutionHistoryRepository struct {
 	items        []domain.ExecutionHistory
 	err          error
 	capturedBool bool
+	errorCount   int64
 }
 
 func (m *mockExecutionHistoryRepository) ObtainLastNExecutionHistoryBySourceName(_ context.Context, _ string, _ int64, s bool) ([]domain.ExecutionHistory, error) {
 	m.capturedBool = s
+	return m.items, m.err
+}
+
+func (m *mockExecutionHistoryRepository) ObtainExecutionHistoryErrorCount(_ context.Context) (int64, error) {
+	return m.errorCount, m.err
+}
+
+func (m *mockExecutionHistoryRepository) ObtainLastNExecutionHistoryErrors(_ context.Context, _, _ int64) ([]domain.ExecutionHistory, error) {
 	return m.items, m.err
 }
 
@@ -306,6 +315,10 @@ type mockRateSourceRepository struct {
 
 func (m *mockRateSourceRepository) ObtainAllRateSources(_ context.Context) ([]domain.RateSource, error) {
 	return m.sources, m.err
+}
+
+func (m *mockRateSourceRepository) UpdateRateSourceActive(_ context.Context, _ string, _ bool) error {
+	return m.err
 }
 
 type mockRateValueRepository struct {
@@ -324,6 +337,7 @@ func (m *mockRateValueRepository) ObtainRateValueChartBySourceName(_ context.Con
 
 type mockRateUserSubscriptionRepository struct {
 	summaries []repository.SubscriptionSummary
+	details   []repository.SubscriptionDetail
 	err       error
 }
 
@@ -335,8 +349,13 @@ func (m *mockRateUserSubscriptionRepository) ObtainSubscriptionSummaryBySource(_
 	return m.summaries, m.err
 }
 
+func (m *mockRateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySourcePaged(_ context.Context, _ string, _, _ int64) ([]repository.SubscriptionDetail, error) {
+	return m.details, m.err
+}
+
 type mockRateUserEventRepository struct {
 	items            []domain.RateUserEvent
+	dailySummaries   []repository.DailyEventSummary
 	err              error
 	lastNStatuses    []domain.RateUserEventStatus
 	bySourceStatuses []domain.RateUserEventStatus
@@ -350,4 +369,8 @@ func (m *mockRateUserEventRepository) ObtainLastNRateUserEvents(_ context.Contex
 func (m *mockRateUserEventRepository) ObtainRateUserEventsBySourceName(_ context.Context, _ string, _, _ int64, s ...domain.RateUserEventStatus) ([]domain.RateUserEvent, error) {
 	m.bySourceStatuses = s
 	return m.items, m.err
+}
+
+func (m *mockRateUserEventRepository) ObtainDailyEventSummaryBySource(_ context.Context, _ string, _, _ int64) ([]repository.DailyEventSummary, error) {
+	return m.dailySummaries, m.err
 }

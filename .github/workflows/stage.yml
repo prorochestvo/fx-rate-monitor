@@ -97,12 +97,10 @@ jobs:
 
       - name: Upload binary
         run: |
-          WEB_STATIC_SOURCE="stage_static"
           SCP="scp -P $SSH_HOSTPORT -i /tmp/deploy_key"
           $SCP "$BINARY_TMP_COLLECTOR_NAME" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME"
           $SCP "$BINARY_TMP_WEBAPP_NAME" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME"
           $SCP "$BINARY_TMP_NOTIFIER_NAME" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_NOTIFIER_NAME"
-          $SCP -r "./cmd/web/static/." "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$WEB_STATIC_SOURCE"
 
       - name: Verify binary
         run: |

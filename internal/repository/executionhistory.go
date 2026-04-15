@@ -106,6 +106,63 @@ func (r *ExecutionHistoryRepository) ObtainLastNExecutionHistoryBySourceName(ctx
 	return rows, nil
 }
 
+// ObtainExecutionHistoryErrorCount returns the total number of failed execution history records.
+func (r *ExecutionHistoryRepository) ObtainExecutionHistoryErrorCount(ctx context.Context) (int64, error) {
+	tx, err := r.db.Transaction(ctx)
+	if err != nil {
+		return 0, errors.Join(err, internal.NewStackTraceError())
+	}
+	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+
+	count, err := executionHistoryCount(tx, ctx, "WHERE "+executionHistorySuccessFieldName+" = 0;")
+	if err != nil {
+		return 0, errors.Join(err, internal.NewTraceError())
+	}
+
+	_ = tx.Rollback()
+	return count, nil
+}
+
+// ObtainLastNExecutionHistoryErrors returns the most recent failed execution history records,
+// ordered newest-first, with LIMIT/OFFSET pagination.
+func (r *ExecutionHistoryRepository) ObtainLastNExecutionHistoryErrors(ctx context.Context, offset, limit int64) ([]domain.ExecutionHistory, error) {
+	tx, err := r.db.Transaction(ctx)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewStackTraceError())
+	}
+	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+
+	query := executionHistorySqlSelect +
+		"\nWHERE " + executionHistorySuccessFieldName + " = 0" +
+		" ORDER BY " + executionHistoryTimestampFieldName + " DESC" +
+		" LIMIT ? OFFSET ?;"
+
+	dbRows, err := tx.QueryContext(ctx, query, limit, offset)
+	if err != nil {
+		return nil, errors.Join(err, fmt.Errorf("SQL: %s", query), internal.NewTraceError())
+	}
+	defer func() { err = errors.Join(err, dbRows.Close()) }()
+
+	var items []domain.ExecutionHistory
+	for dbRows.Next() {
+		var item domain.ExecutionHistory
+		var timestamp int64
+		if scanErr := dbRows.Scan(
+			&item.ID, &item.SourceName, &item.Success, &item.Error, &timestamp,
+		); scanErr != nil {
+			return nil, errors.Join(scanErr, internal.NewTraceError())
+		}
+		item.Timestamp = time.Unix(timestamp, 0).UTC()
+		items = append(items, item)
+	}
+
+	_ = tx.Rollback()
+	if items == nil {
+		items = []domain.ExecutionHistory{}
+	}
+	return items, nil
+}
+
 func (r *ExecutionHistoryRepository) RetainExecutionHistory(ctx context.Context, record *domain.ExecutionHistory) error {
 	if record == nil {
 		err := errors.New("execution history is nil")

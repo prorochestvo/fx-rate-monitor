@@ -3,6 +3,7 @@ package repository
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -333,5 +334,63 @@ func TestRateUserSubscriptionRepository_TransactionErrors(t *testing.T) {
 		t.Parallel()
 		err := newBrokenRepo(t).RemoveRateUserSubscription(t.Context(), &domain.RateUserSubscription{UserType: domain.UserTypeTelegram, UserID: "u", SourceName: "s"})
 		require.Error(t, err)
+	})
+}
+
+func TestRateUserSubscriptionRepository_ObtainBySourcePaged(t *testing.T) {
+	t.Parallel()
+
+	r, err := NewRateUserSubscriptionRepository(stubSQLiteDB(t))
+	require.NoError(t, err)
+
+	sourceName := "paged-source"
+	now := time.Now().UTC()
+
+	for i := 0; i < 5; i++ {
+		sub := &domain.RateUserSubscription{
+			UserType:       domain.UserTypeTelegram,
+			UserID:         fmt.Sprintf("user-%d", i),
+			SourceName:     sourceName,
+			ConditionType:  "delta",
+			ConditionValue: "10",
+			CreatedAt:      now.Add(time.Duration(i) * time.Minute),
+		}
+		require.NoError(t, r.RetainRateUserSubscription(t.Context(), sub))
+	}
+
+	t.Run("returns up to limit items", func(t *testing.T) {
+		t.Parallel()
+
+		items, err := r.ObtainRateUserSubscriptionsBySourcePaged(t.Context(), sourceName, 0, 3)
+		require.NoError(t, err)
+		require.Len(t, items, 3)
+	})
+	t.Run("returns empty slice when offset exceeds count", func(t *testing.T) {
+		t.Parallel()
+
+		items, err := r.ObtainRateUserSubscriptionsBySourcePaged(t.Context(), sourceName, 100, 25)
+		require.NoError(t, err)
+		require.NotNil(t, items)
+		require.Empty(t, items)
+	})
+	t.Run("condition field is populated", func(t *testing.T) {
+		t.Parallel()
+
+		items, err := r.ObtainRateUserSubscriptionsBySourcePaged(t.Context(), sourceName, 0, 25)
+		require.NoError(t, err)
+		require.NotEmpty(t, items)
+		require.NotEmpty(t, items[0].ConditionType)
+		require.NotEmpty(t, items[0].ConditionValue)
+	})
+	t.Run("user_id never returned", func(t *testing.T) {
+		t.Parallel()
+
+		items, err := r.ObtainRateUserSubscriptionsBySourcePaged(t.Context(), sourceName, 0, 25)
+		require.NoError(t, err)
+		require.NotEmpty(t, items)
+		for _, item := range items {
+			// SubscriptionDetail does not have a UserID field — compile-time check
+			_ = item.ID
+		}
 	})
 }

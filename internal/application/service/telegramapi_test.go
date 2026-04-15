@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -195,7 +196,28 @@ func TestTelegramApi_handleAddSourceList(t *testing.T) {
 		h.handleAddSourceList(t.Context(), testChatID, 0)
 
 		require.Len(t, client.keyboards, 1)
-		// The keyboard should have 2 source rows + 1 back row = 3 rows total.
+		// 2 unique titles + 1 back row = 3 rows total.
+		assert.Len(t, client.keyboards[0].InlineKeyboard, 3)
+		for _, row := range client.keyboards[0].InlineKeyboard[:2] {
+			require.NotNil(t, row[0].CallbackData)
+			assert.True(t, strings.HasPrefix(*row[0].CallbackData, cbAddTitlePrefix))
+		}
+	})
+	t.Run("deduplicates sources with the same title", func(t *testing.T) {
+		t.Parallel()
+		client := &mockTelegramClient{}
+		sources := []domain.RateSource{
+			{Name: "qp_usd", Title: "QazPost", BaseCurrency: "USD", QuoteCurrency: "KZT"},
+			{Name: "qp_rub", Title: "QazPost", BaseCurrency: "RUB", QuoteCurrency: "KZT"},
+			{Name: "qp_eur", Title: "QazPost", BaseCurrency: "EUR", QuoteCurrency: "KZT"},
+			{Name: "nbk", Title: "National Bank of Kazakhstan", BaseCurrency: "USD", QuoteCurrency: "KZT"},
+		}
+		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+
+		h.handleAddSourceList(t.Context(), testChatID, 0)
+
+		require.Len(t, client.keyboards, 1)
+		// 2 unique titles + 1 back row = 3 rows total
 		assert.Len(t, client.keyboards[0].InlineKeyboard, 3)
 	})
 	t.Run("shows no-sources message when list is empty", func(t *testing.T) {
@@ -245,6 +267,114 @@ func TestTelegramApi_handleAddSourceList_editMode(t *testing.T) {
 		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
 
 		h.handleAddSourceList(t.Context(), testChatID, 0)
+
+		require.Len(t, client.keyboards, 1)
+		assert.Empty(t, client.editedMsgIDs)
+	})
+}
+
+func TestTelegramApi_handleAddTitleSelect(t *testing.T) {
+	t.Parallel()
+	t.Run("shows currency pair buttons for matching sources", func(t *testing.T) {
+		t.Parallel()
+		client := &mockTelegramClient{}
+		sources := []domain.RateSource{
+			{Name: "qp_usd", Title: "QazPost", BaseCurrency: "USD", QuoteCurrency: "KZT"},
+			{Name: "qp_rub", Title: "QazPost", BaseCurrency: "RUB", QuoteCurrency: "KZT"},
+			{Name: "nbk", Title: "National Bank", BaseCurrency: "USD", QuoteCurrency: "KZT"},
+		}
+		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+
+		h.handleAddTitleSelect(t.Context(), testChatID, 0, "QazPost")
+
+		require.Len(t, client.keyboards, 1)
+		// 2 pair rows + 1 back row = 3 rows
+		assert.Len(t, client.keyboards[0].InlineKeyboard, 3)
+	})
+	t.Run("pair button callback_data feeds into routeAddFlow", func(t *testing.T) {
+		t.Parallel()
+		client := &mockTelegramClient{}
+		sources := []domain.RateSource{
+			{Name: "qp_usd", Title: "QazPost", BaseCurrency: "USD", QuoteCurrency: "KZT"},
+		}
+		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+
+		h.handleAddTitleSelect(t.Context(), testChatID, 0, "QazPost")
+
+		require.Len(t, client.keyboards, 1)
+		pairRow := client.keyboards[0].InlineKeyboard[0]
+		require.NotNil(t, pairRow[0].CallbackData)
+		assert.True(t, strings.HasPrefix(*pairRow[0].CallbackData, cbAddSrcPrefix))
+		assert.Contains(t, *pairRow[0].CallbackData, "qp_usd")
+	})
+	t.Run("back button callback_data equals cbAdd to return to title list", func(t *testing.T) {
+		t.Parallel()
+		client := &mockTelegramClient{}
+		sources := []domain.RateSource{
+			{Name: "qp_usd", Title: "QazPost", BaseCurrency: "USD", QuoteCurrency: "KZT"},
+		}
+		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+
+		h.handleAddTitleSelect(t.Context(), testChatID, 0, "QazPost")
+
+		require.Len(t, client.keyboards, 1)
+		kb := client.keyboards[0].InlineKeyboard
+		backRow := kb[len(kb)-1]
+		require.NotNil(t, backRow[0].CallbackData)
+		assert.Equal(t, cbAdd, *backRow[0].CallbackData)
+	})
+	t.Run("shows no-pairs message when no source matches the title", func(t *testing.T) {
+		t.Parallel()
+		client := &mockTelegramClient{}
+		sources := []domain.RateSource{
+			{Name: "nbk", Title: "National Bank", BaseCurrency: "USD", QuoteCurrency: "KZT"},
+		}
+		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+
+		h.handleAddTitleSelect(t.Context(), testChatID, 0, "QazPost")
+
+		require.Len(t, client.keyboards, 1)
+		require.Len(t, client.htmlMessages, 1)
+		assert.Contains(t, client.htmlMessages[0], "No currency pairs")
+	})
+	t.Run("shows error message when repo fails", func(t *testing.T) {
+		t.Parallel()
+		client := &mockTelegramClient{}
+		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{err: fmt.Errorf("db error")})
+
+		h.handleAddTitleSelect(t.Context(), testChatID, 0, "QazPost")
+
+		require.Len(t, client.htmlMessages, 1)
+		assert.Contains(t, client.htmlMessages[0], "⚠️")
+		assert.Empty(t, client.keyboards)
+	})
+}
+
+func TestTelegramApi_handleAddTitleSelect_editMode(t *testing.T) {
+	t.Parallel()
+	t.Run("edits existing message when msgID is non-zero", func(t *testing.T) {
+		t.Parallel()
+		client := &mockTelegramClient{}
+		sources := []domain.RateSource{
+			{Name: "qp_usd", Title: "QazPost", BaseCurrency: "USD", QuoteCurrency: "KZT"},
+		}
+		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+
+		h.handleAddTitleSelect(t.Context(), testChatID, 44, "QazPost")
+
+		require.Len(t, client.editedMsgIDs, 1)
+		assert.Equal(t, 44, client.editedMsgIDs[0])
+		assert.Empty(t, client.htmlMessages)
+	})
+	t.Run("sends new message when msgID is zero", func(t *testing.T) {
+		t.Parallel()
+		client := &mockTelegramClient{}
+		sources := []domain.RateSource{
+			{Name: "qp_usd", Title: "QazPost", BaseCurrency: "USD", QuoteCurrency: "KZT"},
+		}
+		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+
+		h.handleAddTitleSelect(t.Context(), testChatID, 0, "QazPost")
 
 		require.Len(t, client.keyboards, 1)
 		assert.Empty(t, client.editedMsgIDs)
