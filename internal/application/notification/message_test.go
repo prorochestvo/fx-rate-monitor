@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/seilbekskindirov/monitor/internal/domain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,19 +15,43 @@ func TestBuildAlertMessage(t *testing.T) {
 		t.Parallel()
 
 		msgs, err := buildAlertMessage(alert{
-			SourceTitle:   "National Bank",
+			SourceTitle:   "A Bank",
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  470.46,
+			CurrencyKind:  domain.RateSourceKindBID,
 		})
 		require.NoError(t, err)
 		require.Len(t, msgs, 1)
 		require.True(t, strings.Contains(msgs[0], "USD/KZT"))
+
+		msgs, err = buildAlertMessage(alert{
+			SourceTitle:   "B Bank",
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			CurrentPrice:  470.46,
+			CurrencyKind:  domain.RateSourceKindASK,
+		})
+		require.NoError(t, err)
+		require.Len(t, msgs, 1)
+		require.True(t, strings.Contains(msgs[0], "KZT/USD"))
 	})
 	t.Run("delta zero — no arrow in message", func(t *testing.T) {
 		t.Parallel()
 
 		msgs, err := buildAlertMessage(alert{
+			SourceTitle:   "Bank",
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			CurrentPrice:  470.46,
+			Delta:         470.46,
+		})
+		require.NoError(t, err)
+		require.Len(t, msgs, 1)
+		require.False(t, strings.Contains(msgs[0], telegramBotArrowUp))
+		require.False(t, strings.Contains(msgs[0], telegramBotArrowDown))
+
+		msgs, err = buildAlertMessage(alert{
 			SourceTitle:   "Bank",
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",

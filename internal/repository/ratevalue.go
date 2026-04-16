@@ -149,6 +149,7 @@ func (r *RateValueRepository) RetainRateValue(ctx context.Context, record *domai
 		return err
 	}
 
+	var res sql.Result
 	if count > 0 {
 		cmd := "UPDATE" + " " + rateValueTableName + " SET " +
 			rateValueSourceNameFieldName + " = ?, " +
@@ -157,11 +158,7 @@ func (r *RateValueRepository) RetainRateValue(ctx context.Context, record *domai
 			rateValuePriceFieldName + " = ?, " +
 			rateValueTimestampFieldName + " = ? " +
 			"WHERE " + rateValueIdFieldName + " = ?;"
-		_, err = tx.ExecContext(ctx, cmd, record.SourceName, record.BaseCurrency, record.QuoteCurrency, record.Price, record.Timestamp.Format(time.RFC3339), record.ID)
-		if err != nil {
-			err = errors.Join(err, internal.NewTraceError())
-			return err
-		}
+		res, err = tx.ExecContext(ctx, cmd, record.SourceName, record.BaseCurrency, record.QuoteCurrency, record.Price, record.Timestamp.Format(time.RFC3339), record.ID)
 	} else {
 		cmd := "INSERT INTO" + " " + rateValueTableName + " (" +
 			rateValueIdFieldName + ", " +
@@ -171,11 +168,23 @@ func (r *RateValueRepository) RetainRateValue(ctx context.Context, record *domai
 			rateValuePriceFieldName + ", " +
 			rateValueTimestampFieldName +
 			") VALUES (?, ?, ?, ?, ?, ?);"
-		_, err = tx.ExecContext(ctx, cmd, record.ID, record.SourceName, record.BaseCurrency, record.QuoteCurrency, record.Price, record.Timestamp.Format(time.RFC3339))
-		if err != nil {
-			err = errors.Join(err, internal.NewTraceError())
-			return err
-		}
+		res, err = tx.ExecContext(ctx, cmd, record.ID, record.SourceName, record.BaseCurrency, record.QuoteCurrency, record.Price, record.Timestamp.Format(time.RFC3339))
+	}
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+	if rows <= 0 {
+		err = errors.New("unexpected result: no rows affected")
+		err = errors.Join(err, internal.ErrNotFound)
+		err = errors.Join(err, internal.NewTraceError())
+		return err
 	}
 
 	if err = tx.Commit(); err != nil {
@@ -233,11 +242,7 @@ type ChartPoint struct {
 
 // ObtainRateValueChartBySourceName returns aggregated rate data grouped by day (week/month)
 // or month (year) for the given source and period.
-func (r *RateValueRepository) ObtainRateValueChartBySourceName(
-	ctx context.Context,
-	sourceName string,
-	period ChartPeriod,
-) ([]ChartPoint, error) {
+func (r *RateValueRepository) ObtainRateValueChartBySourceName(ctx context.Context, sourceName string, period ChartPeriod) ([]ChartPoint, error) {
 	now := time.Now().UTC()
 
 	var since time.Time

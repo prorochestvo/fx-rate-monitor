@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/seilbekskindirov/monitor/internal/domain"
@@ -24,7 +25,7 @@ func TestRateRestApi_ObtainLastNExecutionHistoryBySourceName(t *testing.T) {
 
 		want := []domain.ExecutionHistory{{ID: "h1", SourceName: "src1", Success: true}}
 		repo := &mockExecutionHistoryRepository{items: want}
-		svc := newTestService(t, repo, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+		svc := newRateRestAPI(t, repo, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
 
 		got, err := svc.ObtainLastNExecutionHistoryBySourceName(t.Context(), "src1", 5)
 		require.NoError(t, err)
@@ -35,7 +36,7 @@ func TestRateRestApi_ObtainLastNExecutionHistoryBySourceName(t *testing.T) {
 		t.Parallel()
 
 		repo := &mockExecutionHistoryRepository{err: errors.New("db error")}
-		svc := newTestService(t, repo, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+		svc := newRateRestAPI(t, repo, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
 
 		_, err := svc.ObtainLastNExecutionHistoryBySourceName(t.Context(), "src1", 5)
 		require.Error(t, err)
@@ -49,7 +50,7 @@ func TestRateRestApi_ObtainLastSuccessNExecutionHistoryBySourceName(t *testing.T
 		t.Parallel()
 
 		repo := &mockExecutionHistoryRepository{items: []domain.ExecutionHistory{{ID: "h1"}}}
-		svc := newTestService(t, repo, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+		svc := newRateRestAPI(t, repo, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
 
 		_, err := svc.ObtainLastSuccessNExecutionHistoryBySourceName(t.Context(), "src1", 5)
 		require.NoError(t, err)
@@ -59,11 +60,16 @@ func TestRateRestApi_ObtainLastSuccessNExecutionHistoryBySourceName(t *testing.T
 		t.Parallel()
 
 		repo := &mockExecutionHistoryRepository{err: errors.New("fail")}
-		svc := newTestService(t, repo, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+		svc := newRateRestAPI(t, repo, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
 
 		_, err := svc.ObtainLastSuccessNExecutionHistoryBySourceName(t.Context(), "src1", 5)
 		require.Error(t, err)
 	})
+}
+
+func TestRateRestApi_UpdateRateSourceActive(t *testing.T) {
+	t.Parallel()
+	t.Skip("not implemented yet")
 }
 
 func TestRateRestApi_ObtainAllRateSources(t *testing.T) {
@@ -74,7 +80,7 @@ func TestRateRestApi_ObtainAllRateSources(t *testing.T) {
 
 		want := []domain.RateSource{{Name: "src1"}, {Name: "src2"}}
 		repo := &mockRateSourceRepository{sources: want}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, repo, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, repo, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
 
 		got, err := svc.ObtainAllRateSources(t.Context())
 		require.NoError(t, err)
@@ -84,7 +90,7 @@ func TestRateRestApi_ObtainAllRateSources(t *testing.T) {
 		t.Parallel()
 
 		repo := &mockRateSourceRepository{err: errors.New("fail")}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, repo, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, repo, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
 
 		_, err := svc.ObtainAllRateSources(t.Context())
 		require.Error(t, err)
@@ -99,7 +105,7 @@ func TestRateRestApi_ObtainLastNRateValuesBySourceName(t *testing.T) {
 
 		want := []domain.RateValue{{ID: "v1", Price: 470.0}}
 		repo := &mockRateValueRepository{values: want}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, repo, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, repo, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
 
 		got, err := svc.ObtainLastNRateValuesBySourceName(t.Context(), "src1", 10)
 		require.NoError(t, err)
@@ -109,7 +115,7 @@ func TestRateRestApi_ObtainLastNRateValuesBySourceName(t *testing.T) {
 		t.Parallel()
 
 		repo := &mockRateValueRepository{err: errors.New("fail")}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, repo, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, repo, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
 
 		_, err := svc.ObtainLastNRateValuesBySourceName(t.Context(), "src1", 10)
 		require.Error(t, err)
@@ -123,7 +129,7 @@ func TestRateRestApi_ObtainListOfLastRateUserEvent(t *testing.T) {
 		t.Parallel()
 
 		repo := &mockRateUserEventRepository{}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
 
 		_, err := svc.ObtainListOfLastRateUserEvent(t.Context(), 10)
 		require.NoError(t, err)
@@ -137,7 +143,7 @@ func TestRateRestApi_ObtainListOfLastRateUserEvent(t *testing.T) {
 		t.Parallel()
 
 		repo := &mockRateUserEventRepository{err: errors.New("fail")}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
 
 		_, err := svc.ObtainListOfLastRateUserEvent(t.Context(), 10)
 		require.Error(t, err)
@@ -152,7 +158,7 @@ func TestRateRestApi_ObtainFailedListOfRateUserEvent(t *testing.T) {
 
 		want := []domain.RateUserEvent{{ID: "e1"}}
 		repo := &mockRateUserEventRepository{items: want}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
 
 		got, err := svc.ObtainFailedListOfRateUserEvent(t.Context(), 0, 10)
 		require.NoError(t, err)
@@ -163,7 +169,7 @@ func TestRateRestApi_ObtainFailedListOfRateUserEvent(t *testing.T) {
 		t.Parallel()
 
 		repo := &mockRateUserEventRepository{err: errors.New("fail")}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
 
 		_, err := svc.ObtainFailedListOfRateUserEvent(t.Context(), 0, 10)
 		require.Error(t, err)
@@ -178,7 +184,7 @@ func TestRateRestApi_ObtainPendingRateUserEvents(t *testing.T) {
 
 		want := []domain.RateUserEvent{{ID: "p1", Status: domain.RateUserEventStatusPending}}
 		repo := &mockRateUserEventRepository{items: want}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
 
 		got, err := svc.ObtainPendingRateUserEvents(t.Context())
 		require.NoError(t, err)
@@ -189,7 +195,7 @@ func TestRateRestApi_ObtainPendingRateUserEvents(t *testing.T) {
 		t.Parallel()
 
 		repo := &mockRateUserEventRepository{err: errors.New("fail")}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
 
 		_, err := svc.ObtainPendingRateUserEvents(t.Context())
 		require.Error(t, err)
@@ -204,7 +210,7 @@ func TestRateRestApi_ObtainRateValueChartBySourceName(t *testing.T) {
 
 		want := []repository.ChartPoint{{Label: "2026-04-01", Price: 450.0}}
 		repo := &mockRateValueRepository{chartPoints: want}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, repo, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, repo, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
 
 		got, err := svc.ObtainRateValueChartBySourceName(t.Context(), "src1", repository.ChartPeriodWeek)
 		require.NoError(t, err)
@@ -214,7 +220,7 @@ func TestRateRestApi_ObtainRateValueChartBySourceName(t *testing.T) {
 		t.Parallel()
 
 		repo := &mockRateValueRepository{err: errors.New("fail")}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, repo, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, repo, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
 
 		_, err := svc.ObtainRateValueChartBySourceName(t.Context(), "src1", repository.ChartPeriodWeek)
 		require.Error(t, err)
@@ -229,7 +235,7 @@ func TestRateRestApi_ObtainFailedRateUserEventsBySourceName(t *testing.T) {
 
 		want := []domain.RateUserEvent{{ID: "e1"}}
 		repo := &mockRateUserEventRepository{items: want}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
 
 		got, err := svc.ObtainFailedRateUserEventsBySourceName(t.Context(), "src1", 1, 50)
 		require.NoError(t, err)
@@ -240,11 +246,30 @@ func TestRateRestApi_ObtainFailedRateUserEventsBySourceName(t *testing.T) {
 		t.Parallel()
 
 		repo := &mockRateUserEventRepository{err: errors.New("fail")}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, repo)
 
 		_, err := svc.ObtainFailedRateUserEventsBySourceName(t.Context(), "src1", 1, 50)
 		require.Error(t, err)
 	})
+}
+
+func TestRateRestApi_ObtainStats(t *testing.T) {
+	t.Parallel()
+	t.Skip("not implemented yet")
+}
+
+func TestRateRestApi_ObtainRateUserSubscriptionsBySourcePaged(t *testing.T) {
+	t.Parallel()
+	t.Skip("not implemented yet")
+}
+
+func TestRateRestApi_ObtainDailyEventSummaryBySource(t *testing.T) {
+	t.Parallel()
+	t.Skip("not implemented yet")
+}
+func TestRateRestApi_ObtainLastNExecutionHistoryErrors(t *testing.T) {
+	t.Parallel()
+	t.Skip("not implemented yet")
 }
 
 func TestRateRestApi_ObtainSubscriptionSummaryBySource(t *testing.T) {
@@ -253,11 +278,11 @@ func TestRateRestApi_ObtainSubscriptionSummaryBySource(t *testing.T) {
 	t.Run("delegates and returns summaries", func(t *testing.T) {
 		t.Parallel()
 
-		want := []repository.SubscriptionSummary{
+		want := []domain.RateUserSubscriptionSummary{
 			{SourceName: "src1", UserType: domain.UserTypeTelegram, SubscriptionCount: 3},
 		}
 		repo := &mockRateUserSubscriptionRepository{summaries: want}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, repo, &mockRateUserEventRepository{})
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, repo, &mockRateUserEventRepository{})
 
 		got, err := svc.ObtainSubscriptionSummaryBySource(t.Context(), "src1")
 		require.NoError(t, err)
@@ -268,14 +293,15 @@ func TestRateRestApi_ObtainSubscriptionSummaryBySource(t *testing.T) {
 		t.Parallel()
 
 		repo := &mockRateUserSubscriptionRepository{err: errors.New("fail")}
-		svc := newTestService(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, repo, &mockRateUserEventRepository{})
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, repo, &mockRateUserEventRepository{})
 
 		_, err := svc.ObtainSubscriptionSummaryBySource(t.Context(), "src1")
 		require.Error(t, err)
 	})
 }
 
-func newTestService(t *testing.T,
+func newRateRestAPI(
+	t *testing.T,
 	eh executionHistoryRepository,
 	rs rateSourceRepository,
 	rv rateValueRepository,
@@ -317,7 +343,16 @@ func (m *mockRateSourceRepository) ObtainAllRateSources(_ context.Context) ([]do
 	return m.sources, m.err
 }
 
-func (m *mockRateSourceRepository) UpdateRateSourceActive(_ context.Context, _ string, _ bool) error {
+func (m *mockRateSourceRepository) ObtainRateSourceByName(_ context.Context, n string) (*domain.RateSource, error) {
+	for _, s := range m.sources {
+		if s.Name == n {
+			return &s, nil
+		}
+	}
+	return nil, errors.Join(m.err, fmt.Errorf("rate source with name %s not found", n))
+}
+
+func (m *mockRateSourceRepository) RetainRateSource(_ context.Context, _ *domain.RateSource) error {
 	return m.err
 }
 
@@ -336,8 +371,8 @@ func (m *mockRateValueRepository) ObtainRateValueChartBySourceName(_ context.Con
 }
 
 type mockRateUserSubscriptionRepository struct {
-	summaries []repository.SubscriptionSummary
-	details   []repository.SubscriptionDetail
+	summaries []domain.RateUserSubscriptionSummary
+	details   []domain.RateUserSubscriptionDetail
 	err       error
 }
 
@@ -345,17 +380,17 @@ func (m *mockRateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySource
 	return nil, m.err
 }
 
-func (m *mockRateUserSubscriptionRepository) ObtainSubscriptionSummaryBySource(_ context.Context, _ string) ([]repository.SubscriptionSummary, error) {
+func (m *mockRateUserSubscriptionRepository) ObtainSubscriptionSummaryBySource(_ context.Context, _ string) ([]domain.RateUserSubscriptionSummary, error) {
 	return m.summaries, m.err
 }
 
-func (m *mockRateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySourcePaged(_ context.Context, _ string, _, _ int64) ([]repository.SubscriptionDetail, error) {
+func (m *mockRateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySourcePaged(_ context.Context, _ string, _, _ int64) ([]domain.RateUserSubscriptionDetail, error) {
 	return m.details, m.err
 }
 
 type mockRateUserEventRepository struct {
 	items            []domain.RateUserEvent
-	dailySummaries   []repository.DailyEventSummary
+	dailySummaries   []domain.RateUserEventDailySummary
 	err              error
 	lastNStatuses    []domain.RateUserEventStatus
 	bySourceStatuses []domain.RateUserEventStatus
@@ -371,6 +406,6 @@ func (m *mockRateUserEventRepository) ObtainRateUserEventsBySourceName(_ context
 	return m.items, m.err
 }
 
-func (m *mockRateUserEventRepository) ObtainDailyEventSummaryBySource(_ context.Context, _ string, _, _ int64) ([]repository.DailyEventSummary, error) {
+func (m *mockRateUserEventRepository) ObtainDailyEventSummaryBySource(_ context.Context, _ string, _, _ int64) ([]domain.RateUserEventDailySummary, error) {
 	return m.dailySummaries, m.err
 }

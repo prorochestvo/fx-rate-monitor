@@ -470,7 +470,7 @@ func TestListSourceSubscriptions(t *testing.T) {
 		t.Parallel()
 
 		svc := &mockRateService{
-			subscriptionSummaries: []repository.SubscriptionSummary{
+			subscriptionSummaries: []domain.RateUserSubscriptionSummary{
 				{
 					SourceName:        "src1",
 					UserType:          domain.UserTypeTelegram,
@@ -636,7 +636,7 @@ func TestHandler_ListSourceSubscriptionDetails(t *testing.T) {
 
 		notifiedAt := time.Now().UTC()
 		svc := &mockRateService{
-			subscriptionDetails: []repository.SubscriptionDetail{
+			subscriptionDetails: []domain.RateUserSubscriptionDetail{
 				{ID: "sub1", SourceName: "src1", ConditionType: "percent", ConditionValue: "5", UserType: domain.UserTypeTelegram, LatestNotifiedAt: notifiedAt},
 				{ID: "sub2", SourceName: "src1", ConditionType: "absolute", ConditionValue: "10", UserType: domain.UserTypeTelegram},
 			},
@@ -692,7 +692,7 @@ func TestHandler_ListSourceDailyEvents(t *testing.T) {
 		t.Parallel()
 
 		svc := &mockRateService{
-			dailySummaries: []repository.DailyEventSummary{
+			dailySummaries: []domain.RateUserEventDailySummary{
 				{UserType: "telegram", Date: "2026-04-12", SuccessCount: 10, FailedCount: 1},
 				{UserType: "telegram", Date: "2026-04-13", SuccessCount: 8, FailedCount: 0},
 			},
@@ -804,9 +804,9 @@ type mockRateService struct {
 	historyItems          []domain.ExecutionHistory
 	events                []domain.RateUserEvent
 	chartPoints           []repository.ChartPoint
-	subscriptionSummaries []repository.SubscriptionSummary
-	subscriptionDetails   []repository.SubscriptionDetail
-	dailySummaries        []repository.DailyEventSummary
+	subscriptionSummaries []domain.RateUserSubscriptionSummary
+	subscriptionDetails   []domain.RateUserSubscriptionDetail
+	dailySummaries        []domain.RateUserEventDailySummary
 	stats                 repository.StatsResult
 	err                   error
 }
@@ -851,7 +851,7 @@ func (m *mockRateService) ObtainFailedRateUserEventsBySourceName(_ context.Conte
 	return m.events, m.err
 }
 
-func (m *mockRateService) ObtainSubscriptionSummaryBySource(_ context.Context, _ string) ([]repository.SubscriptionSummary, error) {
+func (m *mockRateService) ObtainSubscriptionSummaryBySource(_ context.Context, _ string) ([]domain.RateUserSubscriptionSummary, error) {
 	return m.subscriptionSummaries, m.err
 }
 
@@ -859,11 +859,11 @@ func (m *mockRateService) ObtainStats(_ context.Context) (repository.StatsResult
 	return m.stats, m.err
 }
 
-func (m *mockRateService) ObtainRateUserSubscriptionsBySourcePaged(_ context.Context, _ string, _, _ int64) ([]repository.SubscriptionDetail, error) {
+func (m *mockRateService) ObtainRateUserSubscriptionsBySourcePaged(_ context.Context, _ string, _, _ int64) ([]domain.RateUserSubscriptionDetail, error) {
 	return m.subscriptionDetails, m.err
 }
 
-func (m *mockRateService) ObtainDailyEventSummaryBySource(_ context.Context, _ string, _, _ int64) ([]repository.DailyEventSummary, error) {
+func (m *mockRateService) ObtainDailyEventSummaryBySource(_ context.Context, _ string, _, _ int64) ([]domain.RateUserEventDailySummary, error) {
 	return m.dailySummaries, m.err
 }
 

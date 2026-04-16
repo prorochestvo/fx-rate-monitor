@@ -190,6 +190,7 @@ func (r *ExecutionHistoryRepository) RetainExecutionHistory(ctx context.Context,
 		return err
 	}
 
+	var res sql.Result
 	if count > 0 {
 		cmd := "UPDATE" + " " + executionHistoryTableName + " SET " +
 			executionHistorySourceNameFieldName + " = ?, " +
@@ -197,7 +198,7 @@ func (r *ExecutionHistoryRepository) RetainExecutionHistory(ctx context.Context,
 			executionHistoryErrorFieldName + " = ?, " +
 			executionHistoryTimestampFieldName + " = ?" +
 			" WHERE " + executionHistoryIdFieldName + " = ?;"
-		_, err = tx.ExecContext(
+		res, err = tx.ExecContext(
 			ctx, cmd,
 			record.SourceName,
 			record.Success,
@@ -215,7 +216,7 @@ func (r *ExecutionHistoryRepository) RetainExecutionHistory(ctx context.Context,
 			executionHistoryTimestampFieldName +
 			")" +
 			" VALUES (?, ?, ?, ?, ?);"
-		_, err = tx.ExecContext(
+		res, err = tx.ExecContext(
 			ctx, cmd,
 			record.ID,
 			record.SourceName,
@@ -225,6 +226,18 @@ func (r *ExecutionHistoryRepository) RetainExecutionHistory(ctx context.Context,
 		)
 	}
 	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+	if rows <= 0 {
+		err = errors.New("unexpected result: no rows affected")
+		err = errors.Join(err, internal.ErrNotFound)
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}

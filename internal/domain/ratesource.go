@@ -8,6 +8,7 @@ type RateSource struct {
 	Interval      string            `json:"interval"`
 	BaseCurrency  string            `json:"base_currency"`
 	QuoteCurrency string            `json:"quote_currency"`
+	Kind          RateSourceKind    `json:"kind"`
 	Active        bool              `json:"active"`
 	Options       RateSourceOptions `json:"options"`
 	Rules         []RateSourceRule  `json:"rules"`
@@ -31,4 +32,11 @@ const (
 	MethodRegex       Method = "regex"
 	MethodJSONPath    Method = "json"
 	MethodStoreToRate Method = "store_as_rate"
+)
+
+type RateSourceKind string
+
+const (
+	RateSourceKindBID = "BID"
+	RateSourceKindASK = "ASK"
 )

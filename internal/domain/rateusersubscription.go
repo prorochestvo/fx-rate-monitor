@@ -175,6 +175,26 @@ func (rus *RateUserSubscription) IsDeltaSatisfied(delta float64) (bool, error) {
 	return math.Abs(delta) >= threshold, nil
 }
 
+// RateUserSubscriptionDetail holds the detail of a single subscription for the UI list.
+type RateUserSubscriptionDetail struct {
+	ID               string
+	UserType         UserType
+	SourceName       string
+	ConditionType    string
+	ConditionValue   string
+	LatestNotifiedAt time.Time // zero if never notified
+}
+
+// RateUserSubscriptionSummary holds aggregated per-(source, user_type) notification statistics.
+type RateUserSubscriptionSummary struct {
+	SourceName        string
+	UserType          UserType
+	SubscriptionCount int64
+	LastSentAt        time.Time // zero if no events have been sent
+	SuccessCount      int64
+	FailedCount       int64
+}
+
 type SubscriptionConditionType string
 
 const (

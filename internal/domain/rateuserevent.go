@@ -16,6 +16,14 @@ type RateUserEvent struct {
 	CreatedAt  time.Time
 }
 
+// RateUserEventDailySummary holds per-(user_type, date) aggregated event counts for a source.
+type RateUserEventDailySummary struct {
+	UserType     string
+	Date         string // YYYY-MM-DD
+	SuccessCount int64
+	FailedCount  int64
+}
+
 // RateUserEventStatus represents the delivery state of a notification in the pool.
 type RateUserEventStatus string
 

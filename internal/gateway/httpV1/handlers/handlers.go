@@ -469,10 +469,10 @@ type rateService interface {
 	ObtainPendingRateUserEvents(ctx context.Context) ([]domain.RateUserEvent, error)
 	ObtainRateValueChartBySourceName(ctx context.Context, name string, period repository.ChartPeriod) ([]repository.ChartPoint, error)
 	ObtainFailedRateUserEventsBySourceName(ctx context.Context, sourceName string, page, pageSize int64) ([]domain.RateUserEvent, error)
-	ObtainSubscriptionSummaryBySource(ctx context.Context, sourceName string) ([]repository.SubscriptionSummary, error)
+	ObtainSubscriptionSummaryBySource(ctx context.Context, sourceName string) ([]domain.RateUserSubscriptionSummary, error)
 	ObtainStats(ctx context.Context) (repository.StatsResult, error)
-	ObtainRateUserSubscriptionsBySourcePaged(ctx context.Context, sourceName string, offset, limit int64) ([]repository.SubscriptionDetail, error)
-	ObtainDailyEventSummaryBySource(ctx context.Context, sourceName string, offset, limit int64) ([]repository.DailyEventSummary, error)
+	ObtainRateUserSubscriptionsBySourcePaged(ctx context.Context, sourceName string, offset, limit int64) ([]domain.RateUserSubscriptionDetail, error)
+	ObtainDailyEventSummaryBySource(ctx context.Context, sourceName string, offset, limit int64) ([]domain.RateUserEventDailySummary, error)
 	ObtainLastNExecutionHistoryErrors(ctx context.Context, offset, limit int64) ([]domain.ExecutionHistory, error)
 }
 

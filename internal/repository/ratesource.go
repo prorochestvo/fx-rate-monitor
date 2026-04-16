@@ -66,20 +66,21 @@ func (r *RateSourceRepository) CheckUP(ctx context.Context) error {
 func (r *RateSourceRepository) Migration() (map[string]string, error) {
 	return map[string]string{
 		rateSourceTableName + "_001_table_initiate": `CREATE TABLE IF NOT EXISTS ` + rateSourceTableName + ` (
-	` + rateSourceNameFieldName + `           TEXT NOT NULL PRIMARY KEY,
-	` + rateSourceTitleFieldName + `          TEXT NOT NULL,
-	` + reteSourceBaseCurrencyFieldName + `   TEXT NOT NULL,
-	` + reteSourceQuoteCurrencyFieldName + `  TEXT NOT NULL,
-	` + rateSourceURLFieldName + `            TEXT NOT NULL,
-	` + reteSourceIntervalFieldName + `       TEXT NOT NULL DEFAULT '10m',
-	` + rateSourceOptionsFieldName + `        TEXT NOT NULL DEFAULT '{}',
-	` + rateSourceRulesFieldName + `          TEXT NOT NULL DEFAULT '[]'
+	` + rateSourceNameFieldName + `          TEXT NOT NULL PRIMARY KEY,
+	` + rateSourceTitleFieldName + `         TEXT NOT NULL,
+	` + reteSourceBaseCurrencyFieldName + `  TEXT NOT NULL,
+	` + reteSourceQuoteCurrencyFieldName + ` TEXT NOT NULL DEFAULT 'KZT',
+	` + rateSourceURLFieldName + `           TEXT NOT NULL,
+	` + reteSourceIntervalFieldName + `      TEXT NOT NULL DEFAULT '10m',
+	` + rateSourceKindFieldName + `          TEXT NOT NULL,
+	` + rateSourceActiveFieldName + `        INTEGER NOT NULL DEFAULT 1,
+	` + rateSourceOptionsFieldName + `       TEXT NOT NULL DEFAULT '{}',
+	` + rateSourceRulesFieldName + `         TEXT NOT NULL DEFAULT '[]'
 );
-CREATE INDEX IF NOT EXISTS idx_` + rateSourceTableName + `_name ON ` + rateSourceTableName + ` (` + rateSourceNameFieldName + `);`,
-		rateSourceTableName + "_002_add_active": `ALTER TABLE` + " " + rateSourceTableName +
-			` ADD COLUMN ` + rateSourceActiveFieldName + ` INTEGER NOT NULL DEFAULT 1;` +
-			`CREATE INDEX IF NOT EXISTS idx_` + rateSourceTableName + `_active` +
-			` ON ` + rateSourceTableName + ` (` + rateSourceActiveFieldName + `);`,
+CREATE INDEX IF NOT EXISTS idx_` + rateSourceTableName + `_name ON ` + rateSourceTableName + ` (` + rateSourceNameFieldName + `);
+CREATE INDEX IF NOT EXISTS idx_` + rateSourceTableName + `_currency ON ` + rateSourceTableName + ` (` + reteSourceBaseCurrencyFieldName + `,` + reteSourceBaseCurrencyFieldName + `);
+CREATE INDEX IF NOT EXISTS idx_` + rateSourceTableName + `_kind ON ` + rateSourceTableName + ` (` + rateSourceKindFieldName + `);
+CREATE INDEX IF NOT EXISTS idx_` + rateSourceTableName + `_active ON ` + rateSourceTableName + ` (` + rateSourceActiveFieldName + `);`,
 	}, nil
 }
 
@@ -161,6 +162,7 @@ func (r *RateSourceRepository) RetainRateSource(ctx context.Context, record *dom
 		return err
 	}
 
+	var res sql.Result
 	if count > 0 {
 		cmd := "UPDATE" + " " + rateSourceTableName + " SET " +
 			rateSourceTitleFieldName + " = ?, " +
@@ -168,16 +170,20 @@ func (r *RateSourceRepository) RetainRateSource(ctx context.Context, record *dom
 			reteSourceQuoteCurrencyFieldName + " = ?, " +
 			rateSourceURLFieldName + " = ?, " +
 			reteSourceIntervalFieldName + " = ?, " +
+			rateSourceKindFieldName + " = ?, " +
+			rateSourceActiveFieldName + " = ?, " +
 			rateSourceOptionsFieldName + " = ?, " +
 			rateSourceRulesFieldName + " = ?" +
 			" WHERE " + rateSourceNameFieldName + " = ?;"
-		_, err = tx.ExecContext(
+		res, err = tx.ExecContext(
 			ctx, cmd,
 			record.Title,
 			record.BaseCurrency,
 			record.QuoteCurrency,
 			record.URL,
 			record.Interval,
+			record.Kind,
+			record.Active,
 			string(opts),
 			string(rules),
 			record.Name,
@@ -191,12 +197,13 @@ func (r *RateSourceRepository) RetainRateSource(ctx context.Context, record *dom
 			reteSourceQuoteCurrencyFieldName + ", " +
 			rateSourceURLFieldName + ", " +
 			reteSourceIntervalFieldName + ", " +
+			rateSourceKindFieldName + ", " +
 			rateSourceActiveFieldName + ", " +
 			rateSourceOptionsFieldName + ", " +
 			rateSourceRulesFieldName +
 			")" +
-			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);"
-		_, err = tx.ExecContext(
+			" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"
+		res, err = tx.ExecContext(
 			ctx, cmd,
 			record.Name,
 			record.Title,
@@ -204,7 +211,8 @@ func (r *RateSourceRepository) RetainRateSource(ctx context.Context, record *dom
 			record.QuoteCurrency,
 			record.URL,
 			record.Interval,
-			false,
+			record.Kind,
+			record.Active,
 			string(opts),
 			string(rules),
 		)
@@ -214,39 +222,16 @@ func (r *RateSourceRepository) RetainRateSource(ctx context.Context, record *dom
 		return err
 	}
 
-	if err = tx.Commit(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return err
-	}
-
-	return nil
-}
-
-func (r *RateSourceRepository) UpdateRateSourceActive(ctx context.Context, name string, active bool) error {
-	tx, err := r.db.Transaction(ctx)
-	if err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return err
-	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
-
-	cmd := "UPDATE " + rateSourceTableName +
-		" SET " + rateSourceActiveFieldName + " = ?" +
-		" WHERE " + rateSourceNameFieldName + " = ?;"
-	result, err := tx.ExecContext(ctx, cmd, active, name)
-	if err != nil {
-		err = errors.Join(err, fmt.Errorf("SQL: %s", cmd))
-		err = errors.Join(err, internal.NewTraceError())
-		return err
-	}
-
-	rows, err := result.RowsAffected()
+	rows, err := res.RowsAffected()
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
-	if rows == 0 {
-		return errors.Join(internal.ErrNotFound, internal.NewTraceError())
+	if rows <= 0 {
+		err = errors.New("unexpected result: no rows affected")
+		err = errors.Join(err, internal.ErrNotFound)
+		err = errors.Join(err, internal.NewTraceError())
+		return err
 	}
 
 	if err = tx.Commit(); err != nil {
@@ -295,9 +280,10 @@ const (
 	reteSourceIntervalFieldName      = "interval"
 	reteSourceBaseCurrencyFieldName  = "base_currency"
 	reteSourceQuoteCurrencyFieldName = "quote_currency"
+	rateSourceKindFieldName          = "kind"
+	rateSourceActiveFieldName        = "active"
 	rateSourceOptionsFieldName       = "options"
 	rateSourceRulesFieldName         = "rules"
-	rateSourceActiveFieldName        = "active"
 
 	rateSourceSqlSelect = "SELECT\n" +
 		rateSourceNameFieldName + ", " +
@@ -306,6 +292,7 @@ const (
 		reteSourceQuoteCurrencyFieldName + ", " +
 		rateSourceURLFieldName + ", " +
 		reteSourceIntervalFieldName + ", " +
+		rateSourceKindFieldName + ", " +
 		rateSourceActiveFieldName + ", " +
 		rateSourceOptionsFieldName + ", " +
 		rateSourceRulesFieldName + " " +
@@ -361,25 +348,42 @@ func rateSourceQueryContext(tx *sql.Tx, ctx context.Context, condition string, a
 	for rows.Next() {
 		var optsJSON, rulesJSON string
 
-		var src domain.RateSource
-		if err = rows.Scan(&src.Name, &src.Title, &src.BaseCurrency, &src.QuoteCurrency, &src.URL, &src.Interval, &src.Active, &optsJSON, &rulesJSON); err != nil {
+		var item domain.RateSource
+		if err = rows.Scan(
+			&item.Name,
+			&item.Title,
+			&item.BaseCurrency,
+			&item.QuoteCurrency,
+			&item.URL,
+			&item.Interval,
+			&item.Kind,
+			&item.Active,
+			&optsJSON,
+			&rulesJSON,
+		); err != nil {
 			err = errors.Join(err, internal.NewTraceError())
 			return nil, err
 		}
 
-		if err = json.Unmarshal([]byte(optsJSON), &src.Options); err != nil {
-			err = fmt.Errorf("unmarshal options for source %q: %w", src.Name, err)
+		if item.Kind != domain.RateSourceKindASK && item.Kind != domain.RateSourceKindBID {
+			err = fmt.Errorf("unknown kind %s", item.Kind)
 			err = errors.Join(err, internal.NewTraceError())
 			return nil, err
 		}
 
-		if err = json.Unmarshal([]byte(rulesJSON), &src.Rules); err != nil {
-			err = fmt.Errorf("unmarshal rules for source %q: %w", src.Name, err)
+		if err = json.Unmarshal([]byte(optsJSON), &item.Options); err != nil {
+			err = fmt.Errorf("unmarshal options for source %q: %w", item.Name, err)
 			err = errors.Join(err, internal.NewTraceError())
 			return nil, err
 		}
 
-		items = append(items, src)
+		if err = json.Unmarshal([]byte(rulesJSON), &item.Rules); err != nil {
+			err = fmt.Errorf("unmarshal rules for source %q: %w", item.Name, err)
+			err = errors.Join(err, internal.NewTraceError())
+			return nil, err
+		}
+
+		items = append(items, item)
 	}
 
 	return
@@ -397,6 +401,7 @@ func rateSourceQueryRowContext(tx *sql.Tx, ctx context.Context, condition string
 		&item.QuoteCurrency,
 		&item.URL,
 		&item.Interval,
+		&item.Kind,
 		&item.Active,
 		&optionsJSON,
 		&rulesJSON,

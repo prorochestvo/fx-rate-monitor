@@ -271,8 +271,10 @@ func TestRateRepository_ObtainLastNRateValuesBySourceName(t *testing.T) {
 	t.Run("more rows than limit returns newest first", func(t *testing.T) {
 		t.Parallel()
 
+		now := time.Now().UTC()
+
 		for i := 0; i < 5; i++ {
-			rate := &domain.RateValue{SourceName: "many-source", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: float64(100 + i)}
+			rate := &domain.RateValue{SourceName: "many-source", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: float64(100 + i), Timestamp: now.Add(time.Duration(i+1) * time.Minute)}
 			require.NoError(t, r.RetainRateValue(t.Context(), rate))
 		}
 

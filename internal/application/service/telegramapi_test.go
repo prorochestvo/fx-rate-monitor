@@ -16,8 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const testChatID int64 = 123456789
-
 func TestTelegramApi_handleShow(t *testing.T) {
 	t.Parallel()
 	t.Run("shows list when subscriptions exist", func(t *testing.T) {
@@ -27,7 +25,7 @@ func TestTelegramApi_handleShow(t *testing.T) {
 			{SourceName: "USD/KZT", ConditionType: domain.ConditionTypeDelta, ConditionValue: "0.5"},
 			{SourceName: "EUR/KZT", ConditionType: domain.ConditionTypeInterval, ConditionValue: "30m"},
 		}
-		h := newTestHandler(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
 
 		h.handleShow(t.Context(), testChatID, 0)
 
@@ -41,7 +39,7 @@ func TestTelegramApi_handleShow(t *testing.T) {
 	t.Run("shows empty-state when no subscriptions", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{subs: []domain.RateUserSubscription{}}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{subs: []domain.RateUserSubscription{}}, &mockSourceRepo{})
 
 		h.handleShow(t.Context(), testChatID, 0)
 
@@ -52,7 +50,7 @@ func TestTelegramApi_handleShow(t *testing.T) {
 	t.Run("shows error message when repo fails", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{err: fmt.Errorf("db error")}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{err: fmt.Errorf("db error")}, &mockSourceRepo{})
 
 		h.handleShow(t.Context(), testChatID, 0)
 
@@ -69,7 +67,7 @@ func TestTelegramApi_handleShow_editMode(t *testing.T) {
 		subs := []domain.RateUserSubscription{
 			{SourceName: "USD/KZT", ConditionType: domain.ConditionTypeDelta, ConditionValue: "5"},
 		}
-		h := newTestHandler(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
 
 		h.handleShow(t.Context(), testChatID, 77)
 
@@ -84,7 +82,7 @@ func TestTelegramApi_handleShow_editMode(t *testing.T) {
 		subs := []domain.RateUserSubscription{
 			{SourceName: "USD/KZT", ConditionType: domain.ConditionTypeDelta, ConditionValue: "5"},
 		}
-		h := newTestHandler(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
 
 		h.handleShow(t.Context(), testChatID, 0)
 
@@ -107,7 +105,7 @@ func TestTelegramApi_handleLatestUpdates(t *testing.T) {
 				UpdatedAt:          time.Date(2026, 4, 12, 10, 30, 0, 0, time.UTC),
 			},
 		}
-		h := newTestHandler(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
 
 		h.handleLatestUpdates(t.Context(), testChatID, 0)
 
@@ -122,7 +120,7 @@ func TestTelegramApi_handleLatestUpdates(t *testing.T) {
 		subs := []domain.RateUserSubscription{
 			{SourceName: "USD/KZT", ConditionType: domain.ConditionTypeDelta, ConditionValue: "0.5"},
 		}
-		h := newTestHandler(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
 
 		h.handleLatestUpdates(t.Context(), testChatID, 0)
 
@@ -132,7 +130,7 @@ func TestTelegramApi_handleLatestUpdates(t *testing.T) {
 	t.Run("shows empty-state when user has no subscriptions", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{subs: []domain.RateUserSubscription{}}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{subs: []domain.RateUserSubscription{}}, &mockSourceRepo{})
 
 		h.handleLatestUpdates(t.Context(), testChatID, 0)
 
@@ -142,7 +140,7 @@ func TestTelegramApi_handleLatestUpdates(t *testing.T) {
 	t.Run("shows error message when repo fails", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{err: fmt.Errorf("db error")}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{err: fmt.Errorf("db error")}, &mockSourceRepo{})
 
 		h.handleLatestUpdates(t.Context(), testChatID, 0)
 
@@ -159,7 +157,7 @@ func TestTelegramApi_handleLatestUpdates_editMode(t *testing.T) {
 		subs := []domain.RateUserSubscription{
 			{SourceName: "USD/KZT", ConditionType: domain.ConditionTypeDelta, ConditionValue: "5"},
 		}
-		h := newTestHandler(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
 
 		h.handleLatestUpdates(t.Context(), testChatID, 88)
 
@@ -173,7 +171,7 @@ func TestTelegramApi_handleLatestUpdates_editMode(t *testing.T) {
 		subs := []domain.RateUserSubscription{
 			{SourceName: "USD/KZT", ConditionType: domain.ConditionTypeDelta, ConditionValue: "5"},
 		}
-		h := newTestHandler(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
 
 		h.handleLatestUpdates(t.Context(), testChatID, 0)
 
@@ -191,7 +189,7 @@ func TestTelegramApi_handleAddSourceList(t *testing.T) {
 			{Name: "usd_kzt", Title: "USD", BaseCurrency: "USD", QuoteCurrency: "KZT"},
 			{Name: "eur_kzt", Title: "EUR", BaseCurrency: "EUR", QuoteCurrency: "KZT"},
 		}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
 
 		h.handleAddSourceList(t.Context(), testChatID, 0)
 
@@ -212,7 +210,7 @@ func TestTelegramApi_handleAddSourceList(t *testing.T) {
 			{Name: "qp_eur", Title: "QazPost", BaseCurrency: "EUR", QuoteCurrency: "KZT"},
 			{Name: "nbk", Title: "National Bank of Kazakhstan", BaseCurrency: "USD", QuoteCurrency: "KZT"},
 		}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
 
 		h.handleAddSourceList(t.Context(), testChatID, 0)
 
@@ -223,7 +221,7 @@ func TestTelegramApi_handleAddSourceList(t *testing.T) {
 	t.Run("shows no-sources message when list is empty", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: []domain.RateSource{}})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{sources: []domain.RateSource{}})
 
 		h.handleAddSourceList(t.Context(), testChatID, 0)
 
@@ -233,7 +231,7 @@ func TestTelegramApi_handleAddSourceList(t *testing.T) {
 	t.Run("shows error message when repo fails", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{err: fmt.Errorf("db error")})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{err: fmt.Errorf("db error")})
 
 		h.handleAddSourceList(t.Context(), testChatID, 0)
 
@@ -250,7 +248,7 @@ func TestTelegramApi_handleAddSourceList_editMode(t *testing.T) {
 		sources := []domain.RateSource{
 			{Name: "usd_kzt", Title: "USD", BaseCurrency: "USD", QuoteCurrency: "KZT"},
 		}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
 
 		h.handleAddSourceList(t.Context(), testChatID, 55)
 
@@ -264,7 +262,7 @@ func TestTelegramApi_handleAddSourceList_editMode(t *testing.T) {
 		sources := []domain.RateSource{
 			{Name: "usd_kzt", Title: "USD", BaseCurrency: "USD", QuoteCurrency: "KZT"},
 		}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
 
 		h.handleAddSourceList(t.Context(), testChatID, 0)
 
@@ -283,7 +281,7 @@ func TestTelegramApi_handleAddTitleSelect(t *testing.T) {
 			{Name: "qp_rub", Title: "QazPost", BaseCurrency: "RUB", QuoteCurrency: "KZT"},
 			{Name: "nbk", Title: "National Bank", BaseCurrency: "USD", QuoteCurrency: "KZT"},
 		}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
 
 		h.handleAddTitleSelect(t.Context(), testChatID, 0, "QazPost")
 
@@ -297,7 +295,7 @@ func TestTelegramApi_handleAddTitleSelect(t *testing.T) {
 		sources := []domain.RateSource{
 			{Name: "qp_usd", Title: "QazPost", BaseCurrency: "USD", QuoteCurrency: "KZT"},
 		}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
 
 		h.handleAddTitleSelect(t.Context(), testChatID, 0, "QazPost")
 
@@ -313,7 +311,7 @@ func TestTelegramApi_handleAddTitleSelect(t *testing.T) {
 		sources := []domain.RateSource{
 			{Name: "qp_usd", Title: "QazPost", BaseCurrency: "USD", QuoteCurrency: "KZT"},
 		}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
 
 		h.handleAddTitleSelect(t.Context(), testChatID, 0, "QazPost")
 
@@ -329,7 +327,7 @@ func TestTelegramApi_handleAddTitleSelect(t *testing.T) {
 		sources := []domain.RateSource{
 			{Name: "nbk", Title: "National Bank", BaseCurrency: "USD", QuoteCurrency: "KZT"},
 		}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
 
 		h.handleAddTitleSelect(t.Context(), testChatID, 0, "QazPost")
 
@@ -340,7 +338,7 @@ func TestTelegramApi_handleAddTitleSelect(t *testing.T) {
 	t.Run("shows error message when repo fails", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{err: fmt.Errorf("db error")})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{err: fmt.Errorf("db error")})
 
 		h.handleAddTitleSelect(t.Context(), testChatID, 0, "QazPost")
 
@@ -358,7 +356,7 @@ func TestTelegramApi_handleAddTitleSelect_editMode(t *testing.T) {
 		sources := []domain.RateSource{
 			{Name: "qp_usd", Title: "QazPost", BaseCurrency: "USD", QuoteCurrency: "KZT"},
 		}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
 
 		h.handleAddTitleSelect(t.Context(), testChatID, 44, "QazPost")
 
@@ -372,7 +370,7 @@ func TestTelegramApi_handleAddTitleSelect_editMode(t *testing.T) {
 		sources := []domain.RateSource{
 			{Name: "qp_usd", Title: "QazPost", BaseCurrency: "USD", QuoteCurrency: "KZT"},
 		}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{sources: sources})
 
 		h.handleAddTitleSelect(t.Context(), testChatID, 0, "QazPost")
 
@@ -387,7 +385,7 @@ func TestTelegramApi_handleAddSourceSelect(t *testing.T) {
 	t.Run("sends condition-type keyboard containing the source name", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 
 		h.handleAddSourceSelect(t.Context(), testChatID, 0, "usd_kzt")
 
@@ -399,7 +397,7 @@ func TestTelegramApi_handleAddSourceSelect(t *testing.T) {
 	t.Run("embeds url-encoded source name in each condition button callback_data", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 
 		h.handleAddSourceSelect(t.Context(), testChatID, 0, "Halyk Bank")
 
@@ -416,7 +414,7 @@ func TestTelegramApi_handleAddSourceSelect_editMode(t *testing.T) {
 	t.Run("edits existing message when msgID is non-zero", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 
 		h.handleAddSourceSelect(t.Context(), testChatID, 33, "usd_kzt")
 
@@ -427,7 +425,7 @@ func TestTelegramApi_handleAddSourceSelect_editMode(t *testing.T) {
 	t.Run("sends new message when msgID is zero", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 
 		h.handleAddSourceSelect(t.Context(), testChatID, 0, "usd_kzt")
 
@@ -442,7 +440,7 @@ func TestTelegramApi_handleAddValueSelect(t *testing.T) {
 	t.Run("delta condition renders 5 value buttons plus back row", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 
 		h.handleAddValueSelect(t.Context(), testChatID, 0, "usd_kzt", domain.ConditionTypeDelta)
 
@@ -452,7 +450,7 @@ func TestTelegramApi_handleAddValueSelect(t *testing.T) {
 	t.Run("interval condition renders 6 value buttons plus back row", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 
 		h.handleAddValueSelect(t.Context(), testChatID, 0, "usd_kzt", domain.ConditionTypeInterval)
 
@@ -462,7 +460,7 @@ func TestTelegramApi_handleAddValueSelect(t *testing.T) {
 	t.Run("daily condition renders 8 value buttons plus back row", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 
 		h.handleAddValueSelect(t.Context(), testChatID, 0, "usd_kzt", domain.ConditionTypeDaily)
 
@@ -472,7 +470,7 @@ func TestTelegramApi_handleAddValueSelect(t *testing.T) {
 	t.Run("cron condition renders 7 value buttons plus back row", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 
 		h.handleAddValueSelect(t.Context(), testChatID, 0, "usd_kzt", domain.ConditionTypeCron)
 
@@ -482,7 +480,7 @@ func TestTelegramApi_handleAddValueSelect(t *testing.T) {
 	t.Run("unknown condition type sends warning and no keyboard", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 
 		h.handleAddValueSelect(t.Context(), testChatID, 0, "usd_kzt", "unknown")
 
@@ -498,7 +496,7 @@ func TestTelegramApi_routeAddFlow(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
 		subRepo := &mockSubRepo{}
-		h := newTestHandler(client, subRepo, &mockSourceRepo{})
+		h := newTelegramApi(client, subRepo, &mockSourceRepo{})
 
 		// rest = "<urlencoded_source>:<conditionType>:<value>"
 		h.routeAddFlow(t.Context(), testChatID, 0, "usd_kzt:delta:0.5")
@@ -511,7 +509,7 @@ func TestTelegramApi_routeAddFlow(t *testing.T) {
 	t.Run("shows condition keyboard when rest has 1 segment", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 
 		h.routeAddFlow(t.Context(), testChatID, 0, "usd_kzt")
 
@@ -521,7 +519,7 @@ func TestTelegramApi_routeAddFlow(t *testing.T) {
 	t.Run("shows value keyboard when rest has 2 segments", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 
 		h.routeAddFlow(t.Context(), testChatID, 0, "usd_kzt:delta")
 
@@ -538,7 +536,7 @@ func TestTelegramApi_handleDeleteList_editMode(t *testing.T) {
 		subs := []domain.RateUserSubscription{
 			{SourceName: "usd_kzt", ConditionType: domain.ConditionTypeDelta, ConditionValue: "5"},
 		}
-		h := newTestHandler(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
 
 		h.handleDeleteList(t.Context(), testChatID, 11)
 
@@ -552,7 +550,7 @@ func TestTelegramApi_handleDeleteList_editMode(t *testing.T) {
 		subs := []domain.RateUserSubscription{
 			{SourceName: "usd_kzt", ConditionType: domain.ConditionTypeDelta, ConditionValue: "5"},
 		}
-		h := newTestHandler(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
 
 		h.handleDeleteList(t.Context(), testChatID, 0)
 
@@ -566,7 +564,7 @@ func TestTelegramApi_handleDeleteAsk_editMode(t *testing.T) {
 	t.Run("edits existing message when msgID is non-zero", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 
 		h.handleDeleteAsk(t.Context(), testChatID, 22, "usd_kzt")
 
@@ -577,7 +575,7 @@ func TestTelegramApi_handleDeleteAsk_editMode(t *testing.T) {
 	t.Run("sends new message when msgID is zero", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 
 		h.handleDeleteAsk(t.Context(), testChatID, 0, "usd_kzt")
 
@@ -603,7 +601,7 @@ func TestTelegramApi_handleDeleteConfirm(t *testing.T) {
 				},
 			},
 		}
-		h := newTestHandler(client, subRepo, &mockSourceRepo{})
+		h := newTelegramApi(client, subRepo, &mockSourceRepo{})
 
 		h.handleDeleteConfirm(t.Context(), testChatID, 0, "usd_kzt")
 
@@ -623,7 +621,7 @@ func TestTelegramApi_handleDeleteConfirm(t *testing.T) {
 				},
 			},
 		}
-		h := newTestHandler(client, subRepo, &mockSourceRepo{})
+		h := newTelegramApi(client, subRepo, &mockSourceRepo{})
 
 		h.handleDeleteConfirm(t.Context(), testChatID, 0, "usd_kzt")
 
@@ -636,7 +634,7 @@ func TestTelegramApi_handleDeleteConfirm(t *testing.T) {
 	t.Run("sends not-found message when subscription is missing", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{subs: []domain.RateUserSubscription{}}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{subs: []domain.RateUserSubscription{}}, &mockSourceRepo{})
 
 		h.handleDeleteConfirm(t.Context(), testChatID, 0, "usd_kzt")
 
@@ -647,7 +645,7 @@ func TestTelegramApi_handleDeleteConfirm(t *testing.T) {
 	t.Run("sends error message and shows main menu on repo failure", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{err: fmt.Errorf("db error")}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{err: fmt.Errorf("db error")}, &mockSourceRepo{})
 
 		h.handleDeleteConfirm(t.Context(), testChatID, 0, "usd_kzt")
 
@@ -666,7 +664,7 @@ func TestTelegramApi_handleMessage(t *testing.T) {
 	t.Run("sends main menu on /subscriptions command", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 		msg := buildMessage(testChatID, "/subscriptions")
 
 		h.handleMessage(t.Context(), msg)
@@ -676,7 +674,7 @@ func TestTelegramApi_handleMessage(t *testing.T) {
 	t.Run("sends main menu on /start command", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 		msg := buildMessage(testChatID, "/start")
 
 		h.handleMessage(t.Context(), msg)
@@ -686,7 +684,7 @@ func TestTelegramApi_handleMessage(t *testing.T) {
 	t.Run("sends main menu on case-insensitive and padded command", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 		msg := buildMessage(testChatID, "  /SUBSCRIPTIONS  ")
 
 		h.handleMessage(t.Context(), msg)
@@ -696,7 +694,7 @@ func TestTelegramApi_handleMessage(t *testing.T) {
 	t.Run("sends hint containing /subscriptions on unrecognised input", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 		msg := buildMessage(testChatID, "hello")
 
 		h.handleMessage(t.Context(), msg)
@@ -712,7 +710,7 @@ func TestTelegramApi_sendMainMenu_editMode(t *testing.T) {
 	t.Run("edits existing message when msgID is non-zero", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 
 		h.sendMainMenu(t.Context(), testChatID, 42)
 
@@ -723,7 +721,7 @@ func TestTelegramApi_sendMainMenu_editMode(t *testing.T) {
 	t.Run("sends new message when msgID is zero", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
-		h := newTestHandler(client, &mockSubRepo{}, &mockSourceRepo{})
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
 
 		h.sendMainMenu(t.Context(), testChatID, 0)
 
@@ -820,7 +818,7 @@ func BenchmarkHandleShow(b *testing.B) {
 		}
 	}
 	client := &mockTelegramClient{}
-	h := newTestHandler(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
+	h := newTelegramApi(client, &mockSubRepo{subs: subs}, &mockSourceRepo{})
 	ctx := context.Background()
 
 	b.ResetTimer()
@@ -830,12 +828,8 @@ func BenchmarkHandleShow(b *testing.B) {
 	}
 }
 
-// newTestHandler is a helper that creates a TelegramApi wired to the provided mocks.
-func newTestHandler(
-	client *mockTelegramClient,
-	subRepo subscriptionRepository,
-	sourceRepo sourceRepository,
-) *TelegramApi {
+// newTelegramApi is a helper that creates a TelegramApi wired to the provided mocks.
+func newTelegramApi(client *mockTelegramClient, subRepo subscriptionRepository, sourceRepo sourceRepository) *TelegramApi {
 	h, _ := NewTelegramApi(client, subRepo, sourceRepo)
 	return h
 }
@@ -887,12 +881,7 @@ func (m *mockTelegramClient) SendHTMLMessage(_ context.Context, _ integration.Te
 	return nil
 }
 
-func (m *mockTelegramClient) SendHTMLMessageWithKeyboard(
-	_ context.Context,
-	_ integration.TelegramChatID,
-	text string,
-	kb tgbotapi.InlineKeyboardMarkup,
-) error {
+func (m *mockTelegramClient) SendHTMLMessageWithKeyboard(_ context.Context, _ integration.TelegramChatID, text string, kb tgbotapi.InlineKeyboardMarkup) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.htmlMessages = append(m.htmlMessages, text)
@@ -900,13 +889,7 @@ func (m *mockTelegramClient) SendHTMLMessageWithKeyboard(
 	return nil
 }
 
-func (m *mockTelegramClient) EditHTMLMessageWithKeyboard(
-	_ context.Context,
-	_ integration.TelegramChatID,
-	messageID int,
-	text string,
-	kb tgbotapi.InlineKeyboardMarkup,
-) error {
+func (m *mockTelegramClient) EditHTMLMessageWithKeyboard(_ context.Context, _ integration.TelegramChatID, messageID int, text string, kb tgbotapi.InlineKeyboardMarkup) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.editedMsgIDs = append(m.editedMsgIDs, messageID)
@@ -932,11 +915,7 @@ type mockSubRepo struct {
 	lastRemoved  domain.RateUserSubscription
 }
 
-func (m *mockSubRepo) ObtainRateUserSubscriptionsByUserID(
-	_ context.Context,
-	_ domain.UserType,
-	_ string,
-) ([]domain.RateUserSubscription, error) {
+func (m *mockSubRepo) ObtainRateUserSubscriptionsByUserID(_ context.Context, _ domain.UserType, _ string) ([]domain.RateUserSubscription, error) {
 	return m.subs, m.err
 }
 
@@ -957,6 +936,8 @@ func (m *mockSubRepo) RemoveRateUserSubscription(_ context.Context, sub *domain.
 	m.lastRemoved = *sub
 	return nil
 }
+
+const testChatID int64 = 123456789
 
 // mockSourceRepo is a test double for sourceRepository.
 type mockSourceRepo struct {

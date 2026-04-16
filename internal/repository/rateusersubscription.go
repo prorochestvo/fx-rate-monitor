@@ -155,6 +155,7 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 		return err
 	}
 
+	var res sql.Result
 	if count > 0 {
 		cmd := "UPDATE" + " " + rateUserSubscriptionTableName + " SET " +
 			rateUserSubscriptionUserTypeFieldName + " = ?, " +
@@ -165,7 +166,7 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 			rateUserSubscriptionLatestNotifiedRateFieldName + " = ?, " +
 			rateUserSubscriptionUpdatedAtFieldName + " = ? " +
 			" WHERE " + rateUserSubscriptionIdFieldName + " = ?;"
-		_, err = tx.ExecContext(
+		res, err = tx.ExecContext(
 			ctx, cmd,
 			record.UserType,
 			record.UserID,
@@ -189,7 +190,7 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 			rateUserSubscriptionUpdatedAtFieldName + ", " +
 			rateUserSubscriptionCreatedAtFieldName +
 			") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);"
-		_, err = tx.ExecContext(
+		res, err = tx.ExecContext(
 			ctx, cmd,
 			record.ID,
 			record.UserType,
@@ -207,6 +208,18 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 		return err
 	}
 
+	rows, err := res.RowsAffected()
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+	if rows <= 0 {
+		err = errors.New("unexpected result: no rows affected")
+		err = errors.Join(err, internal.ErrNotFound)
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+
 	if err = tx.Commit(); err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
@@ -215,21 +228,9 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 	return nil
 }
 
-// SubscriptionDetail holds the detail of a single subscription for the UI list.
-type SubscriptionDetail struct {
-	ID               string
-	UserType         domain.UserType
-	SourceName       string
-	ConditionType    string
-	ConditionValue   string
-	LatestNotifiedAt time.Time // zero if never notified
-}
-
 // ObtainRateUserSubscriptionsBySourcePaged returns up to limit subscriptions for the
 // given source, ordered by updated_at DESC with OFFSET = (page-1)*limit.
-func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySourcePaged(
-	ctx context.Context, sourceName string, offset, limit int64,
-) ([]SubscriptionDetail, error) {
+func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySourcePaged(ctx context.Context, sourceName string, offset, limit int64) ([]domain.RateUserSubscriptionDetail, error) {
 	query := "SELECT " +
 		rateUserSubscriptionIdFieldName + ", " +
 		rateUserSubscriptionUserTypeFieldName + ", " +
@@ -254,9 +255,9 @@ func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySourcePage
 	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
 
-	var items []SubscriptionDetail
+	items := make([]domain.RateUserSubscriptionDetail, 0, limit)
 	for rows.Next() {
-		var item SubscriptionDetail
+		var item domain.RateUserSubscriptionDetail
 		var updatedAt string
 		if scanErr := rows.Scan(
 			&item.ID, &item.UserType, &item.SourceName,
@@ -268,28 +269,17 @@ func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySourcePage
 		items = append(items, item)
 	}
 
-	_ = tx.Rollback()
-	if items == nil {
-		items = []SubscriptionDetail{}
+	if err = tx.Rollback(); err != nil {
+		err = errors.Join(err, internal.NewStackTraceError())
+		return nil, err
 	}
-	return items, nil
-}
 
-// SubscriptionSummary holds aggregated per-(source, user_type) notification statistics.
-type SubscriptionSummary struct {
-	SourceName        string
-	UserType          domain.UserType
-	SubscriptionCount int64
-	LastSentAt        time.Time // zero if no events have been sent
-	SuccessCount      int64
-	FailedCount       int64
+	return items, nil
 }
 
 // ObtainSubscriptionSummaryBySource returns one row per (source_name, user_type) pair
 // with aggregated subscription and event counts. user_id is never returned.
-func (r *RateUserSubscriptionRepository) ObtainSubscriptionSummaryBySource(
-	ctx context.Context, sourceName string,
-) ([]SubscriptionSummary, error) {
+func (r *RateUserSubscriptionRepository) ObtainSubscriptionSummaryBySource(ctx context.Context, sourceName string) ([]domain.RateUserSubscriptionSummary, error) {
 	const query = "SELECT" + `
     s.source_name,
     s.user_type,
@@ -315,9 +305,9 @@ GROUP BY s.source_name, s.user_type;`
 	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
 
-	var result []SubscriptionSummary
+	result := make([]domain.RateUserSubscriptionSummary, 0)
 	for rows.Next() {
-		var s SubscriptionSummary
+		var s domain.RateUserSubscriptionSummary
 		var lastSentAt *string
 		if scanErr := rows.Scan(
 			&s.SourceName, &s.UserType,
@@ -331,7 +321,12 @@ GROUP BY s.source_name, s.user_type;`
 		}
 		result = append(result, s)
 	}
-	_ = tx.Rollback()
+
+	if err = tx.Rollback(); err != nil {
+		err = errors.Join(err, internal.NewStackTraceError())
+		return nil, err
+	}
+
 	return result, nil
 }
 

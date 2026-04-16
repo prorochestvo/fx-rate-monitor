@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
@@ -37,7 +38,8 @@ type RateRestApi struct {
 	rateUserEventRepository        rateUserEventRepository
 }
 
-func (h *RateRestApi) HealthCheck(ctx context.Context) error {
+func (h *RateRestApi) HealthCheck(_ context.Context) error {
+	// TODO: not implemented yet
 	return nil
 }
 
@@ -60,9 +62,23 @@ func (h *RateRestApi) ObtainLastSuccessNExecutionHistoryBySourceName(ctx context
 }
 
 func (h *RateRestApi) UpdateRateSourceActive(ctx context.Context, name string, active bool) error {
-	if err := h.rateSourceRepository.UpdateRateSourceActive(ctx, name, active); err != nil {
-		return errors.Join(err, internal.NewTraceError())
+	src, err := h.rateSourceRepository.ObtainRateSourceByName(ctx, name)
+	if err != nil || src == nil {
+		if err == nil {
+			err = fmt.Errorf("rate source is null or not found")
+		}
+		err = errors.Join(err, internal.NewTraceError())
+		return err
 	}
+
+	src.Active = active
+
+	err = h.rateSourceRepository.RetainRateSource(ctx, src)
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+
 	return nil
 }
 
@@ -131,9 +147,7 @@ func (h *RateRestApi) ObtainPendingRateUserEvents(ctx context.Context) ([]domain
 }
 
 // ObtainRateValueChartBySourceName returns aggregated chart data for the given source and period.
-func (h *RateRestApi) ObtainRateValueChartBySourceName(
-	ctx context.Context, name string, period repository.ChartPeriod,
-) ([]repository.ChartPoint, error) {
+func (h *RateRestApi) ObtainRateValueChartBySourceName(ctx context.Context, name string, period repository.ChartPeriod) ([]repository.ChartPoint, error) {
 	items, err := h.rateValueRepository.ObtainRateValueChartBySourceName(ctx, name, period)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewTraceError())
@@ -142,9 +156,7 @@ func (h *RateRestApi) ObtainRateValueChartBySourceName(
 }
 
 // ObtainFailedRateUserEventsBySourceName returns a single page of failed events for a source.
-func (h *RateRestApi) ObtainFailedRateUserEventsBySourceName(
-	ctx context.Context, sourceName string, page, pageSize int64,
-) ([]domain.RateUserEvent, error) {
+func (h *RateRestApi) ObtainFailedRateUserEventsBySourceName(ctx context.Context, sourceName string, page, pageSize int64) ([]domain.RateUserEvent, error) {
 	offset := (page - 1) * pageSize
 	items, err := h.rateUserEventRepository.ObtainRateUserEventsBySourceName(
 		ctx, sourceName, offset, pageSize, domain.RateUserEventStatusFailed,
@@ -179,9 +191,7 @@ func (h *RateRestApi) ObtainStats(ctx context.Context) (repository.StatsResult, 
 }
 
 // ObtainRateUserSubscriptionsBySourcePaged returns a page of subscription details for a source.
-func (h *RateRestApi) ObtainRateUserSubscriptionsBySourcePaged(
-	ctx context.Context, sourceName string, offset, limit int64,
-) ([]repository.SubscriptionDetail, error) {
+func (h *RateRestApi) ObtainRateUserSubscriptionsBySourcePaged(ctx context.Context, sourceName string, offset, limit int64) ([]domain.RateUserSubscriptionDetail, error) {
 	items, err := h.rateUserSubscriptionRepository.ObtainRateUserSubscriptionsBySourcePaged(ctx, sourceName, offset, limit)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewTraceError())
@@ -190,9 +200,7 @@ func (h *RateRestApi) ObtainRateUserSubscriptionsBySourcePaged(
 }
 
 // ObtainDailyEventSummaryBySource returns per-day aggregated event counts for a source.
-func (h *RateRestApi) ObtainDailyEventSummaryBySource(
-	ctx context.Context, sourceName string, offset, limit int64,
-) ([]repository.DailyEventSummary, error) {
+func (h *RateRestApi) ObtainDailyEventSummaryBySource(ctx context.Context, sourceName string, offset, limit int64) ([]domain.RateUserEventDailySummary, error) {
 	items, err := h.rateUserEventRepository.ObtainDailyEventSummaryBySource(ctx, sourceName, offset, limit)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewTraceError())
@@ -201,9 +209,7 @@ func (h *RateRestApi) ObtainDailyEventSummaryBySource(
 }
 
 // ObtainLastNExecutionHistoryErrors returns the most recent failed execution history records.
-func (h *RateRestApi) ObtainLastNExecutionHistoryErrors(
-	ctx context.Context, offset, limit int64,
-) ([]domain.ExecutionHistory, error) {
+func (h *RateRestApi) ObtainLastNExecutionHistoryErrors(ctx context.Context, offset, limit int64) ([]domain.ExecutionHistory, error) {
 	items, err := h.executionHistoryRepository.ObtainLastNExecutionHistoryErrors(ctx, offset, limit)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewTraceError())
@@ -212,9 +218,7 @@ func (h *RateRestApi) ObtainLastNExecutionHistoryErrors(
 }
 
 // ObtainSubscriptionSummaryBySource returns grouped subscription + event statistics for a source.
-func (h *RateRestApi) ObtainSubscriptionSummaryBySource(
-	ctx context.Context, sourceName string,
-) ([]repository.SubscriptionSummary, error) {
+func (h *RateRestApi) ObtainSubscriptionSummaryBySource(ctx context.Context, sourceName string) ([]domain.RateUserSubscriptionSummary, error) {
 	items, err := h.rateUserSubscriptionRepository.ObtainSubscriptionSummaryBySource(ctx, sourceName)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewTraceError())
@@ -230,7 +234,8 @@ type executionHistoryRepository interface {
 
 type rateSourceRepository interface {
 	ObtainAllRateSources(context.Context) ([]domain.RateSource, error)
-	UpdateRateSourceActive(context.Context, string, bool) error
+	ObtainRateSourceByName(context.Context, string) (*domain.RateSource, error)
+	RetainRateSource(context.Context, *domain.RateSource) error
 }
 
 type rateValueRepository interface {
@@ -240,12 +245,12 @@ type rateValueRepository interface {
 
 type rateUserSubscriptionRepository interface {
 	ObtainRateUserSubscriptionsBySource(context.Context, string) ([]domain.RateUserSubscription, error)
-	ObtainSubscriptionSummaryBySource(context.Context, string) ([]repository.SubscriptionSummary, error)
-	ObtainRateUserSubscriptionsBySourcePaged(context.Context, string, int64, int64) ([]repository.SubscriptionDetail, error)
+	ObtainSubscriptionSummaryBySource(context.Context, string) ([]domain.RateUserSubscriptionSummary, error)
+	ObtainRateUserSubscriptionsBySourcePaged(context.Context, string, int64, int64) ([]domain.RateUserSubscriptionDetail, error)
 }
 
 type rateUserEventRepository interface {
 	ObtainLastNRateUserEvents(context.Context, int64, int64, ...domain.RateUserEventStatus) ([]domain.RateUserEvent, error)
 	ObtainRateUserEventsBySourceName(context.Context, string, int64, int64, ...domain.RateUserEventStatus) ([]domain.RateUserEvent, error)
-	ObtainDailyEventSummaryBySource(context.Context, string, int64, int64) ([]repository.DailyEventSummary, error)
+	ObtainDailyEventSummaryBySource(context.Context, string, int64, int64) ([]domain.RateUserEventDailySummary, error)
 }

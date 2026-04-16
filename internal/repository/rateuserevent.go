@@ -80,7 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_status  ON ` + rat
 CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_user    ON ` + rateUserEventTableName + ` (` + rateUserEventUserTypeFieldName + `, ` + rateUserEventUserIdFieldName + `);
 CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_created ON ` + rateUserEventTableName + ` (` + rateUserEventCreatedAtFieldName + ` DESC);
 CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_failed ON ` + rateUserEventTableName + ` (` + rateUserEventCreatedAtFieldName + ` DESC) WHERE ` + rateUserEventStatusFieldName + ` = '` + string(domain.RateUserEventStatusFailed) + `';`,
-		rateUserEventTableName + "_002_add_source_name": `ALTER TABLE ` + rateUserEventTableName +
+		rateUserEventTableName + "_002_add_source_name": `ALTER TABLE` + " " + rateUserEventTableName +
 			` ADD COLUMN ` + rateUserEventSourceNameFieldName + ` TEXT NOT NULL DEFAULT '';` +
 			`CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_source` +
 			` ON ` + rateUserEventTableName + ` (` + rateUserEventSourceNameFieldName + `);`,
@@ -176,19 +176,70 @@ func (r *RateUserEventRepository) ObtainLastNRateUserEvents(ctx context.Context,
 	return items, nil
 }
 
-// DailyEventSummary holds per-(user_type, date) aggregated event counts for a source.
-type DailyEventSummary struct {
-	UserType     string
-	Date         string // YYYY-MM-DD
-	SuccessCount int64
-	FailedCount  int64
+// ObtainRateUserEventsBySourceName returns paginated events for one source,
+// optionally filtered by status. Pass no status args to get all statuses.
+func (r *RateUserEventRepository) ObtainRateUserEventsBySourceName(ctx context.Context, sourceName string, offset, limit int64, status ...domain.RateUserEventStatus) ([]domain.RateUserEvent, error) {
+	tx, err := r.db.Transaction(ctx)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewStackTraceError())
+	}
+	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+
+	args := []any{sourceName}
+	where := "WHERE " + rateUserEventSourceNameFieldName + " = ?"
+
+	if len(status) > 0 {
+		placeholders := strings.Repeat("?, ", len(status)-1) + "?"
+		where += fmt.Sprintf(" AND %s IN (%s)", rateUserEventStatusFieldName, placeholders)
+		for _, s := range status {
+			args = append(args, s)
+		}
+	}
+
+	count, err := rateUserEventCount(tx, ctx, where+";", args...)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
+	}
+	if count == 0 {
+		_ = tx.Rollback()
+		return []domain.RateUserEvent{}, nil
+	}
+
+	fullCond := where + "\nORDER BY " + rateUserEventCreatedAtFieldName + " DESC\nLIMIT ?\nOFFSET ?;"
+	rows, err := tx.QueryContext(ctx,
+		rateUserEventSqlSelect+"\n"+fullCond,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	items := make([]domain.RateUserEvent, 0, count)
+	for rows.Next() {
+		var item domain.RateUserEvent
+		var createdAt string
+		var sentAt *string
+		if scanErr := rows.Scan(
+			&item.ID, &item.SourceName, &item.UserType, &item.UserID,
+			&item.Message, &item.Status, &item.LastError,
+			&createdAt, &sentAt,
+		); scanErr != nil {
+			return nil, errors.Join(scanErr, internal.NewTraceError())
+		}
+		item.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		if sentAt != nil && *sentAt != "" {
+			item.SentAt, _ = time.Parse(time.RFC3339, *sentAt)
+		}
+		items = append(items, item)
+	}
+	_ = tx.Rollback()
+	return items, nil
 }
 
 // ObtainDailyEventSummaryBySource returns aggregated event counts grouped by (user_type, date)
 // for the given source, excluding pending events. Ordered by date DESC with pagination.
-func (r *RateUserEventRepository) ObtainDailyEventSummaryBySource(
-	ctx context.Context, sourceName string, offset, limit int64,
-) ([]DailyEventSummary, error) {
+func (r *RateUserEventRepository) ObtainDailyEventSummaryBySource(ctx context.Context, sourceName string, offset, limit int64) ([]domain.RateUserEventDailySummary, error) {
 	query := `SELECT ` +
 		rateUserEventUserTypeFieldName + `, ` +
 		`date(` + rateUserEventSentAtFieldName + `) AS event_date, ` +
@@ -214,9 +265,9 @@ func (r *RateUserEventRepository) ObtainDailyEventSummaryBySource(
 	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
 
-	var items []DailyEventSummary
+	items := make([]domain.RateUserEventDailySummary, 0, limit)
 	for rows.Next() {
-		var item DailyEventSummary
+		var item domain.RateUserEventDailySummary
 		var date *string
 		if scanErr := rows.Scan(&item.UserType, &date, &item.SuccessCount, &item.FailedCount); scanErr != nil {
 			return nil, errors.Join(scanErr, internal.NewTraceError())
@@ -227,10 +278,11 @@ func (r *RateUserEventRepository) ObtainDailyEventSummaryBySource(
 		items = append(items, item)
 	}
 
-	_ = tx.Rollback()
-	if items == nil {
-		items = []DailyEventSummary{}
+	if err = tx.Rollback(); err != nil {
+		err = errors.Join(err, internal.NewStackTraceError())
+		return nil, err
 	}
+
 	return items, nil
 }
 
@@ -312,6 +364,7 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 		sentAt = &s
 	}
 
+	var res sql.Result
 	if count > 0 {
 		cmd := "UPDATE" + " " + rateUserEventTableName + " SET " +
 			rateUserEventSourceNameFieldName + " = ?, " +
@@ -323,7 +376,7 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 			rateUserEventSentAtFieldName + " = ?, " +
 			rateUserEventCreatedAtFieldName + " = ? " +
 			"WHERE " + rateUserEventIdFieldName + " = ?;"
-		_, err = tx.ExecContext(ctx, cmd,
+		res, err = tx.ExecContext(ctx, cmd,
 			record.SourceName,
 			record.UserType,
 			record.UserID,
@@ -334,10 +387,6 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 			record.CreatedAt.Format(time.RFC3339),
 			record.ID,
 		)
-		if err != nil {
-			err = errors.Join(err, internal.NewTraceError())
-			return err
-		}
 	} else {
 		cmd := "INSERT INTO" + " " + rateUserEventTableName + " (" +
 			rateUserEventIdFieldName + ", " +
@@ -350,7 +399,7 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 			rateUserEventSentAtFieldName + ", " +
 			rateUserEventCreatedAtFieldName +
 			") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);"
-		_, err = tx.ExecContext(ctx, cmd,
+		res, err = tx.ExecContext(ctx, cmd,
 			record.ID,
 			record.SourceName,
 			record.UserType,
@@ -361,10 +410,22 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 			sentAt,
 			record.CreatedAt.Format(time.RFC3339),
 		)
-		if err != nil {
-			err = errors.Join(err, internal.NewTraceError())
-			return err
-		}
+	}
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+	if rows <= 0 {
+		err = errors.New("unexpected result: no rows affected")
+		err = errors.Join(err, internal.ErrNotFound)
+		err = errors.Join(err, internal.NewTraceError())
+		return err
 	}
 
 	if err = tx.Commit(); err != nil {
@@ -373,72 +434,6 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 	}
 
 	return nil
-}
-
-// ObtainRateUserEventsBySourceName returns paginated events for one source,
-// optionally filtered by status. Pass no status args to get all statuses.
-func (r *RateUserEventRepository) ObtainRateUserEventsBySourceName(
-	ctx context.Context,
-	sourceName string,
-	offset, limit int64,
-	status ...domain.RateUserEventStatus,
-) ([]domain.RateUserEvent, error) {
-	tx, err := r.db.Transaction(ctx)
-	if err != nil {
-		return nil, errors.Join(err, internal.NewStackTraceError())
-	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
-
-	args := []any{sourceName}
-	where := "WHERE " + rateUserEventSourceNameFieldName + " = ?"
-
-	if len(status) > 0 {
-		placeholders := strings.Repeat("?, ", len(status)-1) + "?"
-		where += fmt.Sprintf(" AND %s IN (%s)", rateUserEventStatusFieldName, placeholders)
-		for _, s := range status {
-			args = append(args, s)
-		}
-	}
-
-	count, err := rateUserEventCount(tx, ctx, where+";", args...)
-	if err != nil {
-		return nil, errors.Join(err, internal.NewTraceError())
-	}
-	if count == 0 {
-		_ = tx.Rollback()
-		return []domain.RateUserEvent{}, nil
-	}
-
-	fullCond := where + "\nORDER BY " + rateUserEventCreatedAtFieldName + " DESC\nLIMIT ?\nOFFSET ?;"
-	rows, err := tx.QueryContext(ctx,
-		rateUserEventSqlSelect+"\n"+fullCond,
-		append(args, limit, offset)...,
-	)
-	if err != nil {
-		return nil, errors.Join(err, internal.NewTraceError())
-	}
-	defer func() { err = errors.Join(err, rows.Close()) }()
-
-	items := make([]domain.RateUserEvent, 0, count)
-	for rows.Next() {
-		var item domain.RateUserEvent
-		var createdAt string
-		var sentAt *string
-		if scanErr := rows.Scan(
-			&item.ID, &item.SourceName, &item.UserType, &item.UserID,
-			&item.Message, &item.Status, &item.LastError,
-			&createdAt, &sentAt,
-		); scanErr != nil {
-			return nil, errors.Join(scanErr, internal.NewTraceError())
-		}
-		item.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-		if sentAt != nil && *sentAt != "" {
-			item.SentAt, _ = time.Parse(time.RFC3339, *sentAt)
-		}
-		items = append(items, item)
-	}
-	_ = tx.Rollback()
-	return items, nil
 }
 
 func (r *RateUserEventRepository) RemoveRateUserEvent(ctx context.Context, record *domain.RateUserEvent) error {

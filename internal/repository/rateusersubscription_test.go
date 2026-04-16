@@ -389,7 +389,7 @@ func TestRateUserSubscriptionRepository_ObtainBySourcePaged(t *testing.T) {
 		require.NoError(t, err)
 		require.NotEmpty(t, items)
 		for _, item := range items {
-			// SubscriptionDetail does not have a UserID field — compile-time check
+			// RateUserSubscriptionDetail does not have a UserID field — compile-time check
 			_ = item.ID
 		}
 	})

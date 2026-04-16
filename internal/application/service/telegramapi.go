@@ -361,13 +361,7 @@ func (h *TelegramApi) handleAddSourceSelect(ctx context.Context, chatID int64, m
 
 // handleAddValueSelect presents preset value buttons for the chosen condition type.
 // Callback data format: sub:add:<urlencoded_source>:<conditionType>:<value>
-func (h *TelegramApi) handleAddValueSelect(
-	ctx context.Context,
-	chatID int64,
-	msgID int,
-	sourceName string,
-	ct domain.SubscriptionConditionType,
-) {
+func (h *TelegramApi) handleAddValueSelect(ctx context.Context, chatID int64, msgID int, sourceName string, ct domain.SubscriptionConditionType) {
 	encoded := url.QueryEscape(sourceName)
 	prefix := cbAddSrcPrefix + encoded + ":" + string(ct) + ":"
 
@@ -429,12 +423,7 @@ func (h *TelegramApi) handleAddValueSelect(
 
 // saveSubscription persists the subscription, notifies the user, and returns to the main menu.
 // On failure it notifies and goes back to the main menu as well.
-func (h *TelegramApi) saveSubscription(
-	ctx context.Context,
-	chatID int64,
-	msgID int,
-	sub *domain.RateUserSubscription,
-) {
+func (h *TelegramApi) saveSubscription(ctx context.Context, chatID int64, msgID int, sub *domain.RateUserSubscription) {
 	if err := h.subRepo.RetainRateUserSubscription(ctx, sub); err != nil {
 		_ = h.telegramClient.SendHTMLMessage(ctx,
 			integration.TelegramChatID(chatID), "⚠️ Failed to save subscription.")
@@ -534,13 +523,7 @@ func (h *TelegramApi) handleDeleteConfirm(ctx context.Context, chatID int64, msg
 // sendOrEditWithKeyboard sends a new message with keyboard when msgID is zero (text-command
 // flow) or edits the existing message in place when msgID > 0 (callback flow). This keeps
 // the chat clean by avoiding new chat bubbles on every inline button press.
-func (h *TelegramApi) sendOrEditWithKeyboard(
-	ctx context.Context,
-	chatID int64,
-	msgID int,
-	text string,
-	kb tgbotapi.InlineKeyboardMarkup,
-) {
+func (h *TelegramApi) sendOrEditWithKeyboard(ctx context.Context, chatID int64, msgID int, text string, kb tgbotapi.InlineKeyboardMarkup) {
 	if msgID > 0 {
 		_ = h.telegramClient.EditHTMLMessageWithKeyboard(
 			ctx, integration.TelegramChatID(chatID), msgID, text, kb)

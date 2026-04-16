@@ -5,19 +5,22 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/seilbekskindirov/monitor/internal/domain"
 )
 
 type alert struct {
 	UserID         string
 	SourceName     string
-	SourceTitle    string    // human-readable source name, e.g. "National Bank of Kazakhstan"
-	BaseCurrency   string    // e.g. "USD"
-	QuoteCurrency  string    // e.g. "KZT"
-	CurrentPrice   float64   // newest price, e.g. 470.46
-	Delta          float64   // signed delta: positive = up, negative = down
-	ForecastPrice  float64   //
-	ForecastMethod string    //
-	Timestamp      time.Time // timestamp of the newest rate record
+	SourceTitle    string                // human-readable source name, e.g. "National Bank of Kazakhstan"
+	BaseCurrency   string                // e.g. "USD"
+	QuoteCurrency  string                // e.g. "KZT"
+	CurrencyKind   domain.RateSourceKind // e.g. BID, ASK
+	CurrentPrice   float64               // newest price, e.g. 470.46
+	Delta          float64               // signed delta: positive = up, negative = down
+	ForecastPrice  float64               //
+	ForecastMethod string                //
+	Timestamp      time.Time             // timestamp of the newest rate record
 }
 
 // https://apps.timwhitlock.info/emoji/tables/unicode
@@ -31,11 +34,27 @@ const (
 
 // buildAlertMessage renders alerts into the builder as a single HTML Telegram message.
 func buildAlertMessage(alerts ...alert) ([]string, error) {
+	sort.Slice(alerts, func(i, j int) bool {
+		if alerts[i].SourceTitle == alerts[j].SourceTitle {
+			if alerts[i].BaseCurrency == alerts[j].BaseCurrency {
+				return alerts[i].QuoteCurrency < alerts[j].QuoteCurrency
+			}
+			return alerts[i].BaseCurrency < alerts[j].BaseCurrency
+		}
+		return alerts[i].SourceTitle < alerts[j].SourceTitle
+	})
+
 	rates := make(map[string][]string, len(alerts))
 	for _, alertItem := range alerts {
 		key := strings.TrimSpace(alertItem.SourceTitle)
-		val := fmt.Sprintf(" • <b>%s/%s</b>: %.2f", alertItem.BaseCurrency, alertItem.QuoteCurrency, alertItem.CurrentPrice)
-		if alertItem.Delta != 0 {
+		currency := "%s/%s"
+		if alertItem.CurrencyKind == domain.RateSourceKindBID {
+			currency = fmt.Sprintf(currency, alertItem.BaseCurrency, alertItem.QuoteCurrency)
+		} else {
+			currency = fmt.Sprintf(currency, alertItem.QuoteCurrency, alertItem.BaseCurrency)
+		}
+		val := fmt.Sprintf(" • <b>%s</b>: %.2f", currency, alertItem.CurrentPrice)
+		if alertItem.Delta != 0 && alertItem.Delta != alertItem.CurrentPrice {
 			arrow := telegramBotArrowUp
 			if alertItem.Delta < 0 {
 				arrow = telegramBotArrowDown
@@ -47,7 +66,6 @@ func buildAlertMessage(alerts ...alert) ([]string, error) {
 		}
 		values := rates[key]
 		values = append(values, val)
-		sort.Strings(values)
 		rates[key] = values
 	}
 

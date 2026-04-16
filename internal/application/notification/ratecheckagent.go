@@ -95,6 +95,7 @@ func (a *RateCheckAgent) Run(ctx context.Context) error {
 					SourceTitle:   source.Title,
 					BaseCurrency:  source.BaseCurrency,
 					QuoteCurrency: source.QuoteCurrency,
+					CurrencyKind:  source.Kind,
 					CurrentPrice:  currentValue,
 					Delta:         delta,
 					Timestamp:     now,

@@ -74,10 +74,10 @@ claude_auto_fix_tests:
 
 
 ## run:
-run:
-	@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/web                 --logs-dir ./build/logs --static-dir ./cmd/web/static
-	@#set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/collector/main.go  --logs-dir ./build/logs
-	@#set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/notifier/main.go   --logs-dir ./build/logs
+run: build
+	@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/collector/main.go  --logs-dir ./build/logs
+	@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/notifier/main.go   --logs-dir ./build/logs
+	#@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/web                 --logs-dir ./build/logs
 
 
 
@@ -92,13 +92,13 @@ build:
 
 
 ## test:
-test:
+test: format
 	go clean -cache
 	CGO_ENABLED=0 go vet ./...
 	CGO_ENABLED=0 go test -race ./...
 
 ## lint: run go vet across all packages
-lint:
+lint: format
 	CGO_ENABLED=0 go vet ./...
 
 ## swagger: regenerate Swagger/OpenAPI documentation
