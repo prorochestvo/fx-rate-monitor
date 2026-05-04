@@ -29,8 +29,9 @@ Thumbs.db
 *.log
 *.sqlite
 *.db
-logs/
+/logs/
 /build/
+/tmp/
 
 # Test binary, built with `go test -c`
 *.test
@@ -52,7 +53,12 @@ dist
 .env
 
 # AI workspace files
-.claude
+.claude/*
+!.claude/commands/
+!.claude/agents/
+!.claude/prompts/
+!.claude/settings.json
+!.claude/README.md
 
 *.logs
 *.log.md
