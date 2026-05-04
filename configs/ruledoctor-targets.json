@@ -1,0 +1,8 @@
+[
+  {
+    "target_kind": "rate",
+    "target_id":   "nbk_kzt",
+    "source_url":  "https://nationalbank.kz/rss/get_rates.cfm?fdate=01.01.2026",
+    "labels":      ["USD / KZT", "EUR / KZT", "RUB / KZT"]
+  }
+]
