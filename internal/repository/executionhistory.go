@@ -40,7 +40,7 @@ func (r *ExecutionHistoryRepository) CheckUP(ctx context.Context) error {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	count, err := executionHistoryCount(tx, ctx, ";")
 	if err != nil {
@@ -85,7 +85,7 @@ func (r *ExecutionHistoryRepository) ObtainLastNExecutionHistoryBySourceName(ctx
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	whereClause := executionHistorySourceNameFieldName + " = ?"
 	if successOnly {
@@ -112,14 +112,14 @@ func (r *ExecutionHistoryRepository) ObtainExecutionHistoryErrorCount(ctx contex
 	if err != nil {
 		return 0, errors.Join(err, internal.NewStackTraceError())
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	count, err := executionHistoryCount(tx, ctx, "WHERE "+executionHistorySuccessFieldName+" = 0;")
 	if err != nil {
 		return 0, errors.Join(err, internal.NewTraceError())
 	}
 
-	_ = tx.Rollback()
+	printRollbackError(tx)
 	return count, nil
 }
 
@@ -130,7 +130,7 @@ func (r *ExecutionHistoryRepository) ObtainLastNExecutionHistoryErrors(ctx conte
 	if err != nil {
 		return nil, errors.Join(err, internal.NewStackTraceError())
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	query := executionHistorySqlSelect +
 		"\nWHERE " + executionHistorySuccessFieldName + " = 0" +
@@ -156,7 +156,7 @@ func (r *ExecutionHistoryRepository) ObtainLastNExecutionHistoryErrors(ctx conte
 		items = append(items, item)
 	}
 
-	_ = tx.Rollback()
+	printRollbackError(tx)
 	if items == nil {
 		items = []domain.ExecutionHistory{}
 	}
@@ -182,7 +182,7 @@ func (r *ExecutionHistoryRepository) RetainExecutionHistory(ctx context.Context,
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	count, err := executionHistoryCount(tx, ctx, "WHERE "+executionHistoryIdFieldName+" = ?;", record.ID)
 	if err != nil {
@@ -262,7 +262,7 @@ func (r *ExecutionHistoryRepository) RemoveSourceExecutionHistory(ctx context.Co
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	cmd := "DELETE FROM" + " " + executionHistoryTableName + " WHERE " + executionHistoryIdFieldName + " = ?;"
 	_, err = tx.ExecContext(ctx, cmd, record.ID)

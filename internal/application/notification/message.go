@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/seilbekskindirov/monitor/internal/application/labelfmt"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 )
 
@@ -21,6 +22,12 @@ type alert struct {
 	ForecastPrice  float64               //
 	ForecastMethod string                //
 	Timestamp      time.Time             // timestamp of the newest rate record
+	Triggers       []alertTrigger        // ordered: delta, interval, daily, cron
+}
+
+type alertTrigger struct {
+	ConditionType  domain.SubscriptionConditionType
+	ConditionValue string
 }
 
 // https://apps.timwhitlock.info/emoji/tables/unicode
@@ -30,7 +37,37 @@ const (
 	telegramBotForecast  string = "✨"
 
 	telegramMaxMessageLen = 2048
+
+	triggerIconDelta    = "Δ" // U+0394
+	triggerIconInterval = "⏱" // U+23F1
+	triggerIconDaily    = "⌚" // U+231A
+	triggerIconCron     = "⏲" // U+23F2
 )
+
+// triggerLabel returns the compact inline-bullet label for a single trigger.
+// Returns empty string for unknown condition types — callers must filter these out.
+func triggerLabel(condType domain.SubscriptionConditionType, condValue string) string {
+	switch condType {
+	case domain.ConditionTypeDelta:
+		return fmt.Sprintf("%s ≥%s%%", triggerIconDelta, condValue)
+	case domain.ConditionTypeInterval:
+		return fmt.Sprintf("%s %s", triggerIconInterval, labelfmt.IntervalLabel(condValue))
+	case domain.ConditionTypeDaily:
+		v := condValue
+		if len(v) >= 5 {
+			v = v[:5]
+		}
+		return fmt.Sprintf("%s %s", triggerIconDaily, v)
+	case domain.ConditionTypeCron:
+		name := labelfmt.CronWeekdayLabel(condValue)
+		if len(name) >= 3 {
+			name = name[:3]
+		}
+		return fmt.Sprintf("%s %s", triggerIconCron, name)
+	default:
+		return ""
+	}
+}
 
 // buildAlertMessage renders alerts into the builder as a single HTML Telegram message.
 func buildAlertMessage(alerts ...alert) ([]string, error) {
@@ -63,6 +100,17 @@ func buildAlertMessage(alerts ...alert) ([]string, error) {
 		}
 		if alertItem.ForecastMethod != "" && alertItem.ForecastPrice != 0.0 {
 			val += fmt.Sprintf(" | %s %.2f <i>%s</i>", telegramBotForecast, alertItem.ForecastPrice, alertItem.ForecastMethod)
+		}
+		if len(alertItem.Triggers) > 0 {
+			labels := make([]string, 0, len(alertItem.Triggers))
+			for _, tr := range alertItem.Triggers {
+				if l := triggerLabel(tr.ConditionType, tr.ConditionValue); l != "" {
+					labels = append(labels, l)
+				}
+			}
+			if len(labels) > 0 {
+				val += " " + strings.Join(labels, " ")
+			}
 		}
 		values := rates[key]
 		values = append(values, val)

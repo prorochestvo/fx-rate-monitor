@@ -145,4 +145,125 @@ func TestBuildAlertMessage(t *testing.T) {
 		require.Greater(t, len(msgs), 1)
 		require.Equal(t, 2, len(msgs))
 	})
+	t.Run("empty triggers — output unchanged", func(t *testing.T) {
+		t.Parallel()
+
+		msgs, err := buildAlertMessage(alert{
+			SourceTitle:   "Bank",
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			CurrentPrice:  470.46,
+			CurrencyKind:  domain.RateSourceKindBID,
+			Delta:         1.20,
+			Triggers:      nil,
+		})
+		require.NoError(t, err)
+		require.Len(t, msgs, 1)
+		require.False(t, strings.Contains(msgs[0], triggerIconDelta))
+		require.False(t, strings.Contains(msgs[0], triggerIconInterval))
+		require.False(t, strings.Contains(msgs[0], triggerIconDaily))
+		require.False(t, strings.Contains(msgs[0], triggerIconCron))
+	})
+	t.Run("single delta trigger renders icon after price block", func(t *testing.T) {
+		t.Parallel()
+
+		msgs, err := buildAlertMessage(alert{
+			SourceTitle:   "Bank",
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			CurrentPrice:  470.46,
+			CurrencyKind:  domain.RateSourceKindBID,
+			Delta:         1.20,
+			Triggers: []alertTrigger{
+				{ConditionType: domain.ConditionTypeDelta, ConditionValue: "5"},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, msgs, 1)
+		require.Contains(t, msgs[0], triggerIconDelta+" ≥5%")
+	})
+	t.Run("multi-trigger alert renders all four icons in stable order", func(t *testing.T) {
+		t.Parallel()
+
+		msgs, err := buildAlertMessage(alert{
+			SourceTitle:   "Bank",
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			CurrentPrice:  470.46,
+			CurrencyKind:  domain.RateSourceKindBID,
+			Triggers: []alertTrigger{
+				{ConditionType: domain.ConditionTypeDelta, ConditionValue: "10"},
+				{ConditionType: domain.ConditionTypeInterval, ConditionValue: "4h"},
+				{ConditionType: domain.ConditionTypeDaily, ConditionValue: "06:00:00"},
+				{ConditionType: domain.ConditionTypeCron, ConditionValue: "0 9 * * 1"},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, msgs, 1)
+		msg := msgs[0]
+		require.Contains(t, msg, triggerIconDelta)
+		require.Contains(t, msg, triggerIconInterval)
+		require.Contains(t, msg, triggerIconDaily)
+		require.Contains(t, msg, triggerIconCron)
+
+		dPos := strings.Index(msg, triggerIconDelta)
+		iPos := strings.Index(msg, triggerIconInterval)
+		dailyPos := strings.Index(msg, triggerIconDaily)
+		cronPos := strings.Index(msg, triggerIconCron)
+		require.True(t, dPos < iPos)
+		require.True(t, iPos < dailyPos)
+		require.True(t, dailyPos < cronPos)
+	})
+	t.Run("forecast and triggers combine cleanly", func(t *testing.T) {
+		t.Parallel()
+
+		msgs, err := buildAlertMessage(alert{
+			SourceTitle:    "Bank",
+			BaseCurrency:   "USD",
+			QuoteCurrency:  "KZT",
+			CurrentPrice:   470.46,
+			CurrencyKind:   domain.RateSourceKindBID,
+			ForecastMethod: "composite",
+			ForecastPrice:  472.0,
+			Triggers: []alertTrigger{
+				{ConditionType: domain.ConditionTypeDelta, ConditionValue: "5"},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, msgs, 1)
+		msg := msgs[0]
+		require.Contains(t, msg, telegramBotForecast)
+		require.Contains(t, msg, triggerIconDelta)
+		forecastPos := strings.Index(msg, telegramBotForecast)
+		triggerPos := strings.Index(msg, triggerIconDelta)
+		require.True(t, forecastPos < triggerPos, "forecast must appear before trigger icons")
+	})
+}
+
+func TestTriggerLabel(t *testing.T) {
+	t.Parallel()
+
+	t.Run("delta condition", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, triggerIconDelta+" ≥10%", triggerLabel(domain.ConditionTypeDelta, "10"))
+	})
+	t.Run("interval condition", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, triggerIconInterval+" 4h", triggerLabel(domain.ConditionTypeInterval, "4h"))
+		require.Equal(t, triggerIconInterval+" 1d", triggerLabel(domain.ConditionTypeInterval, "24h"))
+		require.Equal(t, triggerIconInterval+" 1w", triggerLabel(domain.ConditionTypeInterval, "168h"))
+	})
+	t.Run("daily condition", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, triggerIconDaily+" 06:00", triggerLabel(domain.ConditionTypeDaily, "06:00:00"))
+		require.Equal(t, triggerIconDaily+" 06", triggerLabel(domain.ConditionTypeDaily, "06"))
+	})
+	t.Run("cron condition", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, triggerIconCron+" Mon", triggerLabel(domain.ConditionTypeCron, "0 9 * * 1"))
+	})
+	t.Run("unknown condition type returns empty string", func(t *testing.T) {
+		t.Parallel()
+		require.Equal(t, "", triggerLabel("unknown", "val"))
+	})
 }

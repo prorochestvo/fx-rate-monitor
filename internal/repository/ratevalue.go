@@ -40,7 +40,7 @@ func (r *RateValueRepository) CheckUP(ctx context.Context) error {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	count, err := rateValueCount(tx, ctx, ";")
 	if err != nil {
@@ -82,7 +82,7 @@ func (r *RateValueRepository) ObtainAllRateValueBySourceName(ctx context.Context
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	sqlCommand := "WHERE " + rateValueSourceNameFieldName + " = ?;"
 	rates, err := rateValueQueryContext(tx, ctx, sqlCommand, sourceName)
@@ -105,7 +105,7 @@ func (r *RateValueRepository) ObtainLastNRateValuesBySourceName(ctx context.Cont
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	// Secondary sort by rowid DESC ensures deterministic newest-first ordering when
 	// multiple rows share the same RFC3339 timestamp string (second precision).
@@ -141,7 +141,7 @@ func (r *RateValueRepository) RetainRateValue(ctx context.Context, record *domai
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	count, err := rateValueCount(tx, ctx, " WHERE "+rateValueIdFieldName+" = ?;", record.ID)
 	if err != nil {
@@ -207,7 +207,7 @@ func (r *RateValueRepository) RemoveRateValue(ctx context.Context, record *domai
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	cmd := "DELETE FROM" + " " + rateValueTableName + " WHERE " + rateValueIdFieldName + " = ?;"
 	_, err = tx.ExecContext(ctx, cmd, record.ID)
@@ -275,7 +275,7 @@ func (r *RateValueRepository) ObtainRateValueChartBySourceName(ctx context.Conte
 	if err != nil {
 		return nil, errors.Join(err, internal.NewStackTraceError())
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	rows, err := tx.QueryContext(ctx, query, sourceName, since.Format(time.RFC3339))
 	if err != nil {
@@ -291,7 +291,7 @@ func (r *RateValueRepository) ObtainRateValueChartBySourceName(ctx context.Conte
 		}
 		result = append(result, p)
 	}
-	_ = tx.Rollback()
+	printRollbackError(tx)
 	return result, nil
 }
 

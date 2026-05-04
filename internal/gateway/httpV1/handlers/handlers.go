@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -33,13 +34,19 @@ type Handler struct {
 	rateService
 }
 
+// internalError logs the underlying error with a trace and returns a generic 500 to the client.
+func (h *Handler) internalError(w http.ResponseWriter, err error) {
+	log.Print(errors.Join(err, internal.NewTraceError()))
+	http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+}
+
 // ListSources returns every configured rate source decorated with its latest execution status.
 //
 // GET /api/sources
 func (h *Handler) ListSources(w http.ResponseWriter, r *http.Request) {
 	sources, err := h.rateService.ObtainAllRateSources(r.Context())
 	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.internalError(w, err)
 		return
 	}
 
@@ -53,7 +60,13 @@ func (h *Handler) ListSources(w http.ResponseWriter, r *http.Request) {
 			Interval:      s.Interval,
 			Active:        s.Active,
 		}
-		if recs, _ := h.rateService.ObtainLastNExecutionHistoryBySourceName(r.Context(), s.Name, 1); len(recs) > 0 {
+		recs, recsErr := h.rateService.ObtainLastNExecutionHistoryBySourceName(r.Context(), s.Name, 1)
+		if recsErr != nil {
+			log.Print(errors.Join(
+				fmt.Errorf("list last execution for %q: %w", s.Name, recsErr),
+				internal.NewTraceError(),
+			))
+		} else if len(recs) > 0 {
 			item.LastSuccess = recs[0].Success
 			item.LastError = recs[0].Error
 			item.LastRunAt = recs[0].Timestamp.Format(time.RFC3339)
@@ -81,7 +94,7 @@ func (h *Handler) ListRates(w http.ResponseWriter, r *http.Request) {
 
 	rates, err := h.rateService.ObtainLastNRateValuesBySourceName(r.Context(), name, limit)
 	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.internalError(w, err)
 		return
 	}
 
@@ -114,7 +127,7 @@ func (h *Handler) ListHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	recs, err := h.rateService.ObtainLastNExecutionHistoryBySourceName(r.Context(), name, limit)
 	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.internalError(w, err)
 		return
 	}
 
@@ -144,7 +157,7 @@ func (h *Handler) ListNotifications(w http.ResponseWriter, r *http.Request) {
 
 	records, err := h.rateService.ObtainListOfLastRateUserEvent(r.Context(), limit)
 	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.internalError(w, err)
 		return
 	}
 
@@ -180,7 +193,7 @@ func (h *Handler) ListFailedNotifications(w http.ResponseWriter, r *http.Request
 
 	records, err := h.rateService.ObtainFailedListOfRateUserEvent(r.Context(), offset, limit)
 	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.internalError(w, err)
 		return
 	}
 
@@ -205,7 +218,7 @@ func (h *Handler) ListFailedNotifications(w http.ResponseWriter, r *http.Request
 func (h *Handler) ListPendingEvents(w http.ResponseWriter, r *http.Request) {
 	events, err := h.rateService.ObtainPendingRateUserEvents(r.Context())
 	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.internalError(w, err)
 		return
 	}
 	resp := make([]dto.NotificationResponse, 0, len(events))
@@ -235,7 +248,7 @@ func (h *Handler) GetRatesChart(w http.ResponseWriter, r *http.Request) {
 	}
 	points, err := h.rateService.ObtainRateValueChartBySourceName(r.Context(), name, period)
 	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.internalError(w, err)
 		return
 	}
 	resp := make([]dto.ChartPointResponse, 0, len(points))
@@ -254,14 +267,11 @@ func (h *Handler) ListSourceFailedEvents(w http.ResponseWriter, r *http.Request)
 		http.Error(w, `{"error":"missing source name"}`, http.StatusBadRequest)
 		return
 	}
-	page, _ := strconv.ParseInt(r.URL.Query().Get("page"), 10, 64)
-	if page < 1 {
-		page = 1
-	}
+	page := parsePage(r.URL.Query().Get("page"))
 	const pageSize = 50
 	events, err := h.rateService.ObtainFailedRateUserEventsBySourceName(r.Context(), name, page, pageSize)
 	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.internalError(w, err)
 		return
 	}
 	resp := make([]dto.NotificationResponse, 0, len(events))
@@ -289,7 +299,7 @@ func (h *Handler) ListSourceSubscriptions(w http.ResponseWriter, r *http.Request
 	}
 	summaries, err := h.rateService.ObtainSubscriptionSummaryBySource(r.Context(), name)
 	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.internalError(w, err)
 		return
 	}
 	resp := make([]dto.SubscriptionSummaryResponse, 0, len(summaries))
@@ -332,7 +342,7 @@ func (h *Handler) ToggleSourceActive(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"source not found"}`, http.StatusNotFound)
 			return
 		}
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.internalError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -344,7 +354,7 @@ func (h *Handler) ToggleSourceActive(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := h.rateService.ObtainStats(r.Context())
 	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.internalError(w, err)
 		return
 	}
 	writeJSON(w, dto.StatsResponse{
@@ -363,16 +373,13 @@ func (h *Handler) ListSourceSubscriptionDetails(w http.ResponseWriter, r *http.R
 		http.Error(w, `{"error":"missing source name"}`, http.StatusBadRequest)
 		return
 	}
-	page, _ := strconv.ParseInt(r.URL.Query().Get("page"), 10, 64)
-	if page < 1 {
-		page = 1
-	}
+	page := parsePage(r.URL.Query().Get("page"))
 	const pageSize int64 = 25
 	offset := (page - 1) * pageSize
 
 	items, err := h.rateService.ObtainRateUserSubscriptionsBySourcePaged(r.Context(), name, offset, pageSize)
 	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.internalError(w, err)
 		return
 	}
 	resp := make([]dto.SubscriptionDetailResponse, 0, len(items))
@@ -400,16 +407,13 @@ func (h *Handler) ListSourceDailyEvents(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"error":"missing source name"}`, http.StatusBadRequest)
 		return
 	}
-	page, _ := strconv.ParseInt(r.URL.Query().Get("page"), 10, 64)
-	if page < 1 {
-		page = 1
-	}
+	page := parsePage(r.URL.Query().Get("page"))
 	const pageSize int64 = 25
 	offset := (page - 1) * pageSize
 
 	items, err := h.rateService.ObtainDailyEventSummaryBySource(r.Context(), name, offset, pageSize)
 	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.internalError(w, err)
 		return
 	}
 	resp := make([]dto.DailyEventResponse, 0, len(items))
@@ -428,16 +432,13 @@ func (h *Handler) ListSourceDailyEvents(w http.ResponseWriter, r *http.Request) 
 //
 // GET /api/errors/execution?page=N
 func (h *Handler) ListExecutionErrors(w http.ResponseWriter, r *http.Request) {
-	page, _ := strconv.ParseInt(r.URL.Query().Get("page"), 10, 64)
-	if page < 1 {
-		page = 1
-	}
+	page := parsePage(r.URL.Query().Get("page"))
 	const pageSize int64 = 50
 	offset := (page - 1) * pageSize
 
 	items, err := h.rateService.ObtainLastNExecutionHistoryErrors(r.Context(), offset, pageSize)
 	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		h.internalError(w, err)
 		return
 	}
 	resp := make([]dto.ExecutionErrorResponse, 0, len(items))
@@ -455,7 +456,33 @@ func (h *Handler) ListExecutionErrors(w http.ResponseWriter, r *http.Request) {
 // writeJSON sets Content-Type and encodes v as JSON.
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Print(errors.Join(
+			fmt.Errorf("encode response body: %w", err),
+			internal.NewTraceError(),
+		))
+	}
+}
+
+// parsePage parses a "page" query string parameter, defaulting to 1 when
+// the value is missing, malformed, or non-positive. Parse failures are
+// logged so misconfigured callers can be diagnosed without surfacing 4xx.
+func parsePage(raw string) int64 {
+	if raw == "" {
+		return 1
+	}
+	page, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		log.Print(errors.Join(
+			fmt.Errorf("parse page %q: %w", raw, err),
+			internal.NewTraceError(),
+		))
+		return 1
+	}
+	if page < 1 {
+		return 1
+	}
+	return page
 }
 
 type rateService interface {

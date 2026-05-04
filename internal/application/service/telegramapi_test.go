@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/seilbekskindirov/monitor/internal/application/labelfmt"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
 	"github.com/stretchr/testify/assert"
@@ -778,7 +779,7 @@ func TestSubscriptionConditionLabel(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tc.expected, subscriptionConditionLabel(tc.sub))
+			assert.Equal(t, tc.expected, labelfmt.SubscriptionConditionLabel(tc.sub))
 		})
 	}
 }

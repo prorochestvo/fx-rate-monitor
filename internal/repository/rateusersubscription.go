@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"time"
 
 	"github.com/seilbekskindirov/monitor/internal"
@@ -40,7 +41,7 @@ func (r *RateUserSubscriptionRepository) CheckUP(ctx context.Context) error {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	count, err := rateUserSubscriptionCount(tx, ctx, ";")
 	if err != nil {
@@ -88,7 +89,7 @@ func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsByUserID(ctx
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	rows, err := rateUserSubscriptionQueryContext(tx, ctx, "WHERE "+rateUserSubscriptionUserTypeFieldName+" = ? AND "+rateUserSubscriptionUserIdFieldName+" = ?;", userType, userID)
 	if err != nil {
@@ -109,7 +110,7 @@ func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySource(ctx
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	rows, err := rateUserSubscriptionQueryContext(tx, ctx, "WHERE "+rateUserSubscriptionSourceNameFieldName+" = ?;", sourceName)
 	if err != nil {
@@ -147,7 +148,7 @@ func (r *RateUserSubscriptionRepository) RetainRateUserSubscription(ctx context.
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	count, err := rateUserSubscriptionCount(tx, ctx, "WHERE "+rateUserSubscriptionIdFieldName+" = ?;", record.ID)
 	if err != nil {
@@ -247,7 +248,7 @@ func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySourcePage
 	if err != nil {
 		return nil, errors.Join(err, internal.NewStackTraceError())
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	rows, err := tx.QueryContext(ctx, query, sourceName, limit, offset)
 	if err != nil {
@@ -265,7 +266,14 @@ func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySourcePage
 		); scanErr != nil {
 			return nil, errors.Join(scanErr, internal.NewTraceError())
 		}
-		item.LatestNotifiedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		var parseErr error
+		item.LatestNotifiedAt, parseErr = time.Parse(time.RFC3339, updatedAt)
+		if parseErr != nil {
+			log.Print(errors.Join(
+				fmt.Errorf("subscription %s has invalid updated_at %q: %w", item.ID, updatedAt, parseErr),
+				internal.NewTraceError(),
+			))
+		}
 		items = append(items, item)
 	}
 
@@ -297,7 +305,7 @@ GROUP BY s.source_name, s.user_type;`
 	if err != nil {
 		return nil, errors.Join(err, internal.NewStackTraceError())
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	rows, err := tx.QueryContext(ctx, query, sourceName)
 	if err != nil {
@@ -317,7 +325,15 @@ GROUP BY s.source_name, s.user_type;`
 			return nil, errors.Join(scanErr, internal.NewTraceError())
 		}
 		if lastSentAt != nil && *lastSentAt != "" {
-			s.LastSentAt, _ = time.Parse(time.RFC3339, *lastSentAt)
+			parsed, parseErr := time.Parse(time.RFC3339, *lastSentAt)
+			if parseErr != nil {
+				log.Print(errors.Join(
+					fmt.Errorf("subscription summary for source %q has invalid last_sent_at %q: %w", s.SourceName, *lastSentAt, parseErr),
+					internal.NewTraceError(),
+				))
+			} else {
+				s.LastSentAt = parsed
+			}
 		}
 		result = append(result, s)
 	}
@@ -342,7 +358,7 @@ func (r *RateUserSubscriptionRepository) RemoveRateUserSubscription(ctx context.
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	cmd := "DELETE FROM" + " " + rateUserSubscriptionTableName + " WHERE " + rateUserSubscriptionIdFieldName + " = ?;"
 	_, err = tx.ExecContext(ctx, cmd, record.ID)

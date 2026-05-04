@@ -30,6 +30,19 @@ func main() {
 	app := doc.Call("getElementById", "app")
 	status := doc.Call("getElementById", "status")
 
+	// Register the rate-row click handler exactly once. This Func is owned by
+	// main and lives for the entire lifetime of the WASM module — releasing it
+	// would invalidate inline onclick="window._loadRates(...)" callsites in the
+	// rendered HTML, so we intentionally do not release it.
+	loadRatesFn := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		if len(args) < 1 {
+			return nil
+		}
+		go loadRates(doc, args[0].String())
+		return nil
+	})
+	js.Global().Set("_loadRates", loadRatesFn)
+
 	status.Set("textContent", "Fetching sources…")
 	go loadSources(doc, app, status)
 
@@ -53,7 +66,7 @@ func loadSources(doc, app, status js.Value) {
 	renderSources(doc, app, sources)
 }
 
-func renderSources(doc, app js.Value, sources []sourceInfo) {
+func renderSources(_, app js.Value, sources []sourceInfo) {
 	html := `<h2>Sources</h2><table><tr><th>Name</th><th>Pair</th><th>Interval</th><th>Last Run</th><th>Status</th></tr>`
 	for _, s := range sources {
 		cell := "⏳ Never run"
@@ -71,15 +84,6 @@ func renderSources(doc, app js.Value, sources []sourceInfo) {
 	}
 	html += `</table><div id="rates"></div>`
 	app.Set("innerHTML", html)
-
-	fn := js.FuncOf(func(_ js.Value, args []js.Value) any {
-		if len(args) < 1 {
-			return nil
-		}
-		go loadRates(doc, args[0].String())
-		return nil
-	})
-	js.Global().Set("_loadRates", fn)
 }
 
 func loadRates(doc js.Value, name string) {
@@ -108,6 +112,9 @@ func loadRates(doc js.Value, name string) {
 
 // fetchText calls the browser's fetch() API and returns the response body as a string.
 // Must be called from a goroutine, never from the main goroutine (which holds the JS event loop).
+//
+// Each FuncOf must be released after the promise chain settles, otherwise every API
+// call leaks four entries from the runtime's funcs table.
 func fetchText(url string) (string, error) {
 	type result struct {
 		val string
@@ -115,25 +122,29 @@ func fetchText(url string) (string, error) {
 	}
 	ch := make(chan result, 1)
 
-	js.Global().Call("fetch", url).Call("then",
-		js.FuncOf(func(_ js.Value, args []js.Value) any {
-			args[0].Call("text").Call("then",
-				js.FuncOf(func(_ js.Value, inner []js.Value) any {
-					ch <- result{val: inner[0].String()}
-					return nil
-				}),
-				js.FuncOf(func(_ js.Value, inner []js.Value) any {
-					ch <- result{err: fmt.Errorf("body: %s", inner[0].String())}
-					return nil
-				}),
-			)
-			return nil
-		}),
-		js.FuncOf(func(_ js.Value, args []js.Value) any {
-			ch <- result{err: fmt.Errorf("fetch: %s", args[0].String())}
-			return nil
-		}),
-	)
+	var thenFn, textOK, textErr, fetchErr js.Func
+	thenFn = js.FuncOf(func(_ js.Value, args []js.Value) any {
+		args[0].Call("text").Call("then", textOK, textErr)
+		return nil
+	})
+	textOK = js.FuncOf(func(_ js.Value, inner []js.Value) any {
+		ch <- result{val: inner[0].String()}
+		return nil
+	})
+	textErr = js.FuncOf(func(_ js.Value, inner []js.Value) any {
+		ch <- result{err: fmt.Errorf("body: %s", inner[0].String())}
+		return nil
+	})
+	fetchErr = js.FuncOf(func(_ js.Value, args []js.Value) any {
+		ch <- result{err: fmt.Errorf("fetch: %s", args[0].String())}
+		return nil
+	})
+	defer thenFn.Release()
+	defer textOK.Release()
+	defer textErr.Release()
+	defer fetchErr.Release()
+
+	js.Global().Call("fetch", url).Call("then", thenFn, fetchErr)
 
 	r := <-ch
 	return r.val, r.err

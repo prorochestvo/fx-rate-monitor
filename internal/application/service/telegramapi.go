@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/seilbekskindirov/monitor/internal/application/labelfmt"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
 )
@@ -205,7 +206,7 @@ func (h *TelegramApi) handleShow(ctx context.Context, chatID int64, msgID int) {
 	sb.WriteString("<b>Your subscriptions:</b>\n")
 	for _, s := range subs {
 		sb.WriteString(fmt.Sprintf(" • <b>%s</b> — %s\n",
-			s.SourceName, subscriptionConditionLabel(s)))
+			s.SourceName, labelfmt.SubscriptionConditionLabel(s)))
 	}
 	h.sendOrEditWithKeyboard(ctx, chatID, msgID, sb.String(), backKeyboard())
 }
@@ -449,7 +450,7 @@ func (h *TelegramApi) handleDeleteList(ctx context.Context, chatID int64, msgID 
 	}
 	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(subs)+1)
 	for _, s := range subs {
-		label := fmt.Sprintf("🗑 %s — %s", s.SourceName, subscriptionConditionLabel(s))
+		label := fmt.Sprintf("🗑 %s — %s", s.SourceName, labelfmt.SubscriptionConditionLabel(s))
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(label,
 				"sub:del:"+url.QueryEscape(s.SourceName)),
@@ -579,53 +580,6 @@ func backKeyboard() tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("« Back", cbBack),
 		),
 	)
-}
-
-// subscriptionConditionLabel returns a human-readable description of a subscription's condition.
-func subscriptionConditionLabel(s domain.RateUserSubscription) string {
-	switch s.ConditionType {
-	case domain.ConditionTypeDelta:
-		return fmt.Sprintf("Δ ≥ %s%%", s.ConditionValue)
-	case domain.ConditionTypeInterval:
-		return fmt.Sprintf("every %s", intervalLabel(s.ConditionValue))
-	case domain.ConditionTypeDaily:
-		// stored as "15:04:05" — show only HH:MM UTC
-		if len(s.ConditionValue) >= 5 {
-			return fmt.Sprintf("daily at %s UTC", s.ConditionValue[:5])
-		}
-		return fmt.Sprintf("daily at %s UTC", s.ConditionValue)
-	case domain.ConditionTypeCron:
-		return fmt.Sprintf("weekly on %s (UTC 09:00)", cronWeekdayLabel(s.ConditionValue))
-	default:
-		return string(s.ConditionType)
-	}
-}
-
-// intervalLabel maps raw duration strings to short human-readable labels.
-func intervalLabel(v string) string {
-	switch v {
-	case "24h":
-		return "1d"
-	case "168h":
-		return "1w"
-	default:
-		return v
-	}
-}
-
-// cronWeekdayLabel extracts the weekday name from a "0 9 * * N" cron expression.
-func cronWeekdayLabel(expr string) string {
-	days := map[string]string{
-		"0": "Sunday", "1": "Monday", "2": "Tuesday",
-		"3": "Wednesday", "4": "Thursday", "5": "Friday", "6": "Saturday",
-	}
-	parts := strings.Fields(expr)
-	if len(parts) == 5 {
-		if name, ok := days[parts[4]]; ok {
-			return name
-		}
-	}
-	return expr
 }
 
 // conditionFromString maps a callback payload segment to a domain condition type.

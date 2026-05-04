@@ -41,7 +41,7 @@ func (r *RateSourceRepository) CheckUP(ctx context.Context) error {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	count, err := rateSourceCount(tx, ctx, ";")
 	if err != nil {
@@ -90,7 +90,7 @@ func (r *RateSourceRepository) ObtainRateSourceByName(ctx context.Context, name 
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	rows, err := rateSourceQueryRowContext(tx, ctx, "WHERE "+rateSourceNameFieldName+" = ?;", name)
 	if err != nil {
@@ -112,7 +112,7 @@ func (r *RateSourceRepository) ObtainAllRateSources(ctx context.Context) ([]doma
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	rows, err := rateSourceQueryContext(tx, ctx, "ORDER BY "+rateSourceNameFieldName+" DESC;")
 	if err != nil {
@@ -154,7 +154,7 @@ func (r *RateSourceRepository) RetainRateSource(ctx context.Context, record *dom
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	count, err := rateSourceCount(tx, ctx, "WHERE "+rateSourceNameFieldName+" = ?;", record.Name)
 	if err != nil {
@@ -254,7 +254,7 @@ func (r *RateSourceRepository) RemoveRateSource(ctx context.Context, record *dom
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	cmd := "DELETE FROM" + " " + rateSourceTableName + " WHERE " + rateSourceNameFieldName + " = ?;"
 	_, err = tx.ExecContext(ctx, cmd, record.Name)

@@ -28,8 +28,6 @@ func makeRates(tb testing.TB, prices []float64) []*domain.RateValue {
 	return rates
 }
 
-// --- MovingAverageForecaster ---
-
 func TestMovingAverageForecaster(t *testing.T) {
 	t.Parallel()
 
@@ -71,8 +69,6 @@ func TestMovingAverageForecaster(t *testing.T) {
 		require.ErrorIs(t, err, ErrInsufficientData)
 	})
 }
-
-// --- LinearRegressionForecaster ---
 
 func TestLinearRegressionForecaster(t *testing.T) {
 	t.Parallel()
@@ -139,8 +135,6 @@ func TestLinearRegressionForecaster(t *testing.T) {
 		assert.False(t, math.IsNaN(result.PredictedPrice), "predicted price must not be NaN")
 	})
 }
-
-// --- CompositeForecaster ---
 
 func TestCompositeForecaster(t *testing.T) {
 	t.Parallel()
@@ -216,8 +210,6 @@ func TestCompositeForecaster(t *testing.T) {
 	})
 }
 
-// --- Benchmarks ---
-
 // BenchmarkMovingAverageForecaster measures throughput at the default history size.
 func BenchmarkMovingAverageForecaster(b *testing.B) {
 	f := NewMovingAverageForecaster()
@@ -249,8 +241,6 @@ func BenchmarkLinearRegressionForecaster(b *testing.B) {
 		_, _ = f.Forecast(b.Context(), rates)
 	}
 }
-
-// --- test stubs ---
 
 // alwaysErrForecaster is a Forecaster that always returns a configurable error.
 // Used to verify CompositeForecaster skips unexpected (non-ErrInsufficientData) errors.

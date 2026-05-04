@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"strings"
 	"time"
@@ -42,7 +43,7 @@ func (r *RateUserEventRepository) CheckUP(ctx context.Context) error {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	count, err := rateUserEventCount(tx, ctx, ";")
 	if err != nil {
@@ -93,7 +94,7 @@ func (r *RateUserEventRepository) ObtainLastNRateUserEvents(ctx context.Context,
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	// whereClause is used for COUNT (no LIMIT/OFFSET — those must not be applied to COUNT).
 	whereClause := ""
@@ -183,7 +184,7 @@ func (r *RateUserEventRepository) ObtainRateUserEventsBySourceName(ctx context.C
 	if err != nil {
 		return nil, errors.Join(err, internal.NewStackTraceError())
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	args := []any{sourceName}
 	where := "WHERE " + rateUserEventSourceNameFieldName + " = ?"
@@ -201,7 +202,7 @@ func (r *RateUserEventRepository) ObtainRateUserEventsBySourceName(ctx context.C
 		return nil, errors.Join(err, internal.NewTraceError())
 	}
 	if count == 0 {
-		_ = tx.Rollback()
+		printRollbackError(tx)
 		return []domain.RateUserEvent{}, nil
 	}
 
@@ -227,13 +228,26 @@ func (r *RateUserEventRepository) ObtainRateUserEventsBySourceName(ctx context.C
 		); scanErr != nil {
 			return nil, errors.Join(scanErr, internal.NewTraceError())
 		}
-		item.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		var parseErr error
+		item.CreatedAt, parseErr = time.Parse(time.RFC3339, createdAt)
+		if parseErr != nil {
+			log.Print(errors.Join(
+				fmt.Errorf("rate user event %s has invalid created_at %q: %w", item.ID, createdAt, parseErr),
+				internal.NewTraceError(),
+			))
+		}
 		if sentAt != nil && *sentAt != "" {
-			item.SentAt, _ = time.Parse(time.RFC3339, *sentAt)
+			item.SentAt, parseErr = time.Parse(time.RFC3339, *sentAt)
+			if parseErr != nil {
+				log.Print(errors.Join(
+					fmt.Errorf("rate user event %s has invalid sent_at %q: %w", item.ID, *sentAt, parseErr),
+					internal.NewTraceError(),
+				))
+			}
 		}
 		items = append(items, item)
 	}
-	_ = tx.Rollback()
+	printRollbackError(tx)
 	return items, nil
 }
 
@@ -257,7 +271,7 @@ func (r *RateUserEventRepository) ObtainDailyEventSummaryBySource(ctx context.Co
 	if err != nil {
 		return nil, errors.Join(err, internal.NewStackTraceError())
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	rows, err := tx.QueryContext(ctx, query, sourceName, limit, offset)
 	if err != nil {
@@ -292,7 +306,7 @@ func (r *RateUserEventRepository) ObtainUnprocessedRateUserEvents(ctx context.Co
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	rows, err := rateUserEventQueryContext(tx, ctx, "WHERE "+rateUserEventStatusFieldName+" in (?, ?) ORDER BY "+rateUserEventCreatedAtFieldName+" ASC;", domain.RateUserEventStatusPending, domain.RateUserEventStatusFailed)
 	if err != nil {
@@ -313,7 +327,7 @@ func (r *RateUserEventRepository) ObtainRateUserEventById(ctx context.Context, i
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	row, err := rateUserEventQueryRowContext(tx, ctx, "WHERE "+rateUserEventIdFieldName+" = ? ORDER BY "+rateUserEventCreatedAtFieldName+" ASC;", id)
 	if err != nil {
@@ -350,7 +364,7 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	count, err := rateUserEventCount(tx, ctx, " WHERE "+rateValueIdFieldName+" = ?;", record.ID)
 	if err != nil {
@@ -448,7 +462,7 @@ func (r *RateUserEventRepository) RemoveRateUserEvent(ctx context.Context, recor
 		err = errors.Join(err, internal.NewTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	cmd := "DELETE FROM" + " " + rateUserEventTableName + " WHERE " + rateUserEventIdFieldName + " = ?;"
 	_, err = tx.ExecContext(ctx, cmd, record.ID)
@@ -476,7 +490,7 @@ func (r *RateUserEventRepository) RemoveRateUserEventOlderThan(ctx context.Conte
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}
-	defer func(tx interface{ Rollback() error }) { _ = tx.Rollback() }(tx)
+	defer printRollbackError(tx)
 
 	cmd := "DELETE FROM" + " " + rateUserEventTableName +
 		" WHERE " + rateUserEventCreatedAtFieldName + " < ?" +

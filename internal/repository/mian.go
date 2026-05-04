@@ -1,0 +1,19 @@
+package repository
+
+import (
+	"database/sql"
+	"errors"
+	"log"
+
+	"github.com/seilbekskindirov/monitor/internal"
+)
+
+// printRollbackError rolls back tx and logs any failure that is not
+// sql.ErrTxDone (which simply means the transaction was already committed
+// or rolled back — the expected outcome on the success path).
+func printRollbackError(r interface{ Rollback() error }) {
+	if err := r.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		err = errors.Join(err, internal.NewTraceError())
+		log.Print(err)
+	}
+}
