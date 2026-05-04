@@ -11,8 +11,10 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	"github.com/seilbekskindirov/monitor/internal/tools/threadsafe"
@@ -115,6 +117,13 @@ func (extractor *RateExtractor) Run(ctx context.Context, source *domain.RateSour
 			payload, err = extractor.extractJSONPath(rule.Pattern, payload)
 			if err != nil {
 				err = errors.Join(err, fmt.Errorf("rule %d: apply json_path %q: %w", i, rule.Pattern, err))
+				err = errors.Join(err, internal.NewTraceError())
+				return err
+			}
+		case domain.MethodCSS:
+			payload, err = extractor.applyCSS(rule.Pattern, payload)
+			if err != nil {
+				err = errors.Join(err, fmt.Errorf("rule %d: apply css selector %q: %w", i, rule.Pattern, err))
 				err = errors.Join(err, internal.NewTraceError())
 				return err
 			}
@@ -234,6 +243,41 @@ func (extractor *RateExtractor) fetchRegexPage(_ context.Context, pattern string
 	}
 
 	return matches[1], nil
+}
+
+// applyCSS selects elements matching selector from the HTML payload and returns the
+// trimmed text content of the first match. Returns an error if the selector is
+// invalid or matches no elements.
+func (extractor *RateExtractor) applyCSS(selector string, payload []byte) ([]byte, error) {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(payload)))
+	if err != nil {
+		err = fmt.Errorf("parse html for css selector: %w", err)
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+	sel, err := safeFind(doc, selector)
+	if err != nil {
+		err = fmt.Errorf("invalid css selector %q: %w", selector, err)
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+	if sel.Length() == 0 {
+		err = fmt.Errorf("css selector matched no elements: %q", selector)
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+	return []byte(strings.TrimSpace(sel.First().Text())), nil
+}
+
+// safeFind wraps goquery.Find so that a selector cascadia rejects at parse
+// time produces an error rather than a panic.
+func safeFind(doc *goquery.Document, selector string) (sel *goquery.Selection, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = errors.New("invalid css selector")
+		}
+	}()
+	return doc.Find(selector), nil
 }
 
 type rateValueRepository interface {

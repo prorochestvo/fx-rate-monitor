@@ -1,0 +1,8 @@
+{
+  "_comment": "Verified against bankffin.html (rendered from https://bankffin.kz/ru/exchange-rates at 2026-05-03). The first numeric rate after each currency code is the 'Покупка' (bank-buys) rate; the second is 'Продажа' (bank-sells). We define expected as the FIRST value (Покупка) for consistency with the document-order convention used in bcc_expected.json.",
+  "pairs": [
+    { "pair": "USD", "unit": 1, "value": "460.00" },
+    { "pair": "RUB", "unit": 1, "value": "5.90"   },
+    { "pair": "EUR", "unit": 1, "value": "539.00" }
+  ]
+}

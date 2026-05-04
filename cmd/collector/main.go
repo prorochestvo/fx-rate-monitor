@@ -78,12 +78,18 @@ func main() {
 		log.Fatalf("repositories: rate value build is failed, %s", err.Error())
 		return
 	}
+	rExtractionRule, err := repository.NewExtractionRuleRepository(db)
+	if err != nil {
+		log.Fatalf("repositories: extraction rule build is failed, %s", err.Error())
+		return
+	}
 	log.Println("repositories: initiated")
 
 	runners, err := buildRunners(
 		rRateSource,
 		rExecutionHistory,
 		rRateValue,
+		rExtractionRule,
 		l.WriterAs(internal.LogLevelWarning),
 	)
 	if err != nil {
@@ -130,6 +136,7 @@ func buildRunners(
 	rRateSource *repository.RateSourceRepository,
 	rExecutionHistory *repository.ExecutionHistoryRepository,
 	rRateValue *repository.RateValueRepository,
+	rExtractionRule *repository.ExtractionRuleRepository,
 	logger io.Writer,
 ) ([]runner, error) {
 	collectionRateAgent, err := collection.NewRateAgent(
@@ -137,10 +144,14 @@ func buildRunners(
 		rRateSource,
 		rExecutionHistory,
 		rRateValue,
+		rExtractionRule,
 		logger,
 	)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewTraceError())
 	}
-	return []runner{collectionRateAgent}, nil
+
+	brokenRulePromoter := collection.NewBrokenRulePromoter(rExtractionRule, rExecutionHistory, logger)
+
+	return []runner{collectionRateAgent, brokenRulePromoter}, nil
 }

@@ -1,3 +1,23 @@
+// Package collection houses agents that drive periodic FX rate collection.
+//
+// Rule resolution priority (per source, per collector invocation):
+//  1. If one or more active rows exist in extraction_rules for
+//     (kind="rate", target=source.Name), those rules are used exclusively —
+//     one rule per label, all-or-nothing. The inline source.Rules field is
+//     ignored for any source that has at least one active extraction rule.
+//  2. If no active extraction rule exists for the source, the collector falls
+//     back to source.Rules (the hand-authored inline rules stored in the
+//     rate_sources.rules JSON column).
+//
+// Partial coverage (some labels in extraction_rules, some inline) is treated
+// as a configuration error: the operator must either add the missing labels to
+// the targets file and re-run ruledoctor, or delete the partial active rows.
+// This keeps the fallback logic unambiguous — a source has either migrated to
+// the new table or it hasn't.
+//
+// This coexistence path lets operators promote sources to LLM-generated rules
+// one at a time with zero downtime.  Phasing out inline rules entirely is a
+// future plan.
 package collection
 
 import (
@@ -5,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"time"
 
 	"github.com/seilbekskindirov/monitor/internal"
@@ -17,6 +38,7 @@ func NewRateAgent(
 	rRateSource rateSourceRepository,
 	rExecutionHistory executionHistoryRepository,
 	rRateValue rateValueRepository,
+	rExtractionRule extractionRuleRepository,
 	logger io.Writer,
 ) (*RateAgent, error) {
 	extractor, err := rateextractor.NewRateExtractor(rRateValue, proxyURL, time.Minute, logger)
@@ -28,6 +50,7 @@ func NewRateAgent(
 		rateValueRepository:        rRateValue,
 		rateSourceRepository:       rRateSource,
 		executionHistoryRepository: rExecutionHistory,
+		extractionRuleRepository:   rExtractionRule,
 		rateExtractor:              extractor,
 		logger:                     logger,
 	}
@@ -39,6 +62,7 @@ type RateAgent struct {
 	rateValueRepository        rateValueRepository
 	rateSourceRepository       rateSourceRepository
 	executionHistoryRepository executionHistoryRepository
+	extractionRuleRepository   extractionRuleRepository
 	rateExtractor              rateExtractor
 	logger                     io.Writer
 }
@@ -47,9 +71,9 @@ func (a *RateAgent) Run(ctx context.Context) (err error) {
 	// isDue returns true if the source should run in this invocation.
 	// The grace period is interval/4, clamped to [30s, 1h], to absorb scheduling
 	// jitter between sources that share the same declared interval. For example, a
-	// 4h source uses a 1h grace (fires when elapsed ≥ 3h) so that two sources whose
+	// 4h source uses a 1h grace (fires when elapsed >= 3h) so that two sources whose
 	// last runs drifted by several minutes still land in the same invocation.
-	// Short intervals (≤ 2m) keep the original 30s grace unchanged.
+	// Short intervals (<= 2m) keep the original 30s grace unchanged.
 	// If no successful execution history exists, the source is always considered due.
 	isDue := func(
 		ctx context.Context,
@@ -119,10 +143,32 @@ func (a *RateAgent) execution(ctx context.Context, sources []domain.RateSource) 
 			Timestamp:  now,
 		}
 
-		err := a.rateExtractor.Run(ctx, &source)
+		rules, activeRules, err := a.resolveRules(ctx, source)
 		if err != nil {
 			h.Success = false
 			h.Error = errors.Join(err, internal.NewTraceError()).Error()
+			err = errors.Join(err, a.executionHistoryRepository.RetainExecutionHistory(ctx, h))
+			if err != nil {
+				errs[source.Name] = errors.Join(errs[source.Name], err)
+			}
+			continue
+		}
+
+		// Build a synthetic source with the resolved rules so we never mutate the original.
+		synthetic := source
+		synthetic.Rules = rules
+
+		err = a.rateExtractor.Run(ctx, &synthetic)
+		if err != nil {
+			h.Success = false
+			h.Error = errors.Join(err, internal.NewTraceError()).Error()
+		} else {
+			// Non-fatal: update LastVerifiedAt for every rule that produced a value.
+			for _, ar := range activeRules {
+				if touchErr := a.extractionRuleRepository.TouchVerifiedAt(ctx, ar.ID, now); touchErr != nil {
+					log.Printf("rateagent: touch verified_at for rule %s: %v", ar.ID, touchErr)
+				}
+			}
 		}
 
 		err = errors.Join(err, a.executionHistoryRepository.RetainExecutionHistory(ctx, h))
@@ -133,6 +179,34 @@ func (a *RateAgent) execution(ctx context.Context, sources []domain.RateSource) 
 	}
 
 	return errs
+}
+
+// resolveRules returns the rules to apply for a source run. When active rows
+// exist in extraction_rules for (kind="rate", target=source.Name), all of them
+// are returned (one per label) as the first value; the second value carries the
+// originating ExtractionRule records so the caller can touch LastVerifiedAt on
+// success. When no active rows exist, the source's inline Rules are returned
+// and the second value is nil (all-or-nothing fallback; the two sets are never
+// mixed).
+func (a *RateAgent) resolveRules(ctx context.Context, source domain.RateSource) ([]domain.RateSourceRule, []domain.ExtractionRule, error) {
+	active, err := a.extractionRuleRepository.ObtainActiveRulesByTarget(
+		ctx, domain.ExtractionRuleKindRate, source.Name,
+	)
+	if err != nil {
+		return nil, nil, errors.Join(err, internal.NewTraceError())
+	}
+	if len(active) == 0 {
+		return source.Rules, nil, nil
+	}
+	out := make([]domain.RateSourceRule, 0, len(active))
+	for _, r := range active {
+		out = append(out, domain.RateSourceRule{
+			Pair:    r.Label,
+			Method:  r.Method,
+			Pattern: r.Pattern,
+		})
+	}
+	return out, active, nil
 }
 
 type rateExtractor interface {
@@ -152,4 +226,9 @@ type rateSourceRepository interface {
 type rateValueRepository interface {
 	ObtainLastNRateValuesBySourceName(context.Context, string, int64) ([]domain.RateValue, error)
 	RetainRateValue(context.Context, *domain.RateValue) error
+}
+
+type extractionRuleRepository interface {
+	ObtainActiveRulesByTarget(ctx context.Context, kind domain.ExtractionRuleKind, targetID string) ([]domain.ExtractionRule, error)
+	TouchVerifiedAt(ctx context.Context, ruleID string, when time.Time) error
 }

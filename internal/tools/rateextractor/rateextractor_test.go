@@ -456,6 +456,78 @@ func TestRateExtractor_Run(t *testing.T) {
 		require.Len(t, rateRepo.retained, 1)
 		require.InDelta(t, 1234.56, rateRepo.retained[0].Price, 0.001)
 	})
+	t.Run("css selector matches one element", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = fmt.Fprint(w, `<table><tr><td>USD / KZT</td><td class="rate">450.75</td></tr></table>`)
+		}))
+		defer srv.Close()
+
+		rateRepo := &mockRateValueRepository{}
+		source := &domain.RateSource{
+			Name:          "css_src",
+			URL:           srv.URL,
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			Rules: []domain.RateSourceRule{
+				{Method: domain.MethodCSS, Pattern: `td.rate`},
+			},
+		}
+		ext, err := NewRateExtractorWithHTTPClient(rateRepo, &http.Client{Timeout: 5 * time.Second}, logger)
+		require.NoError(t, err)
+		require.NoError(t, ext.Run(t.Context(), source))
+		require.Len(t, rateRepo.retained, 1)
+		require.InDelta(t, 450.75, rateRepo.retained[0].Price, 0.001)
+	})
+	t.Run("css selector matches no elements", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = fmt.Fprint(w, `<table><tr><td>no rate here</td></tr></table>`)
+		}))
+		defer srv.Close()
+
+		source := &domain.RateSource{
+			Name: "css_nomatch_src",
+			URL:  srv.URL,
+			Rules: []domain.RateSourceRule{
+				{Method: domain.MethodCSS, Pattern: `td.rate`},
+			},
+		}
+		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 5 * time.Second}, logger)
+		require.NoError(t, err)
+
+		err = ext.Run(t.Context(), source)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "css selector matched no elements")
+	})
+	t.Run("css selector that matches no nodes returns error not panic", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = fmt.Fprint(w, `<table><tr><td>100</td></tr></table>`)
+		}))
+		defer srv.Close()
+
+		// Cascadia silently returns 0 matches for unrecognised pseudo-classes
+		// rather than panicking. The applyCSS wrapper turns 0 matches into an
+		// explicit "css selector matched no elements" error so the collection
+		// run records a proper failure in execution_history.
+		source := &domain.RateSource{
+			Name: "css_invalid_src",
+			URL:  srv.URL,
+			Rules: []domain.RateSourceRule{
+				{Method: domain.MethodCSS, Pattern: `tr:has(td:invalid())`},
+			},
+		}
+		ext, err := NewRateExtractorWithHTTPClient(&mockRateValueRepository{}, &http.Client{Timeout: 5 * time.Second}, logger)
+		require.NoError(t, err)
+
+		err = ext.Run(t.Context(), source)
+		require.Error(t, err, "bad selector must not panic and must return an error")
+		require.Contains(t, err.Error(), "css selector matched no elements")
+	})
 	t.Run("retain rate value fails", func(t *testing.T) {
 		t.Parallel()
 

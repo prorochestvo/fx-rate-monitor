@@ -15,7 +15,10 @@ type RateSource struct {
 }
 
 // RateSourceRule defines an extraction rule for a source.
+// When populated from ExtractionRule rows, Pair carries the label so the
+// collector can name the resulting RateValue by pair.
 type RateSourceRule struct {
+	Pair    string `json:"pair,omitempty"`
 	Method  Method `json:"method"`
 	Pattern string `json:"pattern"`
 	Options string `json:"options,omitempty"`
@@ -32,6 +35,7 @@ const (
 	MethodRegex       Method = "regex"
 	MethodJSONPath    Method = "json"
 	MethodStoreToRate Method = "store_as_rate"
+	MethodCSS         Method = "css"
 )
 
 type RateSourceKind string
