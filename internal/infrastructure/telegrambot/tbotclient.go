@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/prorochestvo/dsninjector"
 	"github.com/seilbekskindirov/monitor/internal"
 )
@@ -57,6 +57,10 @@ type TelegramBotClient struct {
 	adminChatID TelegramChatID
 	logger      io.Writer
 }
+
+// BotToken returns the bot token used to validate Telegram WebApp initData.
+// Do not log the returned value — it is a secret.
+func (tbot *TelegramBotClient) BotToken() string { return tbot.bot.Token }
 
 func (tbot *TelegramBotClient) Ping(_ context.Context) error {
 	u, err := tbot.bot.GetMe()

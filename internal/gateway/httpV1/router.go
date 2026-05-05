@@ -1,21 +1,47 @@
 package httpV1
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/seilbekskindirov/monitor/internal/application/service"
+	"github.com/seilbekskindirov/monitor/internal/domain"
 	v1 "github.com/seilbekskindirov/monitor/internal/gateway/httpV1/handlers"
 	"github.com/seilbekskindirov/monitor/internal/gateway/httpV1/routes"
 )
 
+// meSubscriptionRepo is a thin interface used to thread the subscription repository
+// through the router without depending on the concrete repository package.
+type meSubscriptionRepo interface {
+	ObtainRateUserSubscriptionsByUserID(ctx context.Context, userType domain.UserType, userID string) ([]domain.RateUserSubscription, error)
+}
+
+// meSourceRepo is a thin interface for source look-ups in the Mini App handler.
+type meSourceRepo interface {
+	ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error)
+}
+
+// meRateValueRepo is a thin interface for rate value look-ups in the Mini App handler.
+type meRateValueRepo interface {
+	ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error)
+}
+
 func NewRouter(
 	mux *http.ServeMux,
 	srvRateRestApi *service.RateRestApi,
+	botToken string,
+	subRepo meSubscriptionRepo,
+	sourceRepo meSourceRepo,
+	rateValueRepo meRateValueRepo,
 ) (*http.ServeMux, error) {
-	h, err := v1.NewHandler(srvRateRestApi)
+	h, err := v1.NewHandler(srvRateRestApi, botToken, subRepo, sourceRepo, rateValueRepo)
 	if err != nil {
 		return nil, err
 	}
+
+	// MeSubscriptions is registered before the /api/sources/... block.
+	// /me and /sources are distinct prefixes, so no ambiguity.
+	mux.HandleFunc("GET "+routes.MeSubscriptions, h.ListMeSubscriptions)
 
 	mux.HandleFunc("GET "+routes.Sources, h.ListSources)
 	mux.HandleFunc("PATCH "+routes.SourceToggleActive, h.ToggleSourceActive)

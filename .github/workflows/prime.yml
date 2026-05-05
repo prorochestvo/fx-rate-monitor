@@ -1,4 +1,4 @@
-name: Stage
+name: Prime
 
 # CI runs on every push to r_* branches.
 # Deployment fires only when an r_* tag is pushed (version cut).
@@ -39,7 +39,7 @@ jobs:
         run: go test -race ./...
 
   deploy:
-    environment: STAGE
+    environment: PRIME
     runs-on: ubuntu-latest
     needs: examine
     env:
@@ -47,9 +47,9 @@ jobs:
       SSH_HOSTNAME: ${{ vars.SSH_HOSTNAME }}
       SSH_HOSTPORT: ${{ vars.SSH_HOSTPORT }}
       SSH_USERNAME: ${{ vars.SSH_USERNAME }}
-      BINARY_COLLECTOR_NAME: stage_monitor_collector
-      BINARY_WEBAPP_NAME: stage_monitor_webapp
-      BINARY_NOTIFIER_NAME: stage_monitor_notifier
+      BINARY_COLLECTOR_NAME: prime_monitor_collector
+      BINARY_WEBAPP_NAME: prime_monitor_webapp
+      BINARY_NOTIFIER_NAME: prime_monitor_notifier
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -149,9 +149,11 @@ jobs:
                 mv $REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME $REMOTE_DIR/$BINARY_WEBAPP_NAME && \
                 sudo systemctl start $SERVICE_NAME"
 
+          # wait past RestartSec=5s so a crash-looping service shows up as inactive
+          sleep 6
           $SSH "sudo systemctl is-active --quiet $SERVICE_NAME && \
                 echo 'service is running' || \
-                (journalctl -u $SERVICE_NAME -n 20 --no-pager; exit 1)"
+                (sudo journalctl -u $SERVICE_NAME -n 50 --no-pager; exit 1)"
 
       - name: Cleanup SSH
         if: always()

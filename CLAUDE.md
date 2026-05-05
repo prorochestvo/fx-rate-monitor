@@ -60,21 +60,29 @@ common layered Go layout — keep, edit, or remove rows as needed.
 
 ### Key Patterns
 
-Document the patterns this project uses so agents can follow them consistently. Examples:
-
-- **Repository pattern** — describe how persistence is structured (extractors, generic
-  helpers, query builders, etc.).
-- **Configuration injection** — describe how the project reads configuration (env vars,
-  DSN parsing, config files).
-- **Embedded assets** — list anything embedded into the binary (migrations, static
-  files, templates).
+- **Repository pattern** — each repository type owns its own SQL, migration, and query helper functions. Queries execute inside explicit transactions (`r.db.Transaction(ctx)`). Repositories are passed as interfaces into service and handler layers.
+- **Configuration injection** — `SQLITEDB_DSN` and `TELEGRAMBOT_DSN` are read via `dsninjector.Unmarshal(envName)` at startup in `cmd/web/main.go` and live in the systemd `EnvironmentFile`. The public HTTPS origin is passed via the `--api-dsn` CLI flag (format: `https://<host>/`, parsed by `dsninjector.Parse`) and is hardcoded in the systemd unit's `ExecStart` line — never in `.env`. All three configs must be present at startup; the binary calls `log.Fatalf` on any missing value.
+- **Embedded assets** — `cmd/web/main.go` embeds the `static/` directory via `//go:embed static`. All static files served by `http.FileServer` live under `cmd/web/static/`.
+- **Auth: Telegram WebApp initData HMAC** — the `/api/me/...` endpoint family authenticates callers by verifying the Telegram WebApp `initData` HMAC-SHA256 signature. The signing algorithm uses `secret_key = HMAC_SHA256("WebAppData", botToken)` (the string literal is the key; the token is the message). Implementation lives in `internal/tools/tgwebapp/initdata.go`. The handler injects the validator as a function field so tests can substitute a fake without real bot tokens.
 
 ### HTTP Routes
 
-List the public routes and the middleware they go through. Example shape:
-
-- `<METHOD> <path>` — short description
-- ...
+- `GET /api/sources` — list all configured rate sources with latest execution status
+- `GET /api/sources/{name}/rates` — most recent rate values for a named source
+- `GET /api/sources/{name}/rates/chart` — aggregated chart data (period=week|month|year)
+- `GET /api/sources/{name}/history` — execution history for a named source
+- `GET /api/sources/{name}/events/failed` — paginated failed events for a source
+- `GET /api/sources/{name}/subscriptions` — grouped subscription statistics for a source
+- `GET /api/sources/{name}/subscriptions/list` — paginated subscription details for a source
+- `GET /api/sources/{name}/events/daily` — daily aggregated event counts for a source
+- `PATCH /api/sources/{name}/active` — enable or disable a named source
+- `GET /api/stats` — global statistics (source counts, error count)
+- `GET /api/errors/execution` — paginated failed execution history records
+- `GET /api/events/pending` — all currently pending notification events
+- `GET /api/notifications` — last N notification pool records
+- `GET /api/notifications/failed` — all failed notification pool records
+- `GET /api/me/subscriptions` — caller's own subscriptions enriched with latest rate values; authenticated via Telegram WebApp initData HMAC (`X-Telegram-Init-Data` header or `?initData=` query string fallback)
+- `GET /app/subscriptions.html` — Telegram Mini App HTML page (served by embedded static file server; no dedicated route needed)
 
 ### Database
 
@@ -88,10 +96,10 @@ or tables that exist. Example shape:
 
 ### Environment Variables
 
-List the env vars the code reads and their formats. Example shape:
+- `SQLITEDB_DSN` — SQLite connection string, parsed via `dsninjector.Unmarshal`. Format: `sqlite://<path-to-db-file>`
+- `TELEGRAMBOT_DSN` — Telegram bot credentials parsed via `dsninjector.Unmarshal`. Format: `<adminChatID>:<botToken>@<host>` where `Addr()` returns the token and `Login()` returns the admin chat ID.
 
-- `<VAR_NAME>` — purpose / format
-- ...
+> The public HTTPS origin of the `cmd/web` server is **not** an env var — see the `--api-dsn` CLI flag on the `cmd/web` binary, baked into the systemd unit's `ExecStart` line.
 
 > Never read or edit `.env` files.
 

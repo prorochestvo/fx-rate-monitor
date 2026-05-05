@@ -346,7 +346,7 @@ func TestRateCheckAgent_Run(t *testing.T) {
 					UserType:       domain.UserTypeTelegram,
 					UserID:         "42",
 					ConditionType:  domain.ConditionTypeDaily,
-					ConditionValue: "06:00:00",
+					ConditionValue: "00:00:00",
 				},
 			},
 		}

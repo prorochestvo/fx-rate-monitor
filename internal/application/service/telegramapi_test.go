@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/seilbekskindirov/monitor/internal/application/labelfmt"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
@@ -706,7 +706,7 @@ func TestTelegramApi_handleMessage(t *testing.T) {
 	})
 }
 
-func TestTelegramApi_sendMainMenu_editMode(t *testing.T) {
+func TestTelegramApi_sendMainMenu(t *testing.T) {
 	t.Parallel()
 	t.Run("edits existing message when msgID is non-zero", func(t *testing.T) {
 		t.Parallel()
@@ -728,6 +728,36 @@ func TestTelegramApi_sendMainMenu_editMode(t *testing.T) {
 
 		require.Len(t, client.keyboards, 1)
 		assert.Empty(t, client.editedMsgIDs)
+	})
+	t.Run("keyboard contains Mini App WebApp button when webAppURL is set", func(t *testing.T) {
+		t.Parallel()
+		const wantURL = "https://example.com/app/subscriptions"
+		client := &mockTelegramClient{}
+		h := newTelegramApiWithWebApp(client, &mockSubRepo{}, &mockSourceRepo{}, wantURL)
+
+		h.sendMainMenu(t.Context(), testChatID, 0)
+
+		require.Len(t, client.keyboards, 1)
+		kb := client.keyboards[0].InlineKeyboard
+		// 3 standard rows + 1 Mini App WebApp row = 4 rows total.
+		require.Len(t, kb, 4)
+		webAppRow := kb[3]
+		require.Len(t, webAppRow, 1)
+		require.NotNil(t, webAppRow[0].WebApp, "last row must carry a WebApp button, not a URL button")
+		assert.Equal(t, wantURL, webAppRow[0].WebApp.URL)
+		assert.Empty(t, webAppRow[0].URL, "WebApp button must not set the URL field")
+	})
+	t.Run("keyboard has no Mini App button when webAppURL is empty", func(t *testing.T) {
+		t.Parallel()
+		client := &mockTelegramClient{}
+		h := newTelegramApi(client, &mockSubRepo{}, &mockSourceRepo{})
+
+		h.sendMainMenu(t.Context(), testChatID, 0)
+
+		require.Len(t, client.keyboards, 1)
+		kb := client.keyboards[0].InlineKeyboard
+		// Standard 3 rows only.
+		require.Len(t, kb, 3)
 	})
 }
 
@@ -831,14 +861,21 @@ func BenchmarkHandleShow(b *testing.B) {
 
 // newTelegramApi is a helper that creates a TelegramApi wired to the provided mocks.
 func newTelegramApi(client *mockTelegramClient, subRepo subscriptionRepository, sourceRepo sourceRepository) *TelegramApi {
-	h, _ := NewTelegramApi(client, subRepo, sourceRepo)
+	h, _ := NewTelegramApi(client, subRepo, sourceRepo, "")
+	return h
+}
+
+// newTelegramApiWithWebApp creates a TelegramApi with a non-empty webAppURL for WebApp button tests.
+func newTelegramApiWithWebApp(client *mockTelegramClient, subRepo subscriptionRepository, sourceRepo sourceRepository, webAppURL string) *TelegramApi {
+	h, _ := NewTelegramApi(client, subRepo, sourceRepo, webAppURL)
 	return h
 }
 
 // buildMessage constructs a minimal *tgbotapi.Message for testing handleMessage.
+// Note: the OvyFlash fork changed Message.Chat from *Chat to Chat (value receiver).
 func buildMessage(chatID int64, text string) *tgbotapi.Message {
 	return &tgbotapi.Message{
-		Chat: &tgbotapi.Chat{ID: chatID},
+		Chat: tgbotapi.Chat{ID: chatID},
 		Text: text,
 	}
 }

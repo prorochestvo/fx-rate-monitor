@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://telegram.org; script-src 'self' https://telegram.org 'unsafe-inline'; style-src 'self' 'unsafe-inline';">
+  <title>My Subscriptions</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--tg-theme-bg-color, #ffffff);
+      color: var(--tg-theme-text-color, #000000);
+      padding: 12px;
+      min-height: 100vh;
+    }
+    .search-bar {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid var(--tg-theme-hint-color, #ccc);
+      border-radius: 8px;
+      background: var(--tg-theme-secondary-bg-color, #f5f5f5);
+      color: var(--tg-theme-text-color, #000);
+      font-size: 15px;
+      margin-bottom: 12px;
+      outline: none;
+    }
+    .search-bar:focus { border-color: var(--tg-theme-button-color, #2196f3); }
+    .card {
+      background: var(--tg-theme-secondary-bg-color, #f9f9f9);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+    .card-title { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+    .card-pair { font-size: 13px; color: var(--tg-theme-hint-color, #888); margin-bottom: 6px; }
+    .card-price { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+    .card-time { font-size: 12px; color: var(--tg-theme-hint-color, #888); margin-bottom: 8px; }
+    .badges { display: flex; flex-wrap: wrap; gap: 4px; }
+    .badge {
+      background: var(--tg-theme-button-color, #2196f3);
+      color: var(--tg-theme-button-text-color, #fff);
+      border-radius: 12px;
+      padding: 2px 8px;
+      font-size: 11px;
+    }
+    .pagination { display: flex; justify-content: center; gap: 12px; margin-top: 14px; }
+    .pagination button {
+      background: var(--tg-theme-button-color, #2196f3);
+      color: var(--tg-theme-button-text-color, #fff);
+      border: none;
+      border-radius: 8px;
+      padding: 8px 20px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .status { text-align: center; padding: 30px 0; color: var(--tg-theme-hint-color, #888); }
+    .error-msg { color: #e53935; text-align: center; padding: 20px; }
+  </style>
+</head>
+<body>
+  <input class="search-bar" id="search" type="text" placeholder="Search subscriptions...">
+  <div id="list"></div>
+  <div class="pagination" id="pagination" style="display:none">
+    <button id="prev">&#8592; Prev</button>
+    <button id="next">Next &#8594;</button>
+  </div>
+
+  <script>
+    var WebApp = window.Telegram && window.Telegram.WebApp;
+
+    if (WebApp) {
+      WebApp.ready();
+      WebApp.expand();
+    }
+
+    var initData = WebApp ? WebApp.initData : '';
+    var currentPage = 1;
+    var currentQ = '';
+    var debounceTimer = null;
+
+    if (!initData) {
+      document.getElementById('list').innerHTML =
+        '<p class="error-msg">This page must be opened from the bot\'s button. Please reopen via the bot.</p>';
+    } else {
+      load(currentPage, currentQ);
+    }
+
+    document.getElementById('search').addEventListener('input', function(e) {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(function() {
+        currentQ = e.target.value;
+        currentPage = 1;
+        load(currentPage, currentQ);
+      }, 250);
+    });
+
+    document.getElementById('prev').addEventListener('click', function() {
+      if (currentPage > 1) { currentPage--; load(currentPage, currentQ); }
+    });
+
+    document.getElementById('next').addEventListener('click', function() {
+      currentPage++;
+      load(currentPage, currentQ);
+    });
+
+    function load(page, q) {
+      var listEl = document.getElementById('list');
+      listEl.innerHTML = '<p class="status">Loading...</p>';
+
+      var url = '/api/me/subscriptions?page=' + page + '&page_size=10';
+      if (q) { url += '&q=' + encodeURIComponent(q); }
+
+      fetch(url, {
+        headers: { 'X-Telegram-Init-Data': initData }
+      })
+      .then(function(res) {
+        if (res.status === 401) {
+          listEl.innerHTML = '<p class="error-msg">This page must be opened from the bot\'s button. Please reopen via the bot.</p>';
+          document.getElementById('pagination').style.display = 'none';
+          return null;
+        }
+        return res.json();
+      })
+      .then(function(data) {
+        if (!data) return;
+        render(data);
+      })
+      .catch(function() {
+        listEl.innerHTML = '<p class="error-msg">Failed to load subscriptions. Please try again.</p>';
+      });
+    }
+
+    function render(data) {
+      var listEl = document.getElementById('list');
+      var paginationEl = document.getElementById('pagination');
+
+      if (!data.items || data.items.length === 0) {
+        listEl.innerHTML = '<p class="status">No subscriptions found.</p>';
+        paginationEl.style.display = 'none';
+        return;
+      }
+
+      var html = '';
+      data.items.forEach(function(item) {
+        var price = item.latest_price ? item.latest_price.toFixed(4) : '—';
+        var pair = item.base_currency && item.quote_currency
+          ? item.base_currency + '/' + item.quote_currency : '';
+        var ts = item.latest_at ? new Date(item.latest_at).toLocaleString() : '—';
+        var badges = (item.conditions || []).map(function(c) {
+          return '<span class="badge">' + escHtml(c) + '</span>';
+        }).join('');
+
+        html += '<div class="card">' +
+          '<div class="card-title">' + escHtml(item.source_title || item.source_name) + '</div>' +
+          (pair ? '<div class="card-pair">' + escHtml(pair) + '</div>' : '') +
+          '<div class="card-price">' + escHtml(price) + '</div>' +
+          '<div class="card-time">Last grab: ' + escHtml(ts) + '</div>' +
+          (badges ? '<div class="badges">' + badges + '</div>' : '') +
+          '</div>';
+      });
+      listEl.innerHTML = html;
+
+      var totalPages = Math.ceil(data.total / data.page_size) || 1;
+      paginationEl.style.display = totalPages > 1 ? 'flex' : 'none';
+      document.getElementById('prev').disabled = currentPage <= 1;
+      document.getElementById('next').disabled = currentPage >= totalPages;
+    }
+
+    function escHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+  </script>
+</body>
+</html>

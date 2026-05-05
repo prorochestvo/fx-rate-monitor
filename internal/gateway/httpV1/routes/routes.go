@@ -47,4 +47,8 @@ const (
 
 	// ErrorsExecution returns the most recent failed execution history records.
 	ErrorsExecution = "/api/errors/execution"
+
+	// MeSubscriptions returns the calling user's own subscriptions enriched with the
+	// latest rate value per source. Authentication is via Telegram WebApp initData HMAC.
+	MeSubscriptions = "/api/me/subscriptions"
 )

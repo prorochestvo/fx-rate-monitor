@@ -3,26 +3,31 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/url"
 	"strconv"
 	"strings"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/seilbekskindirov/monitor/internal/application/labelfmt"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
 )
 
-// NewTelegramApi constructs a fully stateless handler. All three arguments are required.
+// NewTelegramApi constructs a fully stateless handler. The first three arguments are required.
+// webAppURL is the fully-qualified https:// URL of the Telegram Mini App subscriptions page.
+// When empty, the WebApp keyboard button is silently omitted (safe for dev environments).
 func NewTelegramApi(
 	cltTelegram telegramClient,
 	subRepo subscriptionRepository,
 	sourceRepo sourceRepository,
+	webAppURL string,
 ) (*TelegramApi, error) {
 	return &TelegramApi{
 		telegramClient: cltTelegram,
 		subRepo:        subRepo,
 		sourceRepo:     sourceRepo,
+		webAppURL:      webAppURL,
 	}, nil
 }
 
@@ -32,15 +37,24 @@ type TelegramApi struct {
 	telegramClient telegramClient
 	subRepo        subscriptionRepository
 	sourceRepo     sourceRepository
+	webAppURL      string
 }
 
 func (h *TelegramApi) Run(ctx context.Context) {
 	handle := func(ctx context.Context, update tgbotapi.Update) {
 		switch {
 		case update.CallbackQuery != nil:
-			h.handleCallback(ctx, update.CallbackQuery)
+			cb := update.CallbackQuery
+			log.Printf("telegram: update id=%d chat=%d kind=callback data=%q",
+				update.UpdateID, cb.Message.Chat.ID, cb.Data)
+			h.handleCallback(ctx, cb)
 		case update.Message != nil:
-			h.handleMessage(ctx, update.Message)
+			m := update.Message
+			log.Printf("telegram: update id=%d chat=%d kind=message text=%q",
+				update.UpdateID, m.Chat.ID, m.Text)
+			h.handleMessage(ctx, m)
+		default:
+			log.Printf("telegram: update id=%d kind=other", update.UpdateID)
 		}
 	}
 
@@ -57,8 +71,7 @@ func (h *TelegramApi) handleMessage(ctx context.Context, msg *tgbotapi.Message) 
 		return
 	}
 
-	_ = h.telegramClient.SendHTMLMessage(ctx,
-		integration.TelegramChatID(chatID),
+	h.notifyText(ctx, chatID,
 		fmt.Sprintf("Please use %s to start.", commandSubscriptions))
 }
 
@@ -84,7 +97,7 @@ func (h *TelegramApi) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 	data := cb.Data
 
 	// always acknowledge to clear the spinner
-	_ = h.telegramClient.AnswerCallbackQuery(ctx, cb.ID, "")
+	h.ackCallback(ctx, cb.ID, "")
 
 	switch {
 	case data == cbBack:
@@ -172,7 +185,7 @@ func (h *TelegramApi) routeAddFlow(ctx context.Context, chatID int64, msgID int,
 // sendMainMenu shows the top-level keyboard. When msgID > 0 the existing message is edited
 // in place (callback flow); when 0 a new message is sent (text-command flow).
 func (h *TelegramApi) sendMainMenu(ctx context.Context, chatID int64, msgID int) {
-	kb := tgbotapi.NewInlineKeyboardMarkup(
+	rows := [][]tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("📋 My subscriptions", cbShow),
 		),
@@ -183,9 +196,24 @@ func (h *TelegramApi) sendMainMenu(ctx context.Context, chatID int64, msgID int)
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("📈 Latest updates", cbLatest),
 		),
-	)
+	}
+	// WebApp button is shown as a separate row at the bottom when a public URL is configured.
+	// Note: Telegram silently ignores WebApp buttons for non-anonymous bots in groups —
+	// irrelevant here because this bot operates in DM-only mode.
+	if h.webAppURL != "" {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			newWebAppButton("🌐 Open Mini App", h.webAppURL),
+		))
+	}
+	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
 	const text = "<b>Subscription Management</b>\nChoose an action:"
 	h.sendOrEditWithKeyboard(ctx, chatID, msgID, text, kb)
+}
+
+// newWebAppButton builds an inline keyboard button that opens the Telegram Mini App.
+// Uses the Bot API 6.0+ WebApp button type so Telegram injects initData into the page.
+func newWebAppButton(text, webAppURL string) tgbotapi.InlineKeyboardButton {
+	return tgbotapi.NewInlineKeyboardButtonWebApp(text, tgbotapi.WebAppInfo{URL: webAppURL})
 }
 
 // handleShow lists the caller's active subscriptions.
@@ -194,8 +222,7 @@ func (h *TelegramApi) handleShow(ctx context.Context, chatID int64, msgID int) {
 		ctx, domain.UserTypeTelegram, strconv.FormatInt(chatID, 10),
 	)
 	if err != nil {
-		_ = h.telegramClient.SendHTMLMessage(ctx,
-			integration.TelegramChatID(chatID), "⚠️ Failed to load subscriptions.")
+		h.notifyText(ctx, chatID, "⚠️ Failed to load subscriptions.")
 		return
 	}
 	if len(subs) == 0 {
@@ -219,8 +246,7 @@ func (h *TelegramApi) handleLatestUpdates(ctx context.Context, chatID int64, msg
 		ctx, domain.UserTypeTelegram, strconv.FormatInt(chatID, 10),
 	)
 	if err != nil {
-		_ = h.telegramClient.SendHTMLMessage(ctx,
-			integration.TelegramChatID(chatID), "⚠️ Failed to load subscriptions.")
+		h.notifyText(ctx, chatID, "⚠️ Failed to load subscriptions.")
 		return
 	}
 	if len(subs) == 0 {
@@ -253,8 +279,7 @@ func (h *TelegramApi) handleLatestUpdates(ctx context.Context, chatID int64, msg
 func (h *TelegramApi) handleAddSourceList(ctx context.Context, chatID int64, msgID int) {
 	sources, err := h.sourceRepo.ObtainAllRateSources(ctx)
 	if err != nil {
-		_ = h.telegramClient.SendHTMLMessage(ctx,
-			integration.TelegramChatID(chatID), "⚠️ Failed to load rate sources.")
+		h.notifyText(ctx, chatID, "⚠️ Failed to load rate sources.")
 		return
 	}
 	if len(sources) == 0 {
@@ -293,8 +318,7 @@ func (h *TelegramApi) handleAddSourceList(ctx context.Context, chatID int64, msg
 func (h *TelegramApi) handleAddTitleSelect(ctx context.Context, chatID int64, msgID int, title string) {
 	sources, err := h.sourceRepo.ObtainAllRateSources(ctx)
 	if err != nil {
-		_ = h.telegramClient.SendHTMLMessage(ctx,
-			integration.TelegramChatID(chatID), "⚠️ Failed to load rate sources.")
+		h.notifyText(ctx, chatID, "⚠️ Failed to load rate sources.")
 		return
 	}
 	rows := make([][]tgbotapi.InlineKeyboardButton, 0)
@@ -397,8 +421,7 @@ func (h *TelegramApi) handleAddValueSelect(ctx context.Context, chatID int64, ms
 		values = []string{"0 9 * * 1", "0 9 * * 2", "0 9 * * 3", "0 9 * * 4", "0 9 * * 5", "0 9 * * 6", "0 9 * * 0"}
 
 	default:
-		_ = h.telegramClient.SendHTMLMessage(ctx,
-			integration.TelegramChatID(chatID), "⚠️ Unknown condition type.")
+		h.notifyText(ctx, chatID, "⚠️ Unknown condition type.")
 		return
 	}
 
@@ -426,14 +449,11 @@ func (h *TelegramApi) handleAddValueSelect(ctx context.Context, chatID int64, ms
 // On failure it notifies and goes back to the main menu as well.
 func (h *TelegramApi) saveSubscription(ctx context.Context, chatID int64, msgID int, sub *domain.RateUserSubscription) {
 	if err := h.subRepo.RetainRateUserSubscription(ctx, sub); err != nil {
-		_ = h.telegramClient.SendHTMLMessage(ctx,
-			integration.TelegramChatID(chatID), "⚠️ Failed to save subscription.")
+		h.notifyText(ctx, chatID, "⚠️ Failed to save subscription.")
 		h.sendMainMenu(ctx, chatID, msgID)
 		return
 	}
-	_ = h.telegramClient.SendHTMLMessage(ctx,
-		integration.TelegramChatID(chatID),
-		fmt.Sprintf("✅ Subscribed to <b>%s</b>.", sub.SourceName))
+	h.notifyText(ctx, chatID, fmt.Sprintf("✅ Subscribed to <b>%s</b>.", sub.SourceName))
 	h.sendMainMenu(ctx, chatID, msgID)
 }
 
@@ -490,8 +510,7 @@ func (h *TelegramApi) handleDeleteConfirm(ctx context.Context, chatID int64, msg
 
 	subs, err := h.subRepo.ObtainRateUserSubscriptionsByUserID(ctx, domain.UserTypeTelegram, userID)
 	if err != nil {
-		_ = h.telegramClient.SendHTMLMessage(ctx,
-			integration.TelegramChatID(chatID), "⚠️ Failed to delete subscription.")
+		h.notifyText(ctx, chatID, "⚠️ Failed to delete subscription.")
 		h.sendMainMenu(ctx, chatID, msgID)
 		return
 	}
@@ -504,19 +523,15 @@ func (h *TelegramApi) handleDeleteConfirm(ctx context.Context, chatID int64, msg
 		}
 	}
 	if target == nil {
-		_ = h.telegramClient.SendHTMLMessage(ctx,
-			integration.TelegramChatID(chatID), "⚠️ Subscription not found.")
+		h.notifyText(ctx, chatID, "⚠️ Subscription not found.")
 		h.sendMainMenu(ctx, chatID, msgID)
 		return
 	}
 
 	if err := h.subRepo.RemoveRateUserSubscription(ctx, target); err != nil {
-		_ = h.telegramClient.SendHTMLMessage(ctx,
-			integration.TelegramChatID(chatID), "⚠️ Failed to delete subscription.")
+		h.notifyText(ctx, chatID, "⚠️ Failed to delete subscription.")
 	} else {
-		_ = h.telegramClient.SendHTMLMessage(ctx,
-			integration.TelegramChatID(chatID),
-			fmt.Sprintf("🗑 Subscription to <b>%s</b> deleted.", sourceName))
+		h.notifyText(ctx, chatID, fmt.Sprintf("🗑 Subscription to <b>%s</b> deleted.", sourceName))
 	}
 	h.sendMainMenu(ctx, chatID, msgID)
 }
@@ -526,12 +541,32 @@ func (h *TelegramApi) handleDeleteConfirm(ctx context.Context, chatID int64, msg
 // the chat clean by avoiding new chat bubbles on every inline button press.
 func (h *TelegramApi) sendOrEditWithKeyboard(ctx context.Context, chatID int64, msgID int, text string, kb tgbotapi.InlineKeyboardMarkup) {
 	if msgID > 0 {
-		_ = h.telegramClient.EditHTMLMessageWithKeyboard(
-			ctx, integration.TelegramChatID(chatID), msgID, text, kb)
+		if err := h.telegramClient.EditHTMLMessageWithKeyboard(
+			ctx, integration.TelegramChatID(chatID), msgID, text, kb); err != nil {
+			log.Printf("telegram: edit chat=%d msg=%d failed: %v", chatID, msgID, err)
+		}
 		return
 	}
-	_ = h.telegramClient.SendHTMLMessageWithKeyboard(
-		ctx, integration.TelegramChatID(chatID), text, kb)
+	if err := h.telegramClient.SendHTMLMessageWithKeyboard(
+		ctx, integration.TelegramChatID(chatID), text, kb); err != nil {
+		log.Printf("telegram: send chat=%d failed: %v", chatID, err)
+	}
+}
+
+// notifyText sends a plain HTML message and logs delivery failures. Used for
+// one-shot user notifications where the caller has no recovery path.
+func (h *TelegramApi) notifyText(ctx context.Context, chatID int64, text string) {
+	if err := h.telegramClient.SendHTMLMessage(
+		ctx, integration.TelegramChatID(chatID), text); err != nil {
+		log.Printf("telegram: notify chat=%d failed: %v", chatID, err)
+	}
+}
+
+// ackCallback acknowledges a callback_query, clearing the spinner; logs delivery failures.
+func (h *TelegramApi) ackCallback(ctx context.Context, callbackID, text string) {
+	if err := h.telegramClient.AnswerCallbackQuery(ctx, callbackID, text); err != nil {
+		log.Printf("telegram: ack callback=%s failed: %v", callbackID, err)
+	}
 }
 
 const (

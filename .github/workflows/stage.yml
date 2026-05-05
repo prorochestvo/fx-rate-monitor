@@ -152,9 +152,11 @@ jobs:
                 mv $REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME $REMOTE_DIR/$BINARY_WEBAPP_NAME && \
                 sudo systemctl start $SERVICE_NAME"
 
+          # wait past RestartSec=5s so a crash-looping service shows up as inactive
+          sleep 6
           $SSH "sudo systemctl is-active --quiet $SERVICE_NAME && \
                 echo 'service is running' || \
-                (journalctl -u $SERVICE_NAME -n 20 --no-pager; exit 1)"
+                (sudo journalctl -u $SERVICE_NAME -n 50 --no-pager; exit 1)"
 
       - name: Cleanup SSH
         if: always()

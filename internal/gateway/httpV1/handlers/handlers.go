@@ -10,28 +10,52 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	"github.com/seilbekskindirov/monitor/internal/gateway/httpV1/dto"
 	"github.com/seilbekskindirov/monitor/internal/repository"
+	"github.com/seilbekskindirov/monitor/internal/tools/tgwebapp"
 )
 
+// NewHandler constructs a Handler wired to the rate service and, optionally,
+// to the Mini App auth dependencies. botToken, meSubRepo, meSourceRepo, and
+// meRateValueRepo are required for ListMeSubscriptions; the remaining handlers
+// only need srvRate.
 func NewHandler(
 	srvRate rateService,
+	botToken string,
+	meSubRepo meSubscriptionRepository,
+	meSourceRepo meSourceRepository,
+	meRateValueRepo meRateValueRepository,
 ) (*Handler, error) {
-
 	h := &Handler{
-		rateService: srvRate,
+		rateService:      srvRate,
+		botToken:         botToken,
+		meSubRepo:        meSubRepo,
+		meSourceRepo:     meSourceRepo,
+		meRateValueRepo:  meRateValueRepo,
+		validateInitData: tgwebapp.ValidateInitData,
+		nowFn:            time.Now,
 	}
-
 	return h, nil
 }
 
 // Handler groups all v1 HTTP handlers and their repository dependencies.
 type Handler struct {
 	rateService
+	botToken        string
+	meSubRepo       meSubscriptionRepository
+	meSourceRepo    meSourceRepository
+	meRateValueRepo meRateValueRepository
+
+	// validateInitData is the Telegram WebApp initData verifier. It is a field so
+	// tests can inject a fake without needing real bot tokens.
+	validateInitData func(initData, botToken string, maxAge time.Duration, now time.Time) (int64, error)
+	// nowFn returns the current time. Injected for deterministic tests.
+	nowFn func() time.Time
 }
 
 // internalError logs the underlying error with a trace and returns a generic 500 to the client.
@@ -546,4 +570,162 @@ func extractName(r *http.Request) (string, error) {
 		return "", fmt.Errorf("missing path param: name")
 	}
 	return v, nil
+}
+
+const (
+	meSubscriptionsMaxAge      = 24 * time.Hour
+	meSubscriptionsDefaultPage = int64(1)
+	meSubscriptionsDefaultSize = int64(10)
+	meSubscriptionsMaxSize     = int64(50)
+)
+
+// ListMeSubscriptions returns the caller's own subscriptions enriched with the
+// latest rate value and timestamp per source.
+//
+// GET /api/me/subscriptions
+// Auth: X-Telegram-Init-Data header, or ?initData= query string as fallback.
+func (h *Handler) ListMeSubscriptions(w http.ResponseWriter, r *http.Request) {
+	initData := r.Header.Get("X-Telegram-Init-Data")
+	if initData == "" {
+		initData = r.URL.Query().Get("initData")
+	}
+
+	userID, err := h.validateInitData(initData, h.botToken, meSubscriptionsMaxAge, h.nowFn())
+	if err != nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	q := r.URL.Query().Get("q")
+	page := parsePage(r.URL.Query().Get("page"))
+	pageSize, err := parsePageSize(r.URL.Query().Get("page_size"))
+	if err != nil {
+		http.Error(w, `{"error":"page_size must be a number"}`, http.StatusBadRequest)
+		return
+	}
+
+	// TODO: DM-only assumption — this bot stores subscriptions keyed by Telegram chat_id,
+	// which equals user_id for direct chats. If the bot is ever added to groups the
+	// subscriptions keyed under group chat_ids will not appear here. See plan R5.
+	tgUserID := strconv.FormatInt(userID, 10)
+	subs, err := h.meSubRepo.ObtainRateUserSubscriptionsByUserID(r.Context(), domain.UserTypeTelegram, tgUserID)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+
+	// Group subscriptions by source name, collecting conditions for the same source.
+	type group struct {
+		sourceName string
+		conditions []string
+	}
+	seen := make(map[string]int) // sourceName → index in groups
+	groups := make([]group, 0)
+	for _, s := range subs {
+		cond := string(s.ConditionType) + ":" + s.ConditionValue
+		if idx, ok := seen[s.SourceName]; ok {
+			groups[idx].conditions = append(groups[idx].conditions, cond)
+		} else {
+			seen[s.SourceName] = len(groups)
+			groups = append(groups, group{sourceName: s.SourceName, conditions: []string{cond}})
+		}
+	}
+
+	// Apply case-insensitive substring search before pagination.
+	var filtered []group
+	if q == "" {
+		filtered = groups
+	} else {
+		lq := strings.ToLower(q)
+		for _, g := range groups {
+			src, srcErr := h.meSourceRepo.ObtainRateSourceByName(r.Context(), g.sourceName)
+			if srcErr != nil || src == nil {
+				continue
+			}
+			pair := strings.ToLower(src.BaseCurrency + "/" + src.QuoteCurrency)
+			if strings.Contains(strings.ToLower(src.Title), lq) ||
+				strings.Contains(strings.ToLower(src.Name), lq) ||
+				strings.Contains(pair, lq) {
+				filtered = append(filtered, g)
+			}
+		}
+	}
+
+	total := int64(len(filtered))
+
+	// Paginate.
+	offset := (page - 1) * pageSize
+	if offset >= total {
+		offset = max(total, 0)
+	}
+	end := offset + pageSize
+	if end > total {
+		end = total
+	}
+	page_items := filtered[offset:end]
+
+	items := make([]dto.MeSubscriptionRow, 0, len(page_items))
+	for _, g := range page_items {
+		src, srcErr := h.meSourceRepo.ObtainRateSourceByName(r.Context(), g.sourceName)
+		if srcErr != nil {
+			h.internalError(w, srcErr)
+			return
+		}
+		row := dto.MeSubscriptionRow{
+			SourceName: g.sourceName,
+			Conditions: g.conditions,
+		}
+		if src != nil {
+			row.SourceTitle = src.Title
+			row.BaseCurrency = src.BaseCurrency
+			row.QuoteCurrency = src.QuoteCurrency
+		}
+		rates, ratesErr := h.meRateValueRepo.ObtainLastNRateValuesBySourceName(r.Context(), g.sourceName, 1)
+		if ratesErr != nil {
+			h.internalError(w, ratesErr)
+			return
+		}
+		if len(rates) > 0 {
+			row.LatestPrice = rates[0].Price
+			row.LatestAt = rates[0].Timestamp.UTC().Format(time.RFC3339)
+		}
+		items = append(items, row)
+	}
+
+	writeJSON(w, dto.MeSubscriptionsResponse{
+		Items:    items,
+		Page:     page,
+		PageSize: pageSize,
+		Total:    total,
+	})
+}
+
+// parsePageSize parses a "page_size" query parameter, clamped to [1, 50], default 10.
+func parsePageSize(raw string) (int64, error) {
+	if raw == "" {
+		return meSubscriptionsDefaultSize, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if n < 1 {
+		n = meSubscriptionsDefaultSize
+	}
+	if n > meSubscriptionsMaxSize {
+		n = meSubscriptionsMaxSize
+	}
+	return n, nil
+}
+
+type meSubscriptionRepository interface {
+	ObtainRateUserSubscriptionsByUserID(ctx context.Context, userType domain.UserType, userID string) ([]domain.RateUserSubscription, error)
+}
+
+type meSourceRepository interface {
+	ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error)
+}
+
+type meRateValueRepository interface {
+	ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error)
 }

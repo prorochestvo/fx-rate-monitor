@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,6 +36,7 @@ var (
 	HttpPort     = 8080
 	HttpTimeOut  = 30 * time.Second
 	StaticDir    = ""
+	APIDsn       = ""
 )
 
 const (
@@ -66,6 +68,17 @@ func main() {
 		log.Fatalf("settings: %s, %s", envDsnTelegramBOT, err.Error())
 		return
 	}
+	if APIDsn == "" {
+		log.Fatalf("settings: --api-dsn is required (format: https://<host>/)")
+	}
+	dsnAPI, err := dsninjector.Parse(APIDsn)
+	if err != nil {
+		log.Fatalf("settings: --api-dsn, %s", err.Error())
+		return
+	}
+	// Telegram WebApp buttons reject non-HTTPS, IP literals, and localhost,
+	// so the DSN's host must resolve to a publicly reachable HTTPS host.
+	webAppURL := "https://" + strings.TrimPrefix(strings.TrimPrefix(dsnAPI.Addr(), "https://"), "http://") + "/app/subscriptions.html"
 	log.Println("settings: initiated")
 
 	// init dependencies
@@ -83,6 +96,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("dependencies: telegram bot connection is failed, %s", err.Error())
 		return
+	}
+	if id, username, err := tbot.Me(context.Background()); err != nil {
+		log.Printf("telegram: identity probe failed: %v", err)
+	} else {
+		log.Printf("telegram: authenticated as @%s (id=%d)", username, id)
 	}
 	log.Println("dependencies: initiated")
 
@@ -122,7 +140,8 @@ func main() {
 		log.Fatalf("services: rest api is failed, %s", err.Error())
 		return
 	}
-	mux, err := gateway.NewGateway(restAPI)
+	botToken := tbot.BotToken()
+	mux, err := gateway.NewGateway(restAPI, botToken, rRateUserSubscription, rRateSource, rRateValue)
 	if err != nil {
 		log.Fatalf("services: mux api is failed, %s", err.Error())
 		return
@@ -138,7 +157,7 @@ func main() {
 		fsys = http.FS(sub)
 	}
 	mux.Handle("/", http.FileServer(fsys))
-	tbotAPI, err := service.NewTelegramApi(tbot, rRateUserSubscription, rRateSource)
+	tbotAPI, err := service.NewTelegramApi(tbot, rRateUserSubscription, rRateSource, webAppURL)
 	if err != nil {
 		log.Fatalf("services: telegram api is failed, %s", err.Error())
 		return
@@ -188,6 +207,7 @@ func init() {
 	logsDir := flag.String("logs-dir", LogsDir, "path to logs directory")
 	verbosity := flag.String("verbosity", "warning", "minimum stdout log level (debug, info, warning, error, severe, critical)")
 	staticDir := flag.String("static-dir", StaticDir, "path to static files directory")
+	apiDsn := flag.String("api-dsn", APIDsn, "public HTTPS origin DSN, format: https://<host>/")
 	flag.Parse()
 
 	if *port <= 1000 || *port >= 32000 {
@@ -212,5 +232,9 @@ func init() {
 
 	if v := *verbosity; v != "" {
 		LogVerbosity = internal.ParseLogLevel(*verbosity)
+	}
+
+	if v := *apiDsn; v != "" {
+		APIDsn = v
 	}
 }
