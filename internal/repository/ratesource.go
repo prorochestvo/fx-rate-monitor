@@ -11,22 +11,11 @@ import (
 
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
 	"github.com/twinj/uuid"
 )
 
 func NewRateSourceRepository(db db) (*RateSourceRepository, error) {
-	r := &RateSourceRepository{db: db}
-
-	if m, err := sqlitedb.NewMigrator(db, r); err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	} else if err = m.Run(context.Background()); err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	}
-
-	return r, nil
+	return &RateSourceRepository{db: db}, nil
 }
 
 type RateSourceRepository struct {
@@ -61,27 +50,6 @@ func (r *RateSourceRepository) CheckUP(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-func (r *RateSourceRepository) Migration() (map[string]string, error) {
-	return map[string]string{
-		rateSourceTableName + "_001_table_initiate": `CREATE TABLE IF NOT EXISTS ` + rateSourceTableName + ` (
-	` + rateSourceNameFieldName + `          TEXT NOT NULL PRIMARY KEY,
-	` + rateSourceTitleFieldName + `         TEXT NOT NULL,
-	` + reteSourceBaseCurrencyFieldName + `  TEXT NOT NULL,
-	` + reteSourceQuoteCurrencyFieldName + ` TEXT NOT NULL DEFAULT 'KZT',
-	` + rateSourceURLFieldName + `           TEXT NOT NULL,
-	` + reteSourceIntervalFieldName + `      TEXT NOT NULL DEFAULT '10m',
-	` + rateSourceKindFieldName + `          TEXT NOT NULL,
-	` + rateSourceActiveFieldName + `        INTEGER NOT NULL DEFAULT 1,
-	` + rateSourceOptionsFieldName + `       TEXT NOT NULL DEFAULT '{}',
-	` + rateSourceRulesFieldName + `         TEXT NOT NULL DEFAULT '[]'
-);
-CREATE INDEX IF NOT EXISTS idx_` + rateSourceTableName + `_name ON ` + rateSourceTableName + ` (` + rateSourceNameFieldName + `);
-CREATE INDEX IF NOT EXISTS idx_` + rateSourceTableName + `_currency ON ` + rateSourceTableName + ` (` + reteSourceBaseCurrencyFieldName + `,` + reteSourceBaseCurrencyFieldName + `);
-CREATE INDEX IF NOT EXISTS idx_` + rateSourceTableName + `_kind ON ` + rateSourceTableName + ` (` + rateSourceKindFieldName + `);
-CREATE INDEX IF NOT EXISTS idx_` + rateSourceTableName + `_active ON ` + rateSourceTableName + ` (` + rateSourceActiveFieldName + `);`,
-	}, nil
 }
 
 func (r *RateSourceRepository) ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error) {

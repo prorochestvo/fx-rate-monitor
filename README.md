@@ -128,12 +128,20 @@ migrations/         — SQL schema migrations
 
 ## Development
 
+First-time setup applies SQL migrations from `./migrations/` via the standalone
+`cmd/migrator` binary before any service starts. Service binaries fail fast if
+`__schema_migrations` is missing or empty.
+
 ```bash
-make test    # run all tests
-make lint    # run golangci-lint
-make build   # build binary
-make run ARGS="--config configs/sources.example.json --interval 1m"
+make build      # builds collector, notifier, migrator, web (and the WASM bundle)
+make migrate    # applies pending SQL migrations (idempotent — safe to re-run)
+make run        # starts collector, notifier, web (also runs migrate as a prerequisite)
+make test       # go fmt + go vet + go test -race ./...
+make lint       # go vet across all packages
 ```
+
+See `CLAUDE.md` → Architecture Overview → Database for the migration model and
+filename rules. Schema changes are SQL only — never `CREATE TABLE` from Go.
 
 ### Frontend testing
 

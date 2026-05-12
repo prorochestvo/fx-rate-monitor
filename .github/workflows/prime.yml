@@ -50,6 +50,8 @@ jobs:
       BINARY_COLLECTOR_NAME: prime_monitor_collector
       BINARY_WEBAPP_NAME: prime_monitor_webapp
       BINARY_NOTIFIER_NAME: prime_monitor_notifier
+      BINARY_MIGRATOR_NAME: prime_monitor_migrator
+      REMOTE_ENV_FILE: /opt/monitor/.prime_monitor.env
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -68,9 +70,11 @@ jobs:
           BINARY_TMP_COLLECTOR_NAME="${BINARY_COLLECTOR_NAME}_${INSTRUCTION_ID}"
           BINARY_TMP_WEBAPP_NAME="${BINARY_WEBAPP_NAME}_${INSTRUCTION_ID}"
           BINARY_TMP_NOTIFIER_NAME="${BINARY_NOTIFIER_NAME}_${INSTRUCTION_ID}"
+          BINARY_TMP_MIGRATOR_NAME="${BINARY_MIGRATOR_NAME}_${INSTRUCTION_ID}"
           echo "BINARY_TMP_COLLECTOR_NAME=${BINARY_TMP_COLLECTOR_NAME}" >> $GITHUB_ENV
           echo "BINARY_TMP_WEBAPP_NAME=${BINARY_TMP_WEBAPP_NAME}" >> $GITHUB_ENV
           echo "BINARY_TMP_NOTIFIER_NAME=${BINARY_TMP_NOTIFIER_NAME}" >> $GITHUB_ENV
+          echo "BINARY_TMP_MIGRATOR_NAME=${BINARY_TMP_MIGRATOR_NAME}" >> $GITHUB_ENV
           echo "commit_hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
           echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
       - name: Build (linux/amd64)
@@ -83,6 +87,7 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="${APP_BUILD_OPTIONS}" -o "${BINARY_TMP_COLLECTOR_NAME}" ./cmd/collector/main.go
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="${APP_BUILD_OPTIONS}" -o "${BINARY_TMP_WEBAPP_NAME}" ./cmd/web/main.go
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="${APP_BUILD_OPTIONS}" -o "${BINARY_TMP_NOTIFIER_NAME}" ./cmd/notifier/main.go
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="${APP_BUILD_OPTIONS}" -o "${BINARY_TMP_MIGRATOR_NAME}" ./cmd/migrator
       - name: Setup SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATEKEY }}
@@ -98,6 +103,7 @@ jobs:
           $SCP "$BINARY_TMP_COLLECTOR_NAME" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME"
           $SCP "$BINARY_TMP_WEBAPP_NAME" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME"
           $SCP "$BINARY_TMP_NOTIFIER_NAME" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_NOTIFIER_NAME"
+          $SCP "$BINARY_TMP_MIGRATOR_NAME" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_MIGRATOR_NAME"
 
       - name: Verify binary
         run: |
@@ -108,25 +114,44 @@ jobs:
           sha256sum "$BINARY_TMP_COLLECTOR_NAME" > "$BINARY_TMP_COLLECTOR_NAME.sha256"
           sha256sum "$BINARY_TMP_WEBAPP_NAME" > "$BINARY_TMP_WEBAPP_NAME.sha256"
           sha256sum "$BINARY_TMP_NOTIFIER_NAME" > "$BINARY_TMP_NOTIFIER_NAME.sha256"
+          sha256sum "$BINARY_TMP_MIGRATOR_NAME" > "$BINARY_TMP_MIGRATOR_NAME.sha256"
 
           # upload checksum file next to binary
           $SCP "$BINARY_TMP_COLLECTOR_NAME.sha256" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME.sha256"
           $SCP "$BINARY_TMP_WEBAPP_NAME.sha256" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME.sha256"
           $SCP "$BINARY_TMP_NOTIFIER_NAME.sha256" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_NOTIFIER_NAME.sha256"
+          $SCP "$BINARY_TMP_MIGRATOR_NAME.sha256" "$SSH_USERNAME@$SSH_HOSTNAME:$REMOTE_DIR/$BINARY_TMP_MIGRATOR_NAME.sha256"
 
           # verify checksum on remote — abort if mismatch
           $SSH "cd $REMOTE_DIR && sha256sum -c $BINARY_TMP_COLLECTOR_NAME.sha256 || (echo 'checksum mismatch, aborting'; exit 1)"
           $SSH "cd $REMOTE_DIR && sha256sum -c $BINARY_TMP_WEBAPP_NAME.sha256 || (echo 'checksum mismatch, aborting'; exit 1)"
           $SSH "cd $REMOTE_DIR && sha256sum -c $BINARY_TMP_NOTIFIER_NAME.sha256 || (echo 'checksum mismatch, aborting'; exit 1)"
+          $SSH "cd $REMOTE_DIR && sha256sum -c $BINARY_TMP_MIGRATOR_NAME.sha256 || (echo 'checksum mismatch, aborting'; exit 1)"
 
           # cleanup checksum file on remote
           $SSH "rm -f $REMOTE_DIR/$BINARY_TMP_COLLECTOR_NAME.sha256"
           $SSH "rm -f $REMOTE_DIR/$BINARY_TMP_WEBAPP_NAME.sha256"
           $SSH "rm -f $REMOTE_DIR/$BINARY_TMP_NOTIFIER_NAME.sha256"
+          $SSH "rm -f $REMOTE_DIR/$BINARY_TMP_MIGRATOR_NAME.sha256"
 
           rm -f "$BINARY_TMP_COLLECTOR_NAME.sha256"
           rm -f "$BINARY_TMP_WEBAPP_NAME.sha256"
           rm -f "$BINARY_TMP_NOTIFIER_NAME.sha256"
+          rm -f "$BINARY_TMP_MIGRATOR_NAME.sha256"
+
+      - name: Apply migrations
+        run: |
+          SSH="ssh -p $SSH_HOSTPORT -i /tmp/deploy_key $SSH_USERNAME@$SSH_HOSTNAME"
+
+          # abort if uploaded migrator is missing — do not touch running service
+          $SSH "test -f $REMOTE_DIR/$BINARY_TMP_MIGRATOR_NAME || (echo 'migrator binary not found, aborting'; exit 1)"
+
+          # swap migrator into place before running it so operators can rerun manually
+          $SSH "chmod +x $REMOTE_DIR/$BINARY_TMP_MIGRATOR_NAME && \
+                mv $REMOTE_DIR/$BINARY_TMP_MIGRATOR_NAME $REMOTE_DIR/$BINARY_MIGRATOR_NAME"
+
+          # run migrator with the service env file; failure aborts the deploy
+          $SSH "set -a && . $REMOTE_ENV_FILE && set +a && $REMOTE_DIR/$BINARY_MIGRATOR_NAME"
 
       - name: Swap and restart
         run: |

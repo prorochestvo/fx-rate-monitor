@@ -92,6 +92,9 @@ func main() {
 			log.Printf("close sqlite client: %v", e)
 		}
 	}(db)
+	if err = sqlitedb.RequireMigratedSchema(context.Background(), db); err != nil {
+		log.Fatalf("schema check: %s", err.Error())
+	}
 	tbot, err := integration.NewTBotClient(dsnTelegramBOT, l.WriterAs(internal.LogLevelInfo))
 	if err != nil {
 		log.Fatalf("dependencies: telegram bot connection is failed, %s", err.Error())

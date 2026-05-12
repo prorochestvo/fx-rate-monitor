@@ -13,22 +13,11 @@ import (
 
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
 	"github.com/twinj/uuid"
 )
 
 func NewRateUserEventRepository(db db) (*RateUserEventRepository, error) {
-	r := &RateUserEventRepository{db: db}
-
-	if m, err := sqlitedb.NewMigrator(db, r); err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	} else if err = m.Run(context.Background()); err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	}
-
-	return r, nil
+	return &RateUserEventRepository{db: db}, nil
 }
 
 type RateUserEventRepository struct {
@@ -63,29 +52,6 @@ func (r *RateUserEventRepository) CheckUP(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-func (r *RateUserEventRepository) Migration() (map[string]string, error) {
-	return map[string]string{
-		rateUserEventTableName + "_001_table_initiate": `CREATE TABLE IF NOT EXISTS ` + rateUserEventTableName + ` (
-	` + rateUserEventIdFieldName + `          TEXT NOT NULL PRIMARY KEY,
-	` + rateUserEventUserTypeFieldName + `    TEXT NOT NULL,
-	` + rateUserEventUserIdFieldName + `      TEXT NOT NULL,
-	` + rateUserEventMessageFieldName + `     TEXT NOT NULL,
-	` + rateUserEventStatusFieldName + `      TEXT NOT NULL DEFAULT '` + string(domain.RateUserEventStatusPending) + `',
-	` + rateUserEventSentAtFieldName + `      TEXT,
-	` + rateUserEventLastErrorFieldName + `   TEXT NOT NULL DEFAULT '',
-	` + rateUserEventCreatedAtFieldName + `   TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_status  ON ` + rateUserEventTableName + ` (` + rateUserEventStatusFieldName + `);
-CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_user    ON ` + rateUserEventTableName + ` (` + rateUserEventUserTypeFieldName + `, ` + rateUserEventUserIdFieldName + `);
-CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_created ON ` + rateUserEventTableName + ` (` + rateUserEventCreatedAtFieldName + ` DESC);
-CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_failed ON ` + rateUserEventTableName + ` (` + rateUserEventCreatedAtFieldName + ` DESC) WHERE ` + rateUserEventStatusFieldName + ` = '` + string(domain.RateUserEventStatusFailed) + `';`,
-		rateUserEventTableName + "_002_add_source_name": `ALTER TABLE` + " " + rateUserEventTableName +
-			` ADD COLUMN ` + rateUserEventSourceNameFieldName + ` TEXT NOT NULL DEFAULT '';` +
-			`CREATE INDEX IF NOT EXISTS idx_` + rateUserEventTableName + `_source` +
-			` ON ` + rateUserEventTableName + ` (` + rateUserEventSourceNameFieldName + `);`,
-	}, nil
 }
 
 func (r *RateUserEventRepository) ObtainLastNRateUserEvents(ctx context.Context, offset, limit int64, status ...domain.RateUserEventStatus) ([]domain.RateUserEvent, error) {

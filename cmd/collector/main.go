@@ -44,6 +44,9 @@ func main() {
 	// init settings
 	dsnSQLiteDB, err := dsninjector.Unmarshal(envDsnSqliteDB)
 	if err != nil {
+		if env := os.Getenv(envDsnSqliteDB); env == "" {
+			err = errors.Join(errors.New("environment variable is not set"), err)
+		}
 		log.Fatalf("settings: %s, %s", envDsnSqliteDB, err.Error())
 		return
 	}
@@ -60,6 +63,9 @@ func main() {
 			log.Printf("close sqlite client: %v", e)
 		}
 	}(db)
+	if err = sqlitedb.RequireMigratedSchema(context.Background(), db); err != nil {
+		log.Fatalf("schema check: %s", err.Error())
+	}
 	log.Println("dependencies: initiated")
 
 	// init repositories

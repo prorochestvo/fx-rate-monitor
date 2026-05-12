@@ -11,7 +11,7 @@ TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 BUILD_OPTIONS := "-s -w -X main.BuildVersion=${BRANCH} -X main.BuildTime=${TIME} -X main.BuildHash=${BUILD}"
 
-.PHONY: all claude_task claude_evaluates_project claude_auto_fix_tests run build build-collector build-notifier build-web build-wasm test test-wasm lint format swagger clean deploy_environment
+.PHONY: all claude_task claude_evaluates_project claude_auto_fix_tests run build build-collector build-notifier build-web build-wasm build-migrator migrate test test-wasm lint format swagger clean deploy_environment
 
 
 deploy_environment:
@@ -75,12 +75,15 @@ claude_auto_fix_tests:
 
 
 ## run:
-run: build
+run: migrate
+	@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/migrator/main.go   --logs-dir ./build/logs
 	@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/collector/main.go  --logs-dir ./build/logs
 	@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/notifier/main.go   --logs-dir ./build/logs
-	@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/web                 --logs-dir ./build/logs --api-dsn "$${API_DSN:-https://localhost/}"
+	@set -a; . .env; set +a; CGO_ENABLED=0 go run -ldflags ${BUILD_OPTIONS} ./cmd/web                --logs-dir ./build/logs --api-dsn "$${API_DSN:-https://localhost/}"
 
-
+## migrate: apply pending SQL migrations
+migrate: build
+	@set -a; . .env; set +a; ./build/migrator
 
 ## build:
 build:
@@ -88,6 +91,7 @@ build:
 	CGO_ENABLED=0 GOOS=js GOARCH=wasm go build -o ./cmd/web/static/app.wasm ./cmd/wasm/main.go
 	CGO_ENABLED=0 go build -o ./build/collector -ldflags ${BUILD_OPTIONS} ./cmd/collector/main.go
 	CGO_ENABLED=0 go build -o ./build/notifier  -ldflags ${BUILD_OPTIONS} ./cmd/notifier/main.go
+	CGO_ENABLED=0 go build -o ./build/migrator  -ldflags ${BUILD_OPTIONS} ./cmd/migrator
 	CGO_ENABLED=0 go build -o ./build/web       -ldflags ${BUILD_OPTIONS} ./cmd/web
 
 
@@ -126,7 +130,7 @@ format:
 
 ## clean:
 clean:
-	rm -f ./build/monitor ./build/collector ./build/notifier ./build/web ./build/monitor.db
+	rm -f ./build/monitor ./build/collector ./build/notifier ./build/migrator ./build/web ./build/monitor.db
 	rm -f ./cmd/web/static/app.wasm ./cmd/web/static/wasm_exec.js
 	rm -rf ./build/static
 	go mod tidy

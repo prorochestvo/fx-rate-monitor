@@ -10,22 +10,11 @@ import (
 
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
 	"github.com/twinj/uuid"
 )
 
 func NewRateValueRepository(db db) (*RateValueRepository, error) {
-	r := &RateValueRepository{db: db}
-
-	if m, err := sqlitedb.NewMigrator(db, r); err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	} else if err = m.Run(context.Background()); err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	}
-
-	return r, nil
+	return &RateValueRepository{db: db}, nil
 }
 
 type RateValueRepository struct {
@@ -60,20 +49,6 @@ func (r *RateValueRepository) CheckUP(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-func (r *RateValueRepository) Migration() (map[string]string, error) {
-	return map[string]string{
-		rateValueTableName + "_001_table_initiate": `CREATE TABLE IF NOT EXISTS ` + rateValueTableName + ` (
-	` + rateValueIdFieldName + `             TEXT NOT NULL PRIMARY KEY,
-	` + rateValueSourceNameFieldName + `     TEXT NOT NULL,
-	` + rateValueBaseCurrencyFieldName + `   TEXT NOT NULL,
-	` + rateValueQuoteCurrencyFieldName + `  TEXT NOT NULL,
-	` + rateValuePriceFieldName + `          REAL NOT NULL,
-	` + rateValueTimestampFieldName + `      TEXT NOT NULL
-);
-` + `CREATE INDEX IF NOT EXISTS idx_` + rateValueTableName + `_lookup ON ` + rateValueTableName + ` (` + rateValueSourceNameFieldName + `, ` + rateValueBaseCurrencyFieldName + `, ` + rateValueQuoteCurrencyFieldName + `, ` + rateValueTimestampFieldName + ` DESC);`,
-	}, nil
 }
 
 func (r *RateValueRepository) ObtainAllRateValueBySourceName(ctx context.Context, sourceName string) ([]domain.RateValue, error) {

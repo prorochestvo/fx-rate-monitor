@@ -7,10 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
 )
+
+var _ committer = (*mockFailCommitter)(nil)
 
 // newTestClient opens an in-memory SQLite DB, applies the migration table, and
 // returns a ready-to-use *SQLiteClient. The DB is closed automatically when the
@@ -27,7 +30,10 @@ func newTestClient(t *testing.T) *SQLiteClient {
 	require.NoError(t, err)
 
 	// Bootstrap the migration table so Ping works.
-	m, err := NewMigrator(c)
+	bootstrapFS := fstest.MapFS{
+		"stub_init.sql": {Data: []byte("CREATE TABLE IF NOT EXISTS stub_init (id INTEGER PRIMARY KEY);")},
+	}
+	m, err := NewMigrator(c, bootstrapFS)
 	require.NoError(t, err)
 	require.NoError(t, m.Run(t.Context()))
 
@@ -61,7 +67,10 @@ func TestNewSQLiteClient(t *testing.T) {
 		t.Cleanup(func() { _ = c.Close() })
 
 		// Bootstrap migration table so Ping (which queries it) works.
-		m, err := NewMigrator(c)
+		bootstrapFS := fstest.MapFS{
+			"stub_init.sql": {Data: []byte("CREATE TABLE IF NOT EXISTS stub_init (id INTEGER PRIMARY KEY);")},
+		}
+		m, err := NewMigrator(c, bootstrapFS)
 		require.NoError(t, err)
 		require.NoError(t, m.Run(t.Context()))
 

@@ -77,6 +77,13 @@ func (sqlite *SQLiteClient) Transaction(ctx context.Context) (*sql.Tx, error) {
 	return sqlite.db.BeginTx(ctx, nil)
 }
 
+// ReadOnlyTransaction opens a read-only transaction. Callers that only run
+// SELECTs (e.g. health checks, schema validation) should prefer it over
+// Transaction so the intent is explicit at the call site.
+func (sqlite *SQLiteClient) ReadOnlyTransaction(ctx context.Context) (*sql.Tx, error) {
+	return sqlite.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+}
+
 func (sqlite *SQLiteClient) Commit(ctx context.Context, action sqlAction, extraActions ...sqlAction) error {
 	ctx, cancel := context.WithTimeout(ctx, sqlite.Timeout)
 	defer cancel()

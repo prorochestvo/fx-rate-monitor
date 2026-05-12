@@ -6,20 +6,22 @@ import (
 	"errors"
 	"os"
 	"sync"
+	"testing"
 
 	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
+	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb/sqlitedbtest"
 	_ "modernc.org/sqlite"
 )
 
-// newStubDB opens an in-memory SQLite DB and creates the rates table.
-func stubSQLiteDB(t interface {
-	Helper()
-	Cleanup(f func())
-}) *sqlitedb.SQLiteClient {
+var _ sqlitedb.Committer = (*mockFailDB)(nil)
+
+// stubSQLiteDB opens an in-memory SQLite DB, applies the canonical migrations,
+// and returns a ready-to-use SQLiteClient. The DB is closed via t.Cleanup.
+func stubSQLiteDB(t testing.TB) *sqlitedb.SQLiteClient {
 	t.Helper()
 
-	m.Lock()
-	defer m.Unlock()
+	mu.Lock()
+	defer mu.Unlock()
 
 	mem, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -37,6 +39,8 @@ func stubSQLiteDB(t interface {
 		panic("failed to create SQLite client")
 	}
 
+	sqlitedbtest.Apply(t, sqliteDB)
+
 	return sqliteDB
 }
 
@@ -48,4 +52,4 @@ func (m *mockFailDB) Transaction(_ context.Context) (*sql.Tx, error) {
 	return nil, errors.New(m.err.Error())
 }
 
-var m sync.Mutex
+var mu sync.Mutex

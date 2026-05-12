@@ -11,22 +11,11 @@ import (
 
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
 	"github.com/twinj/uuid"
 )
 
 func NewRateUserSubscriptionRepository(db db) (*RateUserSubscriptionRepository, error) {
-	r := &RateUserSubscriptionRepository{db: db}
-
-	if m, err := sqlitedb.NewMigrator(db, r); err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	} else if err = m.Run(context.Background()); err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	}
-
-	return r, nil
+	return &RateUserSubscriptionRepository{db: db}, nil
 }
 
 type RateUserSubscriptionRepository struct {
@@ -61,26 +50,6 @@ func (r *RateUserSubscriptionRepository) CheckUP(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-func (r *RateUserSubscriptionRepository) Migration() (map[string]string, error) {
-	return map[string]string{
-		rateUserSubscriptionTableName + "_001_table_initiate": `CREATE TABLE IF NOT EXISTS ` + rateUserSubscriptionTableName + ` (
-	` + rateUserSubscriptionIdFieldName + `                  TEXT NOT NULL PRIMARY KEY,
-	` + rateUserSubscriptionUserTypeFieldName + `            TEXT NOT NULL,
-	` + rateUserSubscriptionUserIdFieldName + `              TEXT NOT NULL,
-	` + rateUserSubscriptionSourceNameFieldName + `          TEXT NOT NULL,
- 	` + rateUserSubscriptionConditionTypeFieldName + `       TEXT NOT NULL DEFAULT 'delta',
- 	` + rateUserSubscriptionConditionValueFieldName + `      TEXT NOT NULL DEFAULT '10',
- 	` + rateUserSubscriptionLatestNotifiedRateFieldName + `  REAL NOT NULL DEFAULT 0,
-	` + rateUserSubscriptionUpdatedAtFieldName + `           TEXT NOT NULL,
-	` + rateUserSubscriptionCreatedAtFieldName + `           TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_` + rateUserSubscriptionTableName + `_usrSubscriptions ON ` + rateUserSubscriptionTableName + ` (` + rateUserSubscriptionUserTypeFieldName + `, ` + rateUserSubscriptionUserIdFieldName + `);
-CREATE INDEX IF NOT EXISTS idx_` + rateUserSubscriptionTableName + `_userType ON ` + rateUserSubscriptionTableName + ` (` + rateUserSubscriptionUserTypeFieldName + `);
-CREATE INDEX IF NOT EXISTS idx_` + rateUserSubscriptionTableName + `_userID ON ` + rateUserSubscriptionTableName + ` (` + rateUserSubscriptionUserIdFieldName + `);
-CREATE INDEX IF NOT EXISTS idx_` + rateUserSubscriptionTableName + `_sourceName ON ` + rateUserSubscriptionTableName + ` (` + rateUserSubscriptionSourceNameFieldName + `);`,
-	}, nil
 }
 
 func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsByUserID(ctx context.Context, userType domain.UserType, userID string) ([]domain.RateUserSubscription, error) {

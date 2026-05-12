@@ -86,13 +86,54 @@ common layered Go layout — keep, edit, or remove rows as needed.
 
 ### Database
 
-Describe the database (engine, driver, migration tooling) and list the migration files
-or tables that exist. Example shape:
+Engine: SQLite, accessed via the pure-Go `modernc.org/sqlite` driver (no CGO).
 
-| Migration | Table(s) |
-|-----------|----------|
-| `001_<name>.sql` | `<table>` |
-| ... | ... |
+Schema lives at the project root: `./migrations/*.sql`. The sibling Go file
+`./migrations/embed.go` (`package migrations`) exposes those files as
+`var MigrationsFS embed.FS` so they can be consumed without disk I/O at runtime.
+
+`cmd/migrator` is the **only** thing that mutates schema. It embeds
+`migrations.MigrationsFS` at build time, opens the DB via `SQLITEDB_DSN`, and
+calls `sqlitedb.Migrator.Run(ctx)`. Idempotent: applied filenames are tracked in
+`__schema_migrations`.
+
+Service binaries (`cmd/web`, `cmd/collector`, `cmd/notifier`) DO NOT migrate on
+startup. They call `sqlitedb.RequireMigratedSchema(ctx, db)` immediately after
+opening the DB; a missing or empty `__schema_migrations` table causes
+`log.Fatalf("schema not initialised: run cmd/migrator before starting the service")`.
+
+Filename convention: `<table>_<NNN>_<description>.sql` (e.g.
+`rate_sources_001_table_initiate.sql`). Files are applied in lexicographic
+order. Once applied to any production database the filename is **immutable** —
+renaming triggers a duplicate apply.
+
+| Migration | Table |
+|-----------|-------|
+| `rate_sources_001_table_initiate.sql` | `rate_sources` |
+| `rate_values_001_table_initiate.sql` | `rate_values` |
+| `rate_user_subscriptions_001_table_initiate.sql` | `rate_user_subscriptions` |
+| `rate_user_events_001_table_initiate.sql` | `rate_user_events` |
+| `rate_user_events_002_add_source_name.sql` | `rate_user_events` (alter) |
+| `execution_history_001_table_initiate.sql` | `execution_history` |
+
+Repository files in `internal/repository/` reference table and column names
+exclusively through `const` declarations (e.g. `rateSourceTableName`,
+`rateSourceNameFieldName`) so a schema rename surfaces at compile time and via
+`grep`, never via a runtime "no such column" error.
+
+Deploy flow:
+```
+make build         # builds all binaries including ./build/migrator
+make migrate       # applies any pending .sql files (no-op if up to date)
+make run           # starts collector, notifier, web
+```
+
+Deployment ordering: the CI workflows in `.github/workflows/{stage,prime}.yml`
+run `cmd/migrator` over SSH against the target host (with the service's
+`EnvironmentFile` sourced) before swapping the service binary and restarting
+the unit. The service systemd units in `configs/` and `deploy/` do **not**
+invoke the migrator via `ExecStartPre` — schema reconciliation is a deploy-time
+step, not a startup-time step.
 
 ### Environment Variables
 

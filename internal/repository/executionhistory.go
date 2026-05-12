@@ -10,22 +10,11 @@ import (
 
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
 	"github.com/twinj/uuid"
 )
 
 func NewExecutionHistoryRepository(db db) (*ExecutionHistoryRepository, error) {
-	r := &ExecutionHistoryRepository{db: db}
-
-	if m, err := sqlitedb.NewMigrator(db, r); err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	} else if err = m.Run(context.Background()); err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	}
-
-	return r, nil
+	return &ExecutionHistoryRepository{db: db}, nil
 }
 
 type ExecutionHistoryRepository struct {
@@ -60,20 +49,6 @@ func (r *ExecutionHistoryRepository) CheckUP(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-func (r *ExecutionHistoryRepository) Migration() (map[string]string, error) {
-	return map[string]string{
-		executionHistoryTableName + "_001_table_initiate": `CREATE TABLE IF NOT EXISTS ` + executionHistoryTableName + ` (
-	` + executionHistoryIdFieldName + `          TEXT    NOT NULL PRIMARY KEY,
-	` + executionHistorySourceNameFieldName + ` TEXT    NOT NULL,
-	` + executionHistorySuccessFieldName + `    BOOLEAN NOT NULL,
-	` + executionHistoryErrorFieldName + `      TEXT    NOT NULL DEFAULT '',
-	` + executionHistoryTimestampFieldName + `  INT     NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_` + executionHistoryTableName + `_lookup_latest ON ` + executionHistoryTableName + ` (` + executionHistorySourceNameFieldName + `, ` + executionHistoryTimestampFieldName + ` DESC);
-CREATE INDEX IF NOT EXISTS idx_` + executionHistoryTableName + `_lookup_errors ON ` + executionHistoryTableName + ` (` + executionHistorySourceNameFieldName + `, ` + executionHistorySuccessFieldName + `, ` + executionHistoryTimestampFieldName + ` DESC);`,
-	}, nil
 }
 
 // ObtainLastNExecutionHistoryBySourceName returns at most limit execution history records
