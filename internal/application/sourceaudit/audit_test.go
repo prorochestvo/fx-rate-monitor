@@ -1,0 +1,225 @@
+package sourceaudit
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/seilbekskindirov/monitor/internal/domain"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+var _ Fetcher = (*fakeFetcher)(nil)
+
+type fakeFetcher struct {
+	responses  map[string]*FetchResult
+	errors     map[string]error
+	callCounts map[string]int
+}
+
+func newFakeFetcher() *fakeFetcher {
+	return &fakeFetcher{
+		responses:  make(map[string]*FetchResult),
+		errors:     make(map[string]error),
+		callCounts: make(map[string]int),
+	}
+}
+
+func (f *fakeFetcher) addResponse(url string, body []byte, contentType string) {
+	f.responses[url] = &FetchResult{Body: body, ContentType: contentType, StatusCode: 200}
+}
+
+func (f *fakeFetcher) addError(url string, err error) {
+	f.errors[url] = err
+}
+
+func (f *fakeFetcher) Fetch(_ context.Context, url string) (*FetchResult, error) {
+	f.callCounts[url]++
+	if err, ok := f.errors[url]; ok {
+		return nil, err
+	}
+	if res, ok := f.responses[url]; ok {
+		return res, nil
+	}
+	return nil, errors.New("no response configured for " + url)
+}
+
+func regexSource(name, url, pattern string) SeededSource {
+	return SeededSource{
+		Name: name,
+		URL:  url,
+		Side: "BID",
+		Rules: []domain.RateSourceRule{
+			{Method: domain.MethodRegex, Pattern: pattern},
+		},
+		Active: true,
+	}
+}
+
+func TestAuditor_Run(t *testing.T) {
+	t.Parallel()
+
+	t.Run("happy path single source regex match", func(t *testing.T) {
+		t.Parallel()
+
+		f := newFakeFetcher()
+		f.addResponse("https://example.com/", []byte(`<span>468.95</span>`), "text/html")
+
+		a := &Auditor{Fetcher: f}
+		results, err := a.Run(t.Context(), []SeededSource{
+			regexSource("SRC1", "https://example.com/", `<span>([\d.]+)</span>`),
+		})
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+		assert.Equal(t, StatusOK, results[0].Status)
+		assert.Equal(t, "468.95", results[0].Value)
+	})
+
+	t.Run("two sources sharing one URL fetcher invoked once", func(t *testing.T) {
+		t.Parallel()
+
+		f := newFakeFetcher()
+		f.addResponse("https://shared.com/", []byte(`bid=460.00 ask=470.00`), "text/html")
+
+		a := &Auditor{Fetcher: f}
+		sources := []SeededSource{
+			regexSource("SRC_BID", "https://shared.com/", `bid=([\d.]+)`),
+			regexSource("SRC_ASK", "https://shared.com/", `ask=([\d.]+)`),
+		}
+		results, err := a.Run(t.Context(), sources)
+		require.NoError(t, err)
+		require.Len(t, results, 2)
+		assert.Equal(t, 1, f.callCounts["https://shared.com/"], "fetcher must be called exactly once")
+		assert.Equal(t, StatusOK, results[0].Status)
+		assert.Equal(t, "460.00", results[0].Value)
+		assert.Equal(t, StatusOK, results[1].Status)
+		assert.Equal(t, "470.00", results[1].Value)
+		assert.Equal(t, results[0].Body, results[1].Body, "both results share the same body slice")
+	})
+
+	t.Run("regex with no match", func(t *testing.T) {
+		t.Parallel()
+
+		f := newFakeFetcher()
+		f.addResponse("https://example.com/", []byte(`no numbers here`), "text/html")
+
+		a := &Auditor{Fetcher: f}
+		results, err := a.Run(t.Context(), []SeededSource{
+			regexSource("SRC1", "https://example.com/", `price=([\d.]+)`),
+		})
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+		assert.Equal(t, StatusRegexNoMatch, results[0].Status)
+	})
+
+	t.Run("fetch error propagates to all sources of that URL", func(t *testing.T) {
+		t.Parallel()
+
+		f := newFakeFetcher()
+		f.addError("https://bad.com/", errors.New("connection refused"))
+		f.addResponse("https://good.com/", []byte(`val=123.45`), "text/html")
+
+		a := &Auditor{Fetcher: f}
+		sources := []SeededSource{
+			regexSource("SRC_BAD1", "https://bad.com/", `([\d.]+)`),
+			regexSource("SRC_BAD2", "https://bad.com/", `([\d.]+)`),
+			regexSource("SRC_GOOD", "https://good.com/", `val=([\d.]+)`),
+		}
+		results, err := a.Run(t.Context(), sources)
+		require.NoError(t, err)
+		require.Len(t, results, 3)
+		assert.Equal(t, StatusFetchError, results[0].Status)
+		assert.Contains(t, results[0].Detail, "connection refused")
+		assert.Equal(t, StatusFetchError, results[1].Status)
+		assert.Equal(t, StatusOK, results[2].Status)
+		assert.Equal(t, "123.45", results[2].Value)
+	})
+
+	t.Run("JSON-path rule on a JSON body", func(t *testing.T) {
+		t.Parallel()
+
+		f := newFakeFetcher()
+		f.addResponse("https://api.example.com/", []byte(`{"usdSell":"465.5"}`), "application/json")
+
+		a := &Auditor{Fetcher: f}
+		sources := []SeededSource{
+			{
+				Name: "SRC_JSON",
+				URL:  "https://api.example.com/",
+				Side: "ASK",
+				Rules: []domain.RateSourceRule{
+					{Method: domain.MethodJSONPath, Pattern: "usdSell"},
+				},
+				Active: true,
+			},
+		}
+		results, err := a.Run(t.Context(), sources)
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+		assert.Equal(t, StatusOK, results[0].Status)
+		assert.Equal(t, "465.5", results[0].Value)
+	})
+
+	t.Run("unsupported method parse_float", func(t *testing.T) {
+		t.Parallel()
+
+		f := newFakeFetcher()
+		f.addResponse("https://example.com/", []byte(`450.00`), "text/html")
+
+		a := &Auditor{Fetcher: f}
+		sources := []SeededSource{
+			{
+				Name: "SRC_PARSEFLOAT",
+				URL:  "https://example.com/",
+				Side: "BID",
+				Rules: []domain.RateSourceRule{
+					{Method: domain.MethodParseFloat},
+				},
+				Active: true,
+			},
+		}
+		results, err := a.Run(t.Context(), sources)
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+		assert.Equal(t, StatusUnsupportedMethod, results[0].Status)
+	})
+
+	t.Run("extracted value that fails sanity check", func(t *testing.T) {
+		t.Parallel()
+
+		f := newFakeFetcher()
+		f.addResponse("https://example.com/zero", []byte(`<v>0.0</v>`), "text/html")
+		f.addResponse("https://example.com/neg", []byte(`<v>-5.0</v>`), "text/html")
+		f.addResponse("https://example.com/nan", []byte(`<v>NaN</v>`), "text/html")
+
+		a := &Auditor{Fetcher: f}
+		sources := []SeededSource{
+			regexSource("ZERO", "https://example.com/zero", `<v>([\d.]+)</v>`),
+			regexSource("NEG", "https://example.com/neg", `<v>(-[\d.]+)</v>`),
+			regexSource("NAN", "https://example.com/nan", `<v>([A-Za-z]+)</v>`),
+		}
+		results, err := a.Run(t.Context(), sources)
+		require.NoError(t, err)
+		require.Len(t, results, 3)
+		assert.Equal(t, StatusValueParseError, results[0].Status, "zero value")
+		assert.Equal(t, StatusValueParseError, results[1].Status, "negative value")
+		assert.Equal(t, StatusValueParseError, results[2].Status, "non-numeric NaN string")
+	})
+
+	t.Run("thousand separator value with regular space", func(t *testing.T) {
+		t.Parallel()
+
+		f := newFakeFetcher()
+		f.addResponse("https://example.com/", []byte(`rate: 70 534.67 end`), "text/html")
+
+		a := &Auditor{Fetcher: f}
+		results, err := a.Run(t.Context(), []SeededSource{
+			regexSource("SRC_SPACE", "https://example.com/", `rate: ([\d .]+) end`),
+		})
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+		assert.Equal(t, StatusOK, results[0].Status)
+		assert.Equal(t, "70534.67", results[0].Value)
+	})
+}

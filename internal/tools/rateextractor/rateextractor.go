@@ -9,7 +9,6 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strconv"
 	"time"
 
@@ -219,21 +218,7 @@ func (extractor *RateExtractor) fetchHtmlPage(ctx context.Context, rawURL string
 }
 
 func (extractor *RateExtractor) fetchRegexPage(_ context.Context, pattern string, payload []byte) ([]byte, error) {
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		err = fmt.Errorf("compile pattern %q: %w", pattern, err)
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	}
-
-	matches := re.FindSubmatch(payload)
-	if len(matches) < 2 {
-		err = fmt.Errorf("invalid regex pattern %q", pattern)
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	}
-
-	return matches[1], nil
+	return ApplyRegex(pattern, payload)
 }
 
 type rateValueRepository interface {

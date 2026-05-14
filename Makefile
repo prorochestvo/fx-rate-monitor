@@ -11,7 +11,7 @@ TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 BUILD_OPTIONS := "-s -w -X main.BuildVersion=${BRANCH} -X main.BuildTime=${TIME} -X main.BuildHash=${BUILD}"
 
-.PHONY: all claude_task claude_evaluates_project claude_auto_fix_tests run build build-collector build-notifier build-web build-wasm build-migrator migrate test test-wasm lint format swagger clean deploy_environment
+.PHONY: all claude_task claude_evaluates_project claude_auto_fix_tests run build build-collector build-notifier build-web build-wasm build-migrator migrate test test-wasm lint format audit swagger clean deploy_environment
 
 
 deploy_environment:
@@ -115,6 +115,10 @@ test-wasm:
 ## lint: run go vet across all packages
 lint: format
 	CGO_ENABLED=0 go vet ./...
+
+## audit: probe every seeded rate source against its live page; exits non-zero on any MISS (add -- -v for per-source table)
+audit:
+	CGO_ENABLED=0 go run ./cmd/sourceaudit $(ARGS)
 
 ## swagger: regenerate Swagger/OpenAPI documentation
 swagger:
