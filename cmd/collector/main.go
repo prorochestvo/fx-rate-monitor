@@ -124,7 +124,7 @@ func main() {
 		}
 	}
 	if err = errors.Join(errs...); err != nil {
-		log.Fatalf("execution:  %s", err)
+		log.Printf("execution: completed with errors: %s", err)
 	}
 
 	log.Println("execution: done")

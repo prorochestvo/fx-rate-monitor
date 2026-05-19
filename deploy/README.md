@@ -63,3 +63,19 @@ scp build/monitor user@host:/usr/local/bin/monitor
 systemctl start monitor
 systemctl is-active monitor
 ```
+
+## Exit code & alerting
+
+`cmd/collector` and `cmd/notifier` exit with status `0` whenever the setup phase
+completes (logger, DB, migrations, repositories, runner construction). Per-source /
+per-notification failures are persisted to the database (`execution_history`,
+notification pool) and logged to stdout, but they do **not** cause a non-zero exit.
+Cron wrappers that previously alerted on a non-zero exit code must instead watch
+stdout for the marker line:
+
+```
+execution: completed with errors: ...
+```
+
+followed by the closing `execution: done` line. Failed-source detail is available
+via the HTTP routes `GET /api/errors/execution` and `GET /api/notifications/failed`.
