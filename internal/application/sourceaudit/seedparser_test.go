@@ -9,8 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// realSeedLine is a verbatim copy of the first line of 202605.007.rate_sources.seed_initial.sql
-// to confirm the tokenizer round-trips correctly with real regex patterns.
+// realSeedLine is a synthetic positional 10-column INSERT fixture mirroring the
+// pre-consolidation seed form. It exercises the positional parse path of
+// parseSeedFile alongside a real regex pattern with escaped delimiters.
 const realSeedLine = `INSERT OR IGNORE INTO rate_sources VALUES('KZ_BCC_BID_USD_KZT','Center Credit Bank','USD','KZT','https://www.bcc.kz/kz/','6h','BID',1,'{}','[{"method":"regex","pattern":"USD \\/ KZT[\\s\\S]{1,500}?<div class=\"flex-x justify-end\">(\\d+\\.\\d+)<\\/div>"}]');`
 
 func TestParseSeedFiles(t *testing.T) {
@@ -133,6 +134,86 @@ INSERT OR IGNORE INTO other_table VALUES(1,2,3);
 		require.Len(t, sources, 2)
 		assert.Equal(t, "SRC_A", sources[0].Name, "101.seed.sql comes first lexicographically")
 		assert.Equal(t, "SRC_B", sources[1].Name)
+	})
+
+	t.Run("column-list 12-column form parses correctly", func(t *testing.T) {
+		t.Parallel()
+
+		// Verbatim copy of the first INSERT line from 202605.014.rate_sources.seed_jusan_halyk_usd_kzt.sql.
+		line := `INSERT OR IGNORE INTO rate_sources (name, title, base_currency, quote_currency, url, interval, kind, active, options, rules, rule_metadata, fetcher_kind) VALUES('KZ_HALYK_BID_USD_KZT','Halyk Bank','USD','KZT','https://halykbank.kz/api/gradation-ccy','6h','BID',1,'{}','[{"method": "regex", "pattern": "\"USD\\\\/KZT\":{\"value_from_1\":0,\"value_to_1\":10000,\"sell_rate_1\":[0-9.]+,\"buy_rate_1\":([0-9]+(?:\\.[0-9]+)?)"}]','{}','plain');`
+		fsys := fstest.MapFS{
+			"test.seed.sql": {Data: []byte(line)},
+		}
+
+		sources, err := ParseSeedFiles(fsys, "test.seed.sql")
+		require.NoError(t, err)
+		require.Len(t, sources, 1)
+
+		s := sources[0]
+		assert.Equal(t, "KZ_HALYK_BID_USD_KZT", s.Name)
+		assert.Equal(t, "Halyk Bank", s.Vendor)
+		assert.Equal(t, "USD", s.Base)
+		assert.Equal(t, "KZT", s.Quote)
+		assert.Equal(t, "BID", s.Side)
+		assert.True(t, s.Active)
+		require.Len(t, s.Rules, 1)
+		assert.Equal(t, domain.MethodRegex, s.Rules[0].Method)
+		assert.Contains(t, s.Rules[0].Pattern, `USD\\/KZT`)
+	})
+
+	t.Run("positional 12-column form parses correctly", func(t *testing.T) {
+		t.Parallel()
+
+		line := `INSERT OR IGNORE INTO rate_sources VALUES('SRC','V','USD','KZT','https://x.com/','6h','BID',1,'{}','[{"method":"regex","pattern":"([0-9]+)"}]','{}','plain');`
+		fsys := fstest.MapFS{
+			"pos12.seed.sql": {Data: []byte(line)},
+		}
+
+		sources, err := ParseSeedFiles(fsys, "pos12.seed.sql")
+		require.NoError(t, err)
+		require.Len(t, sources, 1)
+
+		s := sources[0]
+		assert.Equal(t, "SRC", s.Name)
+		assert.Equal(t, "V", s.Vendor)
+		assert.Equal(t, "USD", s.Base)
+		assert.Equal(t, "KZT", s.Quote)
+		assert.Equal(t, "BID", s.Side)
+		assert.True(t, s.Active)
+		require.Len(t, s.Rules, 1)
+		assert.Equal(t, domain.MethodRegex, s.Rules[0].Method)
+	})
+
+	t.Run("recognised INSERT with malformed column list fails loudly", func(t *testing.T) {
+		t.Parallel()
+
+		// Missing closing paren on column list — the line looks like a rate_sources INSERT
+		// but cannot be parsed by either valid form; the loud-fail path must trigger.
+		line := "INSERT OR IGNORE INTO rate_sources (name VALUES('x');"
+		fsys := fstest.MapFS{
+			"malformed.seed.sql": {Data: []byte(line)},
+		}
+
+		_, err := ParseSeedFiles(fsys, "malformed.seed.sql")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "malformed.seed.sql")
+		assert.Contains(t, err.Error(), "1")
+	})
+
+	t.Run("unknown column emits warn and is ignored", func(t *testing.T) {
+		t.Parallel()
+
+		line := `INSERT OR IGNORE INTO rate_sources (name, title, base_currency, quote_currency, url, interval, kind, active, options, rules, mystery_column) VALUES('SRC','Vendor','USD','KZT','https://x.com/','6h','BID',1,'{}','[{"method":"regex","pattern":"([0-9]+)"}]','x');`
+		fsys := fstest.MapFS{
+			"unknown.seed.sql": {Data: []byte(line)},
+		}
+
+		sources, err := ParseSeedFiles(fsys, "unknown.seed.sql")
+		require.NoError(t, err)
+		require.Len(t, sources, 1)
+		assert.Equal(t, "SRC", sources[0].Name)
+		assert.Equal(t, "Vendor", sources[0].Vendor)
+		assert.Equal(t, "USD", sources[0].Base)
 	})
 
 	t.Run("active=1 maps to true active=0 to false", func(t *testing.T) {

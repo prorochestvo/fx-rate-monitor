@@ -8,7 +8,9 @@ CREATE TABLE IF NOT EXISTS rate_sources (
 	kind          TEXT NOT NULL,
 	active        INTEGER NOT NULL DEFAULT 1,
 	options       TEXT NOT NULL DEFAULT '{}',
-	rules         TEXT NOT NULL DEFAULT '[]'
+	rules         TEXT NOT NULL DEFAULT '[]',
+	rule_metadata TEXT NOT NULL DEFAULT '{}',
+	fetcher_kind  TEXT NOT NULL DEFAULT 'plain'
 );
 CREATE INDEX IF NOT EXISTS idx_rate_sources_name ON rate_sources (name);
 CREATE INDEX IF NOT EXISTS idx_rate_sources_currency ON rate_sources (base_currency,base_currency);
