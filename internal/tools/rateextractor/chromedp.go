@@ -2,12 +2,15 @@ package rateextractor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chromedp/chromedp"
+	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 )
 
@@ -27,12 +30,19 @@ type ChromedpRateExtractor struct {
 	chromiumPath string
 	logger       io.Writer
 	repo         rateValueRepository
+	failedURLs   map[string]error
+	failedURLsMu sync.Mutex
 }
 
 // NewChromedpRateExtractor constructs a ChromedpRateExtractor. chromiumPath may
 // be empty, in which case chromedp searches PATH for a suitable binary. logger
 // receives one-line diagnostic messages per fetch; pass io.Discard to silence them.
 // Caller must supply a non-nil repo.
+//
+// The extractor maintains a per-process negative URL cache (tombstone): once a URL fails
+// inside one process, subsequent fetches in the same process short-circuit. This is designed
+// for short-lived one-shot processes; do not reuse an extractor instance across cron
+// invocations in a long-running daemon.
 func NewChromedpRateExtractor(chromiumPath string, logger io.Writer, repo rateValueRepository) *ChromedpRateExtractor {
 	if logger == nil {
 		logger = io.Discard
@@ -41,6 +51,7 @@ func NewChromedpRateExtractor(chromiumPath string, logger io.Writer, repo rateVa
 		chromiumPath: chromiumPath,
 		logger:       logger,
 		repo:         repo,
+		failedURLs:   make(map[string]error),
 	}
 }
 
@@ -56,11 +67,38 @@ func (e *ChromedpRateExtractor) Run(ctx context.Context, source *domain.RateSour
 	return applyRulesAndStore(ctx, source, payload, e.repo)
 }
 
+// loadFailedURL returns the cached error for url and true if url was previously
+// recorded as failed during the current process lifetime.
+func (e *ChromedpRateExtractor) loadFailedURL(url string) (error, bool) {
+	e.failedURLsMu.Lock()
+	defer e.failedURLsMu.Unlock()
+	err, ok := e.failedURLs[url]
+	return err, ok
+}
+
+// recordFailedURL stores err as the tombstone for url. Subsequent fetches of url
+// inside the same process short-circuit and return a wrapped form of err at replay time.
+// See constructor godoc for lifetime constraint.
+func (e *ChromedpRateExtractor) recordFailedURL(url string, err error) {
+	e.failedURLsMu.Lock()
+	defer e.failedURLsMu.Unlock()
+	e.failedURLs[url] = err
+}
+
 // fetchRenderedPage navigates to source.URL with a headless Chrome instance and
 // returns the post-hydration outer HTML of the document. The hard wall-clock timeout
 // is 30 s. Both the browser context and the allocator context are cancelled before
 // return so the Chromium subprocess is reaped even on error paths.
+// Short-circuits if a prior fetch for source.URL failed during this process lifetime; see recordFailedURL.
 func (e *ChromedpRateExtractor) fetchRenderedPage(ctx context.Context, source *domain.RateSource) ([]byte, error) {
+	if cached, ok := e.loadFailedURL(source.URL); ok {
+		_, _ = fmt.Fprintf(e.logger,
+			"chromedp_extractor: short-circuit url=%s prior_error=%v\n", source.URL, cached)
+		err := fmt.Errorf("short-circuit (tombstoned this run): %w", cached)
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, defaultChromedpTimeout)
 	defer cancel()
 
@@ -97,7 +135,9 @@ func (e *ChromedpRateExtractor) fetchRenderedPage(ctx context.Context, source *d
 	actions = append(actions, chromedp.OuterHTML("html", &rendered, chromedp.ByQuery))
 
 	if err := chromedp.Run(browserCtx, actions...); err != nil {
-		return nil, fmt.Errorf("chromedp fetch %s: %w", source.URL, err)
+		wrapped := fmt.Errorf("chromedp fetch %s: %w", source.URL, err)
+		e.recordFailedURL(source.URL, wrapped)
+		return nil, wrapped
 	}
 
 	_, _ = fmt.Fprintf(e.logger, "chromedp_extractor: url=%s wait_selector=%q rendered_bytes=%d\n",

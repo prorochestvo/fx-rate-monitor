@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -684,6 +685,140 @@ func TestRateExtractor_fetchHtmlPage(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, body)
 		require.Equal(t, []byte(responseBody), body)
+	})
+}
+
+func TestRateExtractor_failFast(t *testing.T) {
+	t.Parallel()
+
+	t.Run("shared URL 500 hits server once", func(t *testing.T) {
+		t.Parallel()
+
+		var callCount atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+
+		logger := threadsafe.NewBuffer(nil)
+		ext, err := NewRateExtractorWithHTTPClient(
+			&mockRateValueRepository{},
+			&http.Client{Timeout: 5 * time.Second},
+			logger,
+		)
+		require.NoError(t, err)
+
+		srcA := &domain.RateSource{Name: "a", URL: srv.URL, Rules: []domain.RateSourceRule{{Method: domain.MethodRegex, Pattern: `.+`}}}
+		srcB := &domain.RateSource{Name: "b", URL: srv.URL, Rules: []domain.RateSourceRule{{Method: domain.MethodRegex, Pattern: `.+`}}}
+
+		err1 := ext.Run(t.Context(), srcA)
+		require.Error(t, err1)
+
+		err2 := ext.Run(t.Context(), srcB)
+		require.Error(t, err2)
+		require.ErrorContains(t, err2, "short-circuit")
+		require.ErrorContains(t, err2, "tombstoned this run")
+
+		require.Equal(t, int32(1), callCount.Load(), "the failing URL must be hit only once across both runs")
+		require.Contains(t, logger.String(), "short-circuit")
+	})
+
+	t.Run("shared URL 200 still hits server once", func(t *testing.T) {
+		t.Parallel()
+
+		var callCount atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount.Add(1)
+			_, _ = fmt.Fprint(w, `<span>450.75</span>`)
+		}))
+		defer srv.Close()
+
+		logger := threadsafe.NewBuffer(nil)
+		rateRepo := &mockRateValueRepository{}
+		ext, err := NewRateExtractorWithHTTPClient(
+			rateRepo,
+			&http.Client{Timeout: 5 * time.Second},
+			logger,
+		)
+		require.NoError(t, err)
+
+		srcA := &domain.RateSource{Name: "a", URL: srv.URL, Rules: []domain.RateSourceRule{{Method: domain.MethodRegex, Pattern: `<span>([\d.]+)</span>`}}}
+		srcB := &domain.RateSource{Name: "b", URL: srv.URL, Rules: []domain.RateSourceRule{{Method: domain.MethodRegex, Pattern: `<span>([\d.]+)</span>`}}}
+
+		require.NoError(t, ext.Run(t.Context(), srcA))
+		require.NoError(t, ext.Run(t.Context(), srcB))
+
+		require.Equal(t, int32(1), callCount.Load(), "positive cache must serve second source without a new HTTP request")
+		require.Len(t, rateRepo.retained, 2, "both sources must persist their own rate value")
+
+		_, poisoned := ext.loadFailedURL(srv.URL)
+		require.False(t, poisoned, "a successful fetch must not be recorded as failed")
+	})
+
+	t.Run("unrelated URLs failure does not poison other URL", func(t *testing.T) {
+		t.Parallel()
+
+		var callCount500 atomic.Int32
+		srv500 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount500.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv500.Close()
+
+		var callCount200 atomic.Int32
+		srv200 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount200.Add(1)
+			_, _ = fmt.Fprint(w, `<span>100.0</span>`)
+		}))
+		defer srv200.Close()
+
+		logger := threadsafe.NewBuffer(nil)
+		rateRepo := &mockRateValueRepository{}
+		ext, err := NewRateExtractorWithHTTPClient(
+			rateRepo,
+			&http.Client{Timeout: 5 * time.Second},
+			logger,
+		)
+		require.NoError(t, err)
+
+		src500 := &domain.RateSource{Name: "fail_src", URL: srv500.URL, Rules: []domain.RateSourceRule{{Method: domain.MethodRegex, Pattern: `.+`}}}
+		src200 := &domain.RateSource{Name: "ok_src", URL: srv200.URL, Rules: []domain.RateSourceRule{{Method: domain.MethodRegex, Pattern: `<span>([\d.]+)</span>`}}}
+
+		require.Error(t, ext.Run(t.Context(), src500))
+		require.NoError(t, ext.Run(t.Context(), src200))
+
+		require.Equal(t, int32(1), callCount500.Load(), "failing URL must be hit exactly once")
+		require.Equal(t, int32(1), callCount200.Load(), "unrelated URL must be hit exactly once")
+		require.Len(t, rateRepo.retained, 1, "only the successful source must persist a rate value")
+	})
+
+	t.Run("unreachable host short-circuits second attempt", func(t *testing.T) {
+		t.Parallel()
+
+		logger := threadsafe.NewBuffer(nil)
+		ext, err := NewRateExtractorWithHTTPClient(
+			&mockRateValueRepository{},
+			&http.Client{Timeout: 500 * time.Millisecond},
+			logger,
+		)
+		require.NoError(t, err)
+
+		srcA := &domain.RateSource{Name: "a", URL: "http://127.0.0.1:1", Rules: []domain.RateSourceRule{{Method: domain.MethodRegex, Pattern: `.+`}}}
+		srcB := &domain.RateSource{Name: "b", URL: "http://127.0.0.1:1", Rules: []domain.RateSourceRule{{Method: domain.MethodRegex, Pattern: `.+`}}}
+
+		err1 := ext.Run(t.Context(), srcA)
+		require.Error(t, err1)
+
+		start := time.Now()
+		err2 := ext.Run(t.Context(), srcB)
+		elapsed := time.Since(start)
+
+		require.Error(t, err2)
+		require.ErrorContains(t, err2, "short-circuit")
+		require.ErrorContains(t, err2, "tombstoned this run")
+		require.Less(t, elapsed, 400*time.Millisecond, "short-circuit must not wait for transport timeout; elapsed=%v", elapsed)
+		require.Contains(t, logger.String(), "short-circuit")
 	})
 }
 

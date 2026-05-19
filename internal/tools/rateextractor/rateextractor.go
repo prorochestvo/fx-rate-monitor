@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/seilbekskindirov/monitor/internal"
@@ -28,6 +29,11 @@ const MaxPlausibleRateValue = math.MaxInt32
 
 // NewRateExtractor creates a RateExtractor with an HTTP client configured for the
 // given timeout. When proxyURL is non-empty the client routes requests through that proxy.
+//
+// The extractor maintains a per-process negative URL cache (tombstone): once a URL fails
+// inside one process, subsequent fetches in the same process short-circuit. This is designed
+// for short-lived one-shot processes; do not reuse an extractor instance across cron
+// invocations in a long-running daemon.
 func NewRateExtractor(
 	rateValueRepository rateValueRepository,
 	proxyURL string,
@@ -60,6 +66,11 @@ func NewRateExtractor(
 
 // NewRateExtractorWithHTTPClient creates a RateExtractor with a caller-supplied HTTP
 // client. Use this in tests to inject a custom transport or timeout.
+//
+// The extractor maintains a per-process negative URL cache (tombstone): once a URL fails
+// inside one process, subsequent fetches in the same process short-circuit. This is designed
+// for short-lived one-shot processes; do not reuse an extractor instance across cron
+// invocations in a long-running daemon.
 func NewRateExtractorWithHTTPClient(
 	rateValueRepository rateValueRepository,
 	httpClient *http.Client,
@@ -76,6 +87,7 @@ func NewRateExtractorWithHTTPClient(
 		cache:               threadsafe.NewCache(30 * time.Minute),
 		httpClient:          httpClient,
 		logger:              logger,
+		failedURLs:          make(map[string]error),
 	}
 
 	return p, nil
@@ -89,6 +101,8 @@ type RateExtractor struct {
 	cache               *threadsafe.Cache
 	httpClient          *http.Client
 	logger              io.Writer
+	failedURLs          map[string]error
+	failedURLsMu        sync.Mutex
 }
 
 // Name returns the identifier used in scheduler and log output.
@@ -194,7 +208,33 @@ func applyRulesAndStore(ctx context.Context, source *domain.RateSource, payload 
 	return nil
 }
 
+// loadFailedURL returns the cached error for url and true if url was previously
+// recorded as failed during the current process lifetime.
+func (extractor *RateExtractor) loadFailedURL(url string) (error, bool) {
+	extractor.failedURLsMu.Lock()
+	defer extractor.failedURLsMu.Unlock()
+	e, ok := extractor.failedURLs[url]
+	return e, ok
+}
+
+// recordFailedURL stores err as the tombstone for url. Subsequent fetches of url
+// inside the same process short-circuit and return a wrapped form of err.
+// See constructor godoc for lifetime constraint.
+func (extractor *RateExtractor) recordFailedURL(url string, err error) {
+	extractor.failedURLsMu.Lock()
+	defer extractor.failedURLsMu.Unlock()
+	extractor.failedURLs[url] = err
+}
+
 func (extractor *RateExtractor) fetchHtmlPage(ctx context.Context, rawURL string) ([]byte, error) {
+	if cached, ok := extractor.loadFailedURL(rawURL); ok {
+		_, _ = fmt.Fprintf(extractor.logger,
+			"rate_extractor: short-circuit url=%s prior_error=%v\n", rawURL, cached)
+		err := fmt.Errorf("short-circuit (tombstoned this run): %w", cached)
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, extractor.httpClient.Timeout)
 	defer cancel()
 
@@ -209,6 +249,7 @@ func (extractor *RateExtractor) fetchHtmlPage(ctx context.Context, rawURL string
 	if err != nil {
 		err = fmt.Errorf("create request: %w", err)
 		err = errors.Join(err, internal.NewTraceError())
+		extractor.recordFailedURL(rawURL, err)
 		return nil, err
 	}
 
@@ -220,6 +261,7 @@ func (extractor *RateExtractor) fetchHtmlPage(ctx context.Context, rawURL string
 	if err != nil {
 		err = fmt.Errorf("do request: %w", err)
 		err = errors.Join(err, internal.NewTraceError())
+		extractor.recordFailedURL(rawURL, err)
 		return nil, err
 	}
 	defer func(c io.Closer) { _ = c.Close() }(resp.Body)
@@ -227,6 +269,7 @@ func (extractor *RateExtractor) fetchHtmlPage(ctx context.Context, rawURL string
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		err = fmt.Errorf("fetch %s: unexpected status %d (%s)", rawURL, resp.StatusCode, resp.Status)
 		err = errors.Join(err, internal.NewTraceError())
+		extractor.recordFailedURL(rawURL, err)
 		return nil, err
 	}
 
@@ -234,6 +277,7 @@ func (extractor *RateExtractor) fetchHtmlPage(ctx context.Context, rawURL string
 	if err != nil {
 		err = fmt.Errorf("read response body: %w", err)
 		err = errors.Join(err, internal.NewTraceError())
+		extractor.recordFailedURL(rawURL, err)
 		return nil, err
 	}
 
