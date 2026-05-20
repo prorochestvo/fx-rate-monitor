@@ -1,7 +1,6 @@
 // Command web serves the HTTP API and the embedded Mini App static files.
-// It reads SQLITEDB_DSN, TELEGRAMBOT_DSN, AI_PRIMARY_DSN, and AI_FALLBACK_DSN
-// from the environment, starts the Telegram bot update loop, and listens on
-// the port configured by --port (default 8080).
+// It reads SQLITEDB_DSN and TELEGRAMBOT_DSN from the environment, starts the
+// Telegram bot update loop, and listens on the port configured by --port (default 8080).
 package main
 
 import (
@@ -23,12 +22,8 @@ import (
 
 	"github.com/prorochestvo/dsninjector"
 	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/application/rulegen"
 	"github.com/seilbekskindirov/monitor/internal/application/service"
-	"github.com/seilbekskindirov/monitor/internal/application/sourceaudit"
 	"github.com/seilbekskindirov/monitor/internal/gateway"
-	v1handlers "github.com/seilbekskindirov/monitor/internal/gateway/httpV1/handlers"
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/artificialintelligence"
 	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
 	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
 	"github.com/seilbekskindirov/monitor/internal/repository"
@@ -48,11 +43,8 @@ var (
 	LogVerbosity = internal.LogLevelWarning
 	// HttpPort is the TCP port the HTTP server listens on.
 	HttpPort = 8080
-	// HttpTimeOut is the read/idle timeout for the HTTP server.
+	// HttpTimeOut is the read/write/idle timeout for the HTTP server.
 	HttpTimeOut = 30 * time.Second
-	// HttpWriteTimeout is the write timeout for the HTTP server; set to 130s to give
-	// 10 s headroom over the rulegen 120 s per-request ceiling.
-	HttpWriteTimeout = 130 * time.Second
 	// StaticDir overrides the embedded static file system when non-empty.
 	StaticDir = ""
 	// APIDsn is the public HTTPS origin passed via --api-dsn; used by the WASM client.
@@ -62,8 +54,6 @@ var (
 const (
 	envDsnSqliteDB    = "SQLITEDB_DSN"
 	envDsnTelegramBOT = "TELEGRAMBOT_DSN"
-	envDsnAIPrimary   = "AI_PRIMARY_DSN"
-	envDsnAIFallback  = "AI_FALLBACK_DSN"
 )
 
 func main() {
@@ -101,10 +91,6 @@ func main() {
 	// Telegram WebApp buttons reject non-HTTPS, IP literals, and localhost,
 	// so the DSN's host must resolve to a publicly reachable HTTPS host.
 	webAppURL := "https://" + strings.TrimPrefix(strings.TrimPrefix(dsnAPI.Addr(), "https://"), "http://") + "/app/subscriptions.html"
-	dsnAIPrimary, err := dsninjector.Unmarshal(envDsnAIPrimary)
-	if err != nil {
-		log.Fatalf("settings: %s, %s", envDsnAIPrimary, err.Error())
-	}
 	log.Println("settings: initiated")
 
 	// init dependencies
@@ -131,27 +117,6 @@ func main() {
 	} else {
 		log.Printf("telegram: authenticated as @%s (id=%d)", username, id)
 	}
-	aiPrimary, err := artificialintelligence.NewClient(dsnAIPrimary, l.WriterAs(internal.LogLevelInfo))
-	if err != nil {
-		log.Fatalf("dependencies: ai primary client is failed, %s", err.Error())
-	}
-	var aiFallback artificialintelligence.AIClient
-	if _, ok := os.LookupEnv(envDsnAIFallback); ok {
-		dsnAIFallback, dsnErr := dsninjector.Unmarshal(envDsnAIFallback)
-		if dsnErr != nil {
-			log.Fatalf("settings: %s, %s", envDsnAIFallback, dsnErr.Error())
-		}
-		aiFallback, err = artificialintelligence.NewClient(dsnAIFallback, l.WriterAs(internal.LogLevelInfo))
-		if err != nil {
-			log.Fatalf("dependencies: ai fallback client is failed, %s", err.Error())
-		}
-	} else {
-		aiFallback, err = artificialintelligence.NewStubClient()
-		if err != nil {
-			log.Fatalf("dependencies: ai fallback stub is failed, %s", err.Error())
-		}
-	}
-	log.Printf("ai: primary=%s fallback=%s", aiPrimary.Name(), aiFallback.Name())
 	log.Println("dependencies: initiated")
 
 	// init repositories
@@ -179,36 +144,6 @@ func main() {
 	}
 	log.Println("repositories: initiated")
 
-	// Build rulegen generator. plainFetcher wraps sourceaudit.HTTPFetcher to satisfy
-	// the rulegen.Fetcher interface. The adapter type is declared at the bottom of this
-	// file — see sourceAuditFetcherAdapter. Deliberate re-declaration (see also
-	// cmd/rulegen/main.go) to avoid inflating the rulegen package's public surface.
-	plainFetcher := &sourceAuditFetcherAdapter{inner: sourceaudit.NewHTTPFetcher(time.Minute)}
-	chromedpFor := func(waitSelector string) rulegen.Fetcher {
-		return rulegen.NewChromedpFetcher(rulegen.ChromedpFetcherOptions{
-			ChromiumPath: os.Getenv("CHROMIUM_PATH"),
-			Logger:       l.WriterAs(internal.LogLevelInfo),
-			WaitSelector: waitSelector,
-		})
-	}
-	ruleExecutor := rulegen.NewRuleExecutor()
-
-	buildGenerator := func(maxPrimary, maxFallback int) (v1handlers.RulegenGenerator, error) {
-		return rulegen.NewGenerator(
-			aiPrimary, aiFallback,
-			plainFetcher, chromedpFor,
-			ruleExecutor, rRateSource,
-			maxPrimary, maxFallback,
-			l.WriterAs(internal.LogLevelInfo),
-		)
-	}
-	defaultGen, genErr := buildGenerator(3, 2)
-	if genErr != nil {
-		log.Fatalf("dependencies: rulegen default generator: %s", genErr.Error())
-	}
-	log.Printf("rulegen: default generator ready (primary=%s fallback=%s)", aiPrimary.Name(), aiFallback.Name())
-	rulegenLocks := rulegen.NewLockManager()
-
 	restAPI, err := service.NewRateRestAPI(
 		rExecutionHistory,
 		rRateSource,
@@ -221,8 +156,7 @@ func main() {
 		return
 	}
 	botToken := tbot.BotToken()
-	mux, err := gateway.NewGateway(restAPI, botToken, rRateUserSubscription, rRateSource, rRateValue,
-		defaultGen, buildGenerator, tbot.AdminChatID(), rulegenLocks)
+	mux, err := gateway.NewGateway(restAPI, botToken, rRateUserSubscription, rRateSource, rRateValue)
 	if err != nil {
 		log.Fatalf("services: mux api is failed, %s", err.Error())
 		return
@@ -238,11 +172,7 @@ func main() {
 		fsys = http.FS(sub)
 	}
 	mux.Handle("/", http.FileServer(fsys))
-	botGenFactory := func(maxPrimary, maxFallback int) (service.RulegenGenerator, error) {
-		return buildGenerator(maxPrimary, maxFallback)
-	}
-	tbotAPI, err := service.NewTelegramApi(tbot, rRateUserSubscription, rRateSource, webAppURL,
-		defaultGen, rulegenLocks, tbot.AdminChatID(), botGenFactory)
+	tbotAPI, err := service.NewTelegramApi(tbot, rRateUserSubscription, rRateSource, webAppURL)
 	if err != nil {
 		log.Fatalf("services: telegram api is failed, %s", err.Error())
 		return
@@ -253,14 +183,11 @@ func main() {
 	tbotAPI.Run(context.Background())
 
 	// run http server
-	// WriteTimeout is set to HttpWriteTimeout (130s) — larger than HttpTimeOut (30s read) —
-	// to give the rulegen endpoint (120s handler ceiling) headroom to deliver its response
-	// before the server cuts the connection.
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", HttpPort),
 		Handler:      mux,
 		ReadTimeout:  HttpTimeOut,
-		WriteTimeout: HttpWriteTimeout,
+		WriteTimeout: HttpTimeOut,
 		IdleTimeout:  HttpTimeOut >> 1,
 	}
 	go func() {
@@ -291,7 +218,7 @@ var staticFS embed.FS
 
 func init() {
 	port := flag.Int("port", HttpPort, "http server port")
-	timeout := flag.String("timeout", HttpTimeOut.String(), "HTTP read/idle timeout duration (controls ReadTimeout; WriteTimeout is fixed at 130s to give the rulegen endpoint headroom)")
+	timeout := flag.String("timeout", HttpTimeOut.String(), "HTTP read/write/idle timeout duration")
 	logsDir := flag.String("logs-dir", LogsDir, "path to logs directory")
 	verbosity := flag.String("verbosity", "warning", "minimum stdout log level (debug, info, warning, error, severe, critical)")
 	staticDir := flag.String("static-dir", StaticDir, "path to static files directory")
@@ -325,20 +252,4 @@ func init() {
 	if v := *apiDsn; v != "" {
 		APIDsn = v
 	}
-}
-
-// sourceAuditFetcherAdapter wraps sourceaudit.Fetcher to satisfy the
-// rulegen.Fetcher interface, which returns only the body bytes.
-// Deliberately re-declared here (see also cmd/rulegen/main.go) to avoid
-// inflating the rulegen package's public surface.
-type sourceAuditFetcherAdapter struct {
-	inner sourceaudit.Fetcher
-}
-
-func (a *sourceAuditFetcherAdapter) Fetch(ctx context.Context, url string) ([]byte, error) {
-	result, err := a.inner.Fetch(ctx, url)
-	if err != nil {
-		return nil, err
-	}
-	return result.Body, nil
 }

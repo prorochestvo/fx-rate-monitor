@@ -860,15 +860,14 @@ func BenchmarkHandleShow(b *testing.B) {
 }
 
 // newTelegramApi is a helper that creates a TelegramApi wired to the provided mocks.
-// Regen is disabled (nil generator, nil locks, 0 adminChatID, nil factory).
 func newTelegramApi(client *mockTelegramClient, subRepo subscriptionRepository, sourceRepo sourceRepository) *TelegramApi {
-	h, _ := NewTelegramApi(client, subRepo, sourceRepo, "", nil, nil, 0, nil)
+	h, _ := NewTelegramApi(client, subRepo, sourceRepo, "")
 	return h
 }
 
 // newTelegramApiWithWebApp creates a TelegramApi with a non-empty webAppURL for WebApp button tests.
 func newTelegramApiWithWebApp(client *mockTelegramClient, subRepo subscriptionRepository, sourceRepo sourceRepository, webAppURL string) *TelegramApi {
-	h, _ := NewTelegramApi(client, subRepo, sourceRepo, webAppURL, nil, nil, 0, nil)
+	h, _ := NewTelegramApi(client, subRepo, sourceRepo, webAppURL)
 	return h
 }
 

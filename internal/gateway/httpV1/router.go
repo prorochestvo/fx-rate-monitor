@@ -5,7 +5,6 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/seilbekskindirov/monitor/internal/application/rulegen"
 	"github.com/seilbekskindirov/monitor/internal/application/service"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	v1 "github.com/seilbekskindirov/monitor/internal/gateway/httpV1/handlers"
@@ -36,13 +35,8 @@ func NewRouter(
 	subRepo meSubscriptionRepo,
 	sourceRepo meSourceRepo,
 	rateValueRepo meRateValueRepo,
-	defaultGenerator v1.RulegenGenerator,
-	generatorFactory v1.RulegenGeneratorFactory,
-	adminChatID int64,
-	lockMgr *rulegen.LockManager,
 ) (*http.ServeMux, error) {
-	h, err := v1.NewHandler(srvRateRestApi, botToken, subRepo, sourceRepo, rateValueRepo,
-		defaultGenerator, generatorFactory, adminChatID, lockMgr)
+	h, err := v1.NewHandler(srvRateRestApi, botToken, subRepo, sourceRepo, rateValueRepo)
 	if err != nil {
 		return nil, err
 	}
@@ -73,10 +67,6 @@ func NewRouter(
 	// ServeMux longest-prefix matching selects the correct handler.
 	mux.HandleFunc("GET "+routes.NotificationsFailed, h.ListFailedNotifications)
 	mux.HandleFunc("GET "+routes.Notifications, h.ListNotifications)
-
-	// SourceRulesGenerate is more specific than any existing GET on /api/sources/{name}/...
-	// so Go's ServeMux longest-prefix rule routes it correctly without ordering constraints.
-	mux.HandleFunc("POST "+routes.SourceRulesGenerate, h.GenerateRules)
 
 	return mux, nil
 }

@@ -63,7 +63,7 @@ common layered Go layout — keep, edit, or remove rows as needed.
 - **Repository pattern** — each repository type owns its own SQL, migration, and query helper functions. Queries execute inside explicit transactions (`r.db.Transaction(ctx)`). Repositories are passed as interfaces into service and handler layers.
 - **Configuration injection** — `SQLITEDB_DSN` and `TELEGRAMBOT_DSN` are read via `dsninjector.Unmarshal(envName)` at startup in `cmd/web/main.go` and live in the systemd `EnvironmentFile`. The public HTTPS origin is passed via the `--api-dsn` CLI flag (format: `https://<host>/`, parsed by `dsninjector.Parse`) and is hardcoded in the systemd unit's `ExecStart` line — never in `.env`. All three configs must be present at startup; the binary calls `log.Fatalf` on any missing value.
 - **Embedded assets** — `cmd/web/main.go` embeds the `static/` directory via `//go:embed static`. All static files served by `http.FileServer` live under `cmd/web/static/`.
-- **Auth: Telegram WebApp initData HMAC** — the `/api/me/...` endpoint family authenticates callers by verifying the Telegram WebApp `initData` HMAC-SHA256 signature. The signing algorithm uses `secret_key = HMAC_SHA256("WebAppData", botToken)` (the string literal is the key; the token is the message). Implementation lives in `internal/tools/tgwebapp/initdata.go`. The handler injects the validator as a function field so tests can substitute a fake without real bot tokens.
+- **Auth: Telegram WebApp initData HMAC** — the `/api/me/...` endpoint family authenticates callers by verifying the Telegram WebApp `initData` HMAC-SHA256 signature. The signing algorithm uses `secret_key = HMAC_SHA256("WebAppData", botToken)` (the string literal is the key; the token is the message). Implementation lives in `internal/tools/tgwebapp/initdata.go`. The handler injects the validator as a function field so tests can substitute a fake without real bot tokens. No other endpoint requires this auth.
 
 ### HTTP Routes
 
@@ -82,8 +82,11 @@ common layered Go layout — keep, edit, or remove rows as needed.
 - `GET /api/notifications` — last N notification pool records
 - `GET /api/notifications/failed` — all failed notification pool records
 - `GET /api/me/subscriptions` — caller's own subscriptions enriched with latest rate values; authenticated via Telegram WebApp initData HMAC (`X-Telegram-Init-Data` header or `?initData=` query string fallback)
-- `POST /api/sources/{name}/rules/generate` — trigger rule (re-)generation for a named source. Admin-only; authenticated via Telegram WebApp initData with chat-id check against the bot admin. Synchronous; up to 120s wall-clock.
 - `GET /app/subscriptions.html` — Telegram Mini App HTML page (served by embedded static file server; no dedicated route needed)
+
+> Rule (re-)generation is no longer an HTTP endpoint. Use `cmd/rulegen <source>` or
+> `cmd/rulegen --all` (intended for operator-managed cron). See `cmd/rulegen/main.go`
+> godoc for usage and exit codes.
 
 ### Database
 

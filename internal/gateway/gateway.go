@@ -8,11 +8,9 @@ import (
 	"net/http"
 
 	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/application/rulegen"
 	"github.com/seilbekskindirov/monitor/internal/application/service"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	"github.com/seilbekskindirov/monitor/internal/gateway/httpV1"
-	v1handlers "github.com/seilbekskindirov/monitor/internal/gateway/httpV1/handlers"
 )
 
 // meSubscriptionRepo is a pass-through interface from the concrete repository layer.
@@ -38,14 +36,9 @@ func NewGateway(
 	subRepo meSubscriptionRepo,
 	sourceRepo meSourceRepo,
 	rateValueRepo meRateValueRepo,
-	defaultGenerator v1handlers.RulegenGenerator,
-	generatorFactory v1handlers.RulegenGeneratorFactory,
-	adminChatID int64,
-	lockMgr *rulegen.LockManager,
 ) (*http.ServeMux, error) {
 	mux := http.NewServeMux()
-	mux, err := httpV1.NewRouter(mux, srvRateRestApi, botToken, subRepo, sourceRepo, rateValueRepo,
-		defaultGenerator, generatorFactory, adminChatID, lockMgr)
+	mux, err := httpV1.NewRouter(mux, srvRateRestApi, botToken, subRepo, sourceRepo, rateValueRepo)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return nil, err
