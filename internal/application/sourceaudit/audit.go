@@ -5,8 +5,11 @@ package sourceaudit
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"math"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	"github.com/seilbekskindirov/monitor/internal/tools/rateextractor"
@@ -85,6 +88,12 @@ func (a *Auditor) probeSource(src SeededSource, fetch *fetchEntry) ProbeResult {
 	pr := ProbeResult{
 		Source: src,
 		URL:    src.URL,
+	}
+
+	if err := validateSourceURL(src.URL); err != nil {
+		pr.Status = StatusFetchError
+		pr.Detail = err.Error()
+		return pr
 	}
 
 	if fetch.err != nil {
@@ -166,4 +175,23 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return string(r[:max])
+}
+
+// validateSourceURL rejects any URL whose scheme is not http or https. It
+// prevents SSRF when the source URL originates from a seed file. Empty or
+// malformed URLs are also rejected.
+func validateSourceURL(rawURL string) error {
+	if rawURL == "" {
+		return fmt.Errorf("source URL must not be empty")
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		return nil
+	default:
+		return fmt.Errorf("URL scheme %q is not allowed (only http/https)", u.Scheme)
+	}
 }

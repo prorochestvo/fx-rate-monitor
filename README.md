@@ -59,7 +59,7 @@ plans/           # planning workflow (see CLAUDE.md)
 
 **Deploy-host runtime dependency (not required for the build):** Chromium or Google
 Chrome must be installed on the host for any rate source with `fetcher_kind='chromedp'`
-(JS-rendered pages). The `cmd/rulegen` binary looks for `chromium`, `chromium-browser`,
+(JS-rendered pages). The `cmd/doctor` binary looks for `chromium`, `chromium-browser`,
 `google-chrome`, or `chrome` on PATH, or uses `CHROMIUM_PATH` if set. Install once:
 ```bash
 sudo apt-get install -y chromium-browser   # Debian/Ubuntu (Oracle Cloud ARM Free Tier)
@@ -181,12 +181,17 @@ extraction `Rules`. An example shape (see `configs/sources.example.json`):
 Supported extraction methods: `regex`, `json` (JSONPath), `parse_float`, and
 `store_as_rate`.
 
-## Rule generation
+## Operator tools (`cmd/doctor`)
 
-`cmd/rulegen` is an operator-invoked binary that generates an extraction rule
-for a named source using an LLM. It fetches the source URL, asks the LLM for a
-rule, validates the rule against the live body, and persists the result to the
-database. Run it once after inserting a new source row (via a seed migration).
+`cmd/doctor` is the umbrella maintenance binary for operator-side tasks. It
+hosts two subcommands:
+
+### `doctor rulegen` — LLM rule generation
+
+Generates or regenerates an extraction rule for a named source using an LLM.
+It fetches the source URL, asks the LLM for a rule, validates the rule against
+the live body, and persists the result to the database. Run it once after
+inserting a new source row (via a seed migration).
 
 ```bash
 # Build first
@@ -195,17 +200,40 @@ make build
 # Generate a rule for the "halyk_usd" source
 SQLITEDB_DSN=sqlite://_:_@_:_/./build/monitor.db \
 AI_PRIMARY_DSN=groq://_:<base64url(KEY)>@api.groq.com/openai/v1?model=llama-3.1-8b-instant \
-./build/rulegen halyk_usd
+./build/doctor rulegen halyk_usd
 
 # Skip primary and go straight to fallback (useful when source is hard)
-./build/rulegen halyk_usd --force-fallback
+./build/doctor rulegen halyk_usd --force-fallback
+
+# Regenerate rules for every active source (cron mode; always exits 0)
+./build/doctor rulegen --all
 
 # See all flags
-make rulegen-help
+make doctor-help
 ```
 
-For full usage, exit codes, cost notes, and troubleshooting guidance see
-`cmd/rulegen/README.md`.
+### `doctor audit` — seed source auditing
+
+Probes seeded rate sources against their live URLs to verify that the
+extraction rules still return plausible values. Run from the repository root
+(seed-glob is relative to CWD).
+
+```bash
+# Audit every seeded source
+make audit ARGS="--all"
+
+# Audit one source by exact name
+make audit ARGS="--source halyk_usd"
+
+# Audit sources matching a regex
+make audit ARGS="--only '^halyk_'"
+
+# Verbose per-source table output
+make audit ARGS="--all -v"
+```
+
+For full usage, exit codes, cost notes, Chromium setup, and troubleshooting
+guidance see `cmd/doctor/README.md`.
 
 ## Deployment
 

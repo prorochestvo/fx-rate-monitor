@@ -26,7 +26,7 @@ type Fetcher interface {
 
 // httpFetcher is the production Fetcher implementation.
 // It is not tested directly against the network; coverage comes from integration
-// via cmd/sourceaudit.
+// via cmd/doctor audit.
 type httpFetcher struct {
 	client  *http.Client
 	timeout time.Duration
@@ -35,7 +35,7 @@ type httpFetcher struct {
 var _ Fetcher = (*httpFetcher)(nil)
 
 // NewHTTPFetcher constructs an httpFetcher with the given per-request timeout.
-func NewHTTPFetcher(timeout time.Duration) *httpFetcher {
+func NewHTTPFetcher(timeout time.Duration) Fetcher {
 	return &httpFetcher{
 		client:  &http.Client{Timeout: timeout},
 		timeout: timeout,

@@ -63,7 +63,7 @@ var (
 )
 
 // stderrLogger is the package-level logger that writes to stderr.
-// cmd/sourceaudit prints its report to stdout; mixing channels there would
+// cmd/doctor audit prints its report to stdout; mixing channels there would
 // corrupt machine-readable output.
 var stderrLogger = log.New(os.Stderr, "", 0)
 

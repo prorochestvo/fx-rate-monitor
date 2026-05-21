@@ -11,7 +11,7 @@ TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 BUILD_OPTIONS := "-s -w -X main.BuildVersion=${BRANCH} -X main.BuildTime=${TIME} -X main.BuildHash=${BUILD}"
 
-.PHONY: all claude_task claude_evaluates_project claude_auto_fix_tests run build build-collector build-notifier build-web build-wasm build-migrator migrate test test-wasm lint format audit swagger clean deploy_environment
+.PHONY: all claude_task claude_evaluates_project claude_auto_fix_tests run build build-collector build-notifier build-web build-wasm build-migrator migrate test test-wasm lint format audit audit-help doctor-help swagger clean deploy_environment
 
 
 deploy_environment:
@@ -93,11 +93,15 @@ build:
 	CGO_ENABLED=0 go build -o ./build/notifier   -ldflags ${BUILD_OPTIONS} ./cmd/notifier/main.go
 	CGO_ENABLED=0 go build -o ./build/migrator   -ldflags ${BUILD_OPTIONS} ./cmd/migrator
 	CGO_ENABLED=0 go build -o ./build/web        -ldflags ${BUILD_OPTIONS} ./cmd/web
-	CGO_ENABLED=0 go build -o ./build/rulegen    -ldflags ${BUILD_OPTIONS} ./cmd/rulegen
+	CGO_ENABLED=0 go build -o ./build/doctor     -ldflags ${BUILD_OPTIONS} ./cmd/doctor
 
-## rulegen-help: print rulegen usage and flags
-rulegen-help: build
-	./build/rulegen --help 2>&1 || true
+## doctor-help: print doctor combined usage and subcommand descriptions
+doctor-help: build
+	./build/doctor --help 2>&1 || true
+
+## audit-help: print doctor audit usage and exit codes
+audit-help: build
+	./build/doctor audit --help 2>&1 || true
 
 
 
@@ -121,9 +125,10 @@ test-wasm:
 lint: format
 	CGO_ENABLED=0 go vet ./...
 
-## audit: probe every seeded rate source against its live page; exits non-zero on any MISS (add -- -v for per-source table)
-audit:
-	CGO_ENABLED=0 go run ./cmd/sourceaudit $(ARGS)
+## audit: probe seeded rate sources; default audits all sources; override with ARGS="--source halyk_usd" (exits non-zero on any MISS)
+ARGS ?= --all
+audit: build
+	./build/doctor audit $(ARGS)
 
 ## swagger: regenerate Swagger/OpenAPI documentation
 swagger:
@@ -140,6 +145,9 @@ format:
 ## clean:
 clean:
 	rm -f ./build/monitor ./build/collector ./build/notifier ./build/migrator ./build/web ./build/monitor.db
+	rm -f ./build/doctor
+	# transitional: stale pre-merge binary, drop after one release cycle
+	rm -f ./build/rulegen
 	rm -f ./cmd/web/static/app.wasm ./cmd/web/static/wasm_exec.js
 	rm -rf ./build/static
 	go mod tidy

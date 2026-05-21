@@ -15,7 +15,7 @@ import (
 // rulegen.Fetcher interface.
 //
 // Lifecycle: each Fetch call spawns a fresh browser. This is intentional for
-// the cmd/rulegen single-source-per-invocation use case. When cmd/collector
+// the cmd/doctor rulegen single-source-per-invocation use case. When cmd/collector
 // integrates the fetcher (future plan), reuse a long-lived allocator via a
 // browser pool.
 type ChromedpFetcher struct {

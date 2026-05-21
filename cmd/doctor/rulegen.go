@@ -1,24 +1,28 @@
-// Command rulegen generates an extraction rule for a named rate source by asking
-// an LLM, validating the rule against the live source URL, and persisting the
-// result to the SQLite database.
+package main
+
+// runRulegen implements the "doctor rulegen" subcommand. It generates or
+// regenerates an extraction rule for a named rate source by asking an LLM,
+// validating the rule against the live source URL, and persisting the result to
+// the SQLite database.
 //
-// Usage:
+// Flag surface:
 //
-//	rulegen <source-name> [flags]
-//	rulegen --all [flags]
-//
-// Single-source mode requires exactly one positional argument (the source name).
-// --all mode iterates every active row in rate_sources; it is mutually exclusive
-// with a positional source-name argument.
-//
-// Flags:
-//
+//	<source-name>              positional argument (single-source mode)
 //	--all                      iterate every active source (cron mode)
-//	--force-fallback           skip primary, go straight to fallback
+//	--force-fallback           skip primary, go straight to fallback AI
 //	--max-primary-attempts N   max primary attempts before escalation (default 3)
 //	--max-fallback-attempts N  max fallback attempts before total failure (default 2)
-//	--logs-dir DIR             path to logs directory
+//	--logs-dir DIR             path to logs directory (default: os.TempDir()/logs)
 //	--verbosity LEVEL          minimum log level (debug|info|warning|error|severe|critical)
+//
+// Environment variables:
+//
+//	SQLITEDB_DSN      (required) SQLite connection string
+//	AI_PRIMARY_DSN    (required) primary AI provider DSN
+//	AI_FALLBACK_DSN   (optional) fallback AI provider DSN; stub used when absent
+//	CHROMIUM_PATH     (optional) absolute path to Chromium binary;
+//	                  defaults to chromedp PATH lookup order:
+//	                  chromium, chromium-browser, google-chrome, chrome
 //
 // Exit codes (single-source mode):
 //
@@ -29,39 +33,22 @@
 //
 // Exit codes (--all mode):
 //
-//	0  normal completion — per-source failures are logged and counted but never escalated
-//	   as a non-zero exit. This mirrors the resilience pattern used by cmd/collector and
-//	   cmd/notifier (commit 3229715) so that cron does not page on transient LLM hiccups.
-//	   Check the summary line in stdout for succeeded/failed/skipped counts.
+//	0  normal completion — per-source failures are logged and counted but never escalated.
+//	   Check the "rulegen --all:" summary line in stdout for succeeded/failed/skipped counts.
 //	3  infrastructure error — DB unreachable, migrations not applied, or logger/AI client
-//	   init failure. Identical semantics to single-source mode exit code 3.
+//	   init failure.
 //
-// Environment variables:
-//
-//	SQLITEDB_DSN      (required) SQLite connection string
-//	AI_PRIMARY_DSN    (required) primary AI provider DSN
-//	AI_FALLBACK_DSN   (optional) fallback AI provider DSN; stub used when absent
-//	CHROMIUM_PATH     (optional) absolute path to Chromium/Chrome binary;
-//	                  defaults to chromedp PATH lookup (chromium, chromium-browser, google-chrome, chrome)
-//
-// Each invocation makes up to maxPrimaryAttempts + maxFallbackAttempts LLM calls per
-// source. With many active sources, --all can make dozens of LLM calls in a single
-// run. Ensure your provider account has sufficient budget, and set a generous cron
-// timeout (at least 30 minutes for a typical deployment with ~10 active sources).
-//
-// When using a stub fallback (no AI_FALLBACK_DSN), metadata.Model will record "stub".
-// This is intentional — it makes stub-generated rules trivially greppable in the DB.
-package main
+// Note: the summary line prefix is the literal string "rulegen --all:" (not
+// "doctor rulegen --all:") to preserve compatibility with external grep patterns
+// and existing runall_test.go assertions. See Trade-off 4 in the plan.
 
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"path"
 	"time"
 
 	"github.com/prorochestvo/dsninjector"
@@ -75,40 +62,23 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-var (
-	// BuildVersion is the application version string, injected at link time via -ldflags.
-	BuildVersion = "dev"
-	// BuildTime is the build timestamp, injected at link time via -ldflags.
-	BuildTime = "unknown"
-	// BuildHash is the VCS commit hash, injected at link time via -ldflags.
-	BuildHash = "undefined"
-	// LogsDir is the directory where log files are written.
-	LogsDir = path.Join(os.TempDir(), "logs")
-	// LogVerbosity controls the minimum log level emitted by the logger.
-	LogVerbosity = internal.LogLevelWarning
-)
-
 const (
 	envDsnSqliteDB   = "SQLITEDB_DSN"
 	envDsnAIPrimary  = "AI_PRIMARY_DSN"
 	envDsnAIFallback = "AI_FALLBACK_DSN"
-	// envChromiumPath is an optional absolute path to the Chromium/Chrome binary.
+	// envChromiumPath is the optional absolute path to the Chromium/Chrome binary.
 	// When unset, chromedp falls back to its own PATH lookup order:
 	// chromium, chromium-browser, google-chrome, chrome.
 	envChromiumPath = "CHROMIUM_PATH"
 )
 
-func main() {
-	os.Exit(run())
-}
-
-// rateSourceLister is the narrow read-side surface cmd/rulegen needs.
+// rateSourceLister is the narrow read-side interface runAll needs.
 // Defined locally so tests can fake it without depending on the concrete repository.
 type rateSourceLister interface {
 	ObtainAllRateSources(ctx context.Context) ([]domain.RateSource, error)
 }
 
-// ruleGenerator is the narrow generate surface cmd/rulegen needs.
+// ruleGenerator is the narrow generate interface runAll needs.
 // Defined locally so tests can fake it without rebuilding the full dependency graph.
 type ruleGenerator interface {
 	Generate(ctx context.Context, sourceName string, forceFallback bool) (*rulegen.Result, error)
@@ -162,55 +132,81 @@ func runAll(ctx context.Context, gen ruleGenerator, srcs rateSourceLister, force
 	return 0
 }
 
-func run() int {
-	allSources := flag.Bool("all", false, "iterate every active source (cron mode; always exits 0)")
-	forceFallback := flag.Bool("force-fallback", false, "skip primary, go straight to fallback")
-	maxPrimary := flag.Int("max-primary-attempts", 3, "max primary attempts before escalation")
-	maxFallback := flag.Int("max-fallback-attempts", 2, "max fallback attempts before total failure")
-	logsDir := flag.String("logs-dir", LogsDir, "path to logs directory")
-	verbosity := flag.String("verbosity", "warning", "minimum stdout log level (debug, info, warning, error, severe, critical)")
-	flag.Parse()
+// runRulegen is the entry point for the "doctor rulegen" subcommand.
+func runRulegen(args []string, out, errOut io.Writer) int {
+	var (
+		allSources    bool
+		forceFallback bool
+		maxPrimary    int
+		maxFallback   int
+		logsDir       string
+		verbosity     string
+	)
 
-	args := flag.Args()
+	fset := newFlagSet("rulegen", errOut)
+	fset.BoolVar(&allSources, "all", false, "iterate every active source (cron mode; always exits 0)")
+	fset.BoolVar(&forceFallback, "force-fallback", false, "skip primary, go straight to fallback")
+	fset.IntVar(&maxPrimary, "max-primary-attempts", 3, "max primary attempts before escalation")
+	fset.IntVar(&maxFallback, "max-fallback-attempts", 2, "max fallback attempts before total failure")
+	fset.StringVar(&logsDir, "logs-dir", LogsDir, "path to logs directory")
+	fset.StringVar(&verbosity, "verbosity", "warning", "minimum stdout log level (debug, info, warning, error, severe, critical)")
+	// Suppress the FlagSet's built-in usage output so we can route help to out
+	// (not errOut) and avoid printing twice.
+	fset.Usage = func() {}
 
-	if *allSources && len(args) > 0 {
-		fmt.Fprintln(os.Stderr, "usage error: --all and a positional source name are mutually exclusive")
-		fmt.Fprintln(os.Stderr, "")
-		flag.PrintDefaults()
+	if err := fset.Parse(args); err != nil {
+		if isHelpErr(err) {
+			printRulegenUsage(out)
+			return 0
+		}
+		fmt.Fprintf(errOut, "Run \"doctor rulegen --help\" for usage.\n")
 		return 2
 	}
 
-	if !*allSources && len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: rulegen <source-name> [flags]")
-		fmt.Fprintln(os.Stderr, "       rulegen --all [flags]")
-		fmt.Fprintln(os.Stderr, "")
-		flag.PrintDefaults()
+	positional := fset.Args()
+
+	if allSources && len(positional) > 0 {
+		fmt.Fprintln(errOut, "usage error: --all and a positional source name are mutually exclusive")
+		fmt.Fprintln(errOut, "")
+		fset.PrintDefaults()
 		return 2
 	}
 
-	if dir := *logsDir; dir != "" {
-		LogsDir = dir
-	}
-	if v := *verbosity; v != "" {
-		LogVerbosity = internal.ParseLogLevel(v)
+	if !allSources && len(positional) != 1 {
+		fmt.Fprintln(errOut, "usage: doctor rulegen <source-name> [flags]")
+		fmt.Fprintln(errOut, "       doctor rulegen --all [flags]")
+		fmt.Fprintln(errOut, "")
+		fset.PrintDefaults()
+		return 2
 	}
 
-	// infraFail prints an infrastructure FAIL line to stderr.
+	resolvedLogsDir := LogsDir
+	if logsDir != "" {
+		resolvedLogsDir = logsDir
+	}
+	resolvedVerbosity := LogVerbosity
+	if verbosity != "" {
+		resolvedVerbosity = internal.ParseLogLevel(verbosity)
+	}
+
+	// infraFail prints an infrastructure FAIL line to errOut.
 	// In --all mode it uses "mode=--all" so the key is not mistaken for a source name.
 	// In single-source mode it uses "source=<name>".
 	var infraFail func(format string, args ...any)
-	if *allSources {
-		infraFail = func(format string, args ...any) {
-			fmt.Fprintf(os.Stderr, "FAIL mode=--all reason="+format+"\n", args...)
+	if allSources {
+		infraFail = func(format string, a ...any) {
+			reason := fmt.Sprintf(format, a...)
+			fmt.Fprintf(errOut, "FAIL mode=--all reason=%s\n", reason)
 		}
 	} else {
-		sourceName := args[0]
-		infraFail = func(format string, args ...any) {
-			fmt.Fprintf(os.Stderr, "FAIL source="+sourceName+" reason="+format+"\n", args...)
+		sourceName := positional[0]
+		infraFail = func(format string, a ...any) {
+			reason := fmt.Sprintf(format, a...)
+			fmt.Fprintf(errOut, "FAIL source=%s reason=%s\n", sourceName, reason)
 		}
 	}
 
-	l, err := internal.NewLogger(LogsDir, "rulegen", LogVerbosity)
+	l, err := internal.NewLogger(resolvedLogsDir, "doctor", resolvedVerbosity)
 	if err != nil {
 		infraFail("logger init: %v", err)
 		return 3
@@ -293,8 +289,8 @@ func run() int {
 		chromedpFor,
 		rulegen.NewRuleExecutor(),
 		rRateSource,
-		*maxPrimary,
-		*maxFallback,
+		maxPrimary,
+		maxFallback,
 		l.WriterAs(internal.LogLevelInfo),
 	)
 	if err != nil {
@@ -302,21 +298,21 @@ func run() int {
 		return 3
 	}
 
-	if *allSources {
-		return runAll(context.Background(), gen, rRateSource, *forceFallback, os.Stdout, os.Stderr)
+	if allSources {
+		return runAll(context.Background(), gen, rRateSource, forceFallback, out, errOut)
 	}
 
-	sourceName := args[0]
-	res, err := gen.Generate(context.Background(), sourceName, *forceFallback)
+	sourceName := positional[0]
+	res, err := gen.Generate(context.Background(), sourceName, forceFallback)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL source=%s reason=%v\n", sourceName, err)
+		fmt.Fprintf(errOut, "FAIL source=%s reason=%v\n", sourceName, err)
 		if errors.Is(err, rulegen.ErrUnsupportedFetcherKind) {
 			return 2
 		}
 		return 1
 	}
 
-	fmt.Printf("OK source=%s rules=%d value=%g attempts=%d escalated=%t provider=%s model=%s\n",
+	fmt.Fprintf(out, "OK source=%s rules=%d value=%g attempts=%d escalated=%t provider=%s model=%s\n",
 		sourceName,
 		len(res.Rules),
 		res.Value,
@@ -340,4 +336,37 @@ func (a *sourceAuditFetcherAdapter) Fetch(ctx context.Context, url string) ([]by
 		return nil, err
 	}
 	return result.Body, nil
+}
+
+func printRulegenUsage(w io.Writer) {
+	fmt.Fprintln(w, `Usage:
+  doctor rulegen <source-name> [flags]
+  doctor rulegen --all [flags]
+
+Generates or regenerates an extraction rule for a rate source using an LLM,
+validates the rule against the live URL, and persists it to the database.
+
+Flags:
+  --all                      iterate every active source (cron mode; always exits 0)
+  --force-fallback           skip primary, go straight to fallback AI
+  --max-primary-attempts N   max primary attempts before escalation (default 3)
+  --max-fallback-attempts N  max fallback attempts before total failure (default 2)
+  --logs-dir DIR             path to logs directory
+  --verbosity LEVEL          minimum log level (debug|info|warning|error|severe|critical)
+
+Environment variables:
+  SQLITEDB_DSN    (required) SQLite connection string
+  AI_PRIMARY_DSN  (required) primary AI provider DSN
+  AI_FALLBACK_DSN (optional) fallback AI provider DSN; stub used when absent
+  CHROMIUM_PATH   (optional) absolute path to Chromium binary
+
+Exit codes (single-source mode):
+  0  success — rule generated and persisted
+  1  generation failed
+  2  usage error
+  3  infrastructure error
+
+Exit codes (--all mode):
+  0  normal completion (check "rulegen --all:" summary line for counts)
+  3  infrastructure error`)
 }

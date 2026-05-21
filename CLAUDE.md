@@ -84,9 +84,14 @@ common layered Go layout — keep, edit, or remove rows as needed.
 - `GET /api/me/subscriptions` — caller's own subscriptions enriched with latest rate values; authenticated via Telegram WebApp initData HMAC (`X-Telegram-Init-Data` header or `?initData=` query string fallback)
 - `GET /app/subscriptions.html` — Telegram Mini App HTML page (served by embedded static file server; no dedicated route needed)
 
-> Rule (re-)generation is no longer an HTTP endpoint. Use `cmd/rulegen <source>` or
-> `cmd/rulegen --all` (intended for operator-managed cron). See `cmd/rulegen/main.go`
-> godoc for usage and exit codes.
+> Rule (re-)generation and seed auditing are operator-only tools, invoked
+> via the umbrella binary `cmd/doctor`:
+>   doctor rulegen <source>              # single-source mode
+>   doctor rulegen --all                 # batch mode (intended for cron)
+>   doctor audit --all                   # probe all seeded sources
+>   doctor audit --source <name>         # probe one source
+> See `cmd/doctor/README.md` and `cmd/doctor/main.go` godoc for usage,
+> exit codes, and environment variables.
 
 ### Database
 

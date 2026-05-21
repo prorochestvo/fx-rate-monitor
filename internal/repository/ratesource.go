@@ -119,7 +119,7 @@ func (r *RateSourceRepository) RetainRateSource(ctx context.Context, record *dom
 	case "", "plain":
 		record.FetcherKind = "plain"
 	case "chromedp":
-		// allowed; routes to ChromedpFetcher in cmd/rulegen — not used by
+		// allowed; routes to ChromedpFetcher in cmd/doctor rulegen — not used by
 		// cmd/collector or cmd/web which do not perform fetching.
 	default:
 		return fmt.Errorf("rate source %q: unsupported fetcher_kind %q (allowed: plain, chromedp)",
@@ -291,7 +291,7 @@ const (
 	rateSourceActiveFieldName        = "active"
 	// rateSourceFetcherKindFieldName identifies the fetch mechanism for the source.
 	// Allowed values: "plain" (default plain HTTP fetch), "chromedp" (headless
-	// Chrome via DevTools Protocol — handled by ChromedpFetcher in cmd/rulegen).
+	// Chrome via DevTools Protocol — handled by ChromedpFetcher in cmd/doctor rulegen).
 	rateSourceFetcherKindFieldName  = "fetcher_kind"
 	rateSourceOptionsFieldName      = "options"
 	rateSourceRulesFieldName        = "rules"

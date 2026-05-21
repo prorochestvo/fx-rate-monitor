@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -173,6 +174,10 @@ func (g *Generator) Generate(ctx context.Context, sourceName string, forceFallba
 			"rulegen: source %q has unknown fetcher_kind=%q (allowed: plain, chromedp): %w",
 			sourceName, src.FetcherKind, ErrUnsupportedFetcherKind,
 		)
+	}
+
+	if err := validateSourceURL(src.URL); err != nil {
+		return nil, fmt.Errorf("rulegen: source %q: %w", sourceName, err)
 	}
 
 	rawBody, err := activeFetcher.Fetch(ctx, src.URL)
@@ -482,4 +487,23 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "…"
+}
+
+// validateSourceURL rejects any URL whose scheme is not http or https. It
+// prevents SSRF when the source URL originates from the database. Empty or
+// malformed URLs are also rejected.
+func validateSourceURL(rawURL string) error {
+	if rawURL == "" {
+		return fmt.Errorf("source URL must not be empty")
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		return nil
+	default:
+		return fmt.Errorf("URL scheme %q is not allowed (only http/https)", u.Scheme)
+	}
 }

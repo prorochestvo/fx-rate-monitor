@@ -18,7 +18,7 @@ import (
 var _ Fetcher = (*ChromedpFetcher)(nil)
 
 // findChromiumOrSkip looks for a Chromium/Chrome binary in the locations
-// chromedp checks, plus CHROMIUM_PATH from the environment used by cmd/rulegen.
+// chromedp checks, plus CHROMIUM_PATH from the environment used by cmd/doctor rulegen.
 // The test is skipped cleanly if no binary is found — CI runners without
 // Chromium must not fail, only skip.
 func findChromiumOrSkip(t *testing.T) string {

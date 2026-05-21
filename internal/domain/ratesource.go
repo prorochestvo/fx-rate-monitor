@@ -18,7 +18,7 @@ type RateSource struct {
 }
 
 // RateSourceRuleMetadata records how the extraction rule was produced.
-// Fields are empty for hand-seeded rules; populated by cmd/rulegen for
+// Fields are empty for hand-seeded rules; populated by cmd/doctor rulegen for
 // LLM-generated rules.
 type RateSourceRuleMetadata struct {
 	Provider     string `json:"provider,omitempty"`

@@ -763,3 +763,52 @@ func TestTruncate(t *testing.T) {
 		assert.True(t, strings.HasSuffix(result, "…"))
 	})
 }
+
+func TestValidateSourceURL(t *testing.T) {
+	t.Parallel()
+
+	t.Run("https URL is accepted", func(t *testing.T) {
+		t.Parallel()
+		assert.NoError(t, validateSourceURL("https://example.com/rates"))
+	})
+
+	t.Run("http URL is accepted", func(t *testing.T) {
+		t.Parallel()
+		assert.NoError(t, validateSourceURL("http://example.com/rates"))
+	})
+
+	t.Run("file scheme is rejected", func(t *testing.T) {
+		t.Parallel()
+		err := validateSourceURL("file:///etc/passwd")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not allowed")
+	})
+
+	t.Run("gopher scheme is rejected", func(t *testing.T) {
+		t.Parallel()
+		err := validateSourceURL("gopher://example.com/")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not allowed")
+	})
+
+	t.Run("javascript scheme is rejected", func(t *testing.T) {
+		t.Parallel()
+		err := validateSourceURL("javascript:alert(1)")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not allowed")
+	})
+
+	t.Run("empty string is rejected", func(t *testing.T) {
+		t.Parallel()
+		err := validateSourceURL("")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must not be empty")
+	})
+
+	t.Run("scheme-only URL is rejected", func(t *testing.T) {
+		t.Parallel()
+		err := validateSourceURL("ftp://")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not allowed")
+	})
+}
