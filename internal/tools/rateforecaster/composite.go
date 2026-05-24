@@ -8,13 +8,8 @@ import (
 	"github.com/seilbekskindirov/monitor/internal/domain"
 )
 
-// CompositeForecaster averages the predictions of multiple Forecaster implementations.
-// It requires at least one delegate to succeed; if all fail with ErrInsufficientData
-// the error is propagated. Other errors from individual delegates are discarded with
-// a logged warning so that partial results are still useful.
-type CompositeForecaster struct {
-	delegates []Forecaster
-}
+// Ensure interface is satisfied at compile time.
+var _ Forecaster = (*CompositeForecaster)(nil)
 
 // NewCompositeForecaster constructs a CompositeForecaster from the provided delegates.
 // Returns an error if no delegates are provided.
@@ -23,6 +18,14 @@ func NewCompositeForecaster(delegates ...Forecaster) (*CompositeForecaster, erro
 		return nil, errors.New("rateforecaster: CompositeForecaster requires at least one delegate")
 	}
 	return &CompositeForecaster{delegates: delegates}, nil
+}
+
+// CompositeForecaster averages the predictions of multiple Forecaster implementations.
+// It requires at least one delegate to succeed; if all fail with ErrInsufficientData
+// the error is propagated. Other errors from individual delegates are discarded with
+// a logged warning so that partial results are still useful.
+type CompositeForecaster struct {
+	delegates []Forecaster
 }
 
 // Forecast returns the average of all successful delegate predictions.
@@ -57,6 +60,3 @@ func (c *CompositeForecaster) Forecast(ctx context.Context, rates []*domain.Rate
 		DataPoints:     totalDataPoints / count, // average data points used across delegates
 	}, nil
 }
-
-// Ensure interface is satisfied at compile time.
-var _ Forecaster = (*CompositeForecaster)(nil)

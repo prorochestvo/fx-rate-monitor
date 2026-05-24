@@ -2,143 +2,221 @@ package notification
 
 import (
 	"fmt"
+	"html"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
-	"github.com/seilbekskindirov/monitor/internal/application/labelfmt"
 	"github.com/seilbekskindirov/monitor/internal/domain"
+	"github.com/seilbekskindirov/monitor/internal/tools/labelfmt"
 )
 
+const (
+	telegramMaxMessageLen = 2048
+
+	// badgeIconDelta is the badge glyph for delta-triggered alerts.
+	badgeIconDelta = "Δ" // U+0394
+
+	// badgeIconSchedule is the badge glyph for any time-based condition
+	// (interval, daily, cron) that fired in a message part.
+	badgeIconSchedule = "⏰" // U+23F0
+
+	// arrowUp is the in-table arrow for a positive delta. ASCII-range compatible
+	// with <pre> rendering; replaces the old wide emoji.
+	arrowUp = "↑" // U+2191
+
+	// arrowDown is the in-table arrow for a negative delta.
+	arrowDown = "↓" // U+2193
+
+	// minusSign is the U+2212 MINUS SIGN used in the delta and value columns so
+	// it lines up visually with the ASCII '+' used for positive values.
+	minusSign = "−" // U+2212
+)
+
+// alert carries the data for one row in the notification table.
+// BaseCurrency and QuoteCurrency are passed through html.EscapeString in pairLabel
+// before insertion into the HTML <pre> block, so free-text or odd source codes
+// cannot break or inject HTML.
 type alert struct {
-	UserID         string
-	SourceName     string
-	SourceTitle    string                // human-readable source name, e.g. "National Bank of Kazakhstan"
-	BaseCurrency   string                // e.g. "USD"
-	QuoteCurrency  string                // e.g. "KZT"
-	CurrencyKind   domain.RateSourceKind // e.g. BID, ASK
-	CurrentPrice   float64               // newest price, e.g. 470.46
-	Delta          float64               // signed delta: positive = up, negative = down
-	ForecastPrice  float64               //
-	ForecastMethod string                //
-	Timestamp      time.Time             // timestamp of the newest rate record
-	Triggers       []alertTrigger        // ordered: delta, interval, daily, cron
+	SourceName    string
+	BaseCurrency  string                // e.g. "USD"
+	QuoteCurrency string                // e.g. "KZT"
+	CurrencyKind  domain.RateSourceKind // BID or ASK
+	CurrentPrice  float64               // newest price, e.g. 470.46
+	Delta         float64               // signed delta: positive = up, negative = down
+	Triggers      []alertTrigger        // ordered: delta, interval, daily, cron
 }
 
+// alertTrigger records which condition type (and its collapsed value) caused a
+// notification to fire.
 type alertTrigger struct {
 	ConditionType  domain.SubscriptionConditionType
 	ConditionValue string
 }
 
-// https://apps.timwhitlock.info/emoji/tables/unicode
-const (
-	telegramBotArrowUp   string = "🔼"
-	telegramBotArrowDown string = "🔽"
-	telegramBotForecast  string = "✨"
-
-	telegramMaxMessageLen = 2048
-
-	triggerIconDelta    = "Δ" // U+0394
-	triggerIconInterval = "⏱" // U+23F1
-	triggerIconDaily    = "⌚" // U+231A
-	triggerIconCron     = "⏲" // U+23F2
-)
-
-// triggerLabel returns the compact inline-bullet label for a single trigger.
-// Returns empty string for unknown condition types — callers must filter these out.
-func triggerLabel(condType domain.SubscriptionConditionType, condValue string) string {
-	switch condType {
-	case domain.ConditionTypeDelta:
-		return fmt.Sprintf("%s ≥%s%%", triggerIconDelta, condValue)
-	case domain.ConditionTypeInterval:
-		return fmt.Sprintf("%s %s", triggerIconInterval, labelfmt.IntervalLabel(condValue))
-	case domain.ConditionTypeDaily:
-		v := condValue
-		if len(v) >= 5 {
-			v = v[:5]
-		}
-		return fmt.Sprintf("%s %s", triggerIconDaily, v)
-	case domain.ConditionTypeCron:
-		name := labelfmt.CronWeekdayLabel(condValue)
-		if len(name) >= 3 {
-			name = name[:3]
-		}
-		return fmt.Sprintf("%s %s", triggerIconCron, name)
-	default:
-		return ""
+// buildAlertMessage renders alerts into one or more Telegram HTML message parts.
+// now is the run timestamp, used verbatim in the header — the function never
+// reads time.Now() itself (project preference: clock is injected, not read).
+// Returns an empty slice when alerts is empty.
+func buildAlertMessage(now time.Time, alerts ...alert) ([]string, error) {
+	if len(alerts) == 0 {
+		return nil, nil
 	}
-}
 
-// buildAlertMessage renders alerts into the builder as a single HTML Telegram message.
-func buildAlertMessage(alerts ...alert) ([]string, error) {
 	sort.Slice(alerts, func(i, j int) bool {
-		if alerts[i].SourceTitle == alerts[j].SourceTitle {
-			if alerts[i].BaseCurrency == alerts[j].BaseCurrency {
-				return alerts[i].QuoteCurrency < alerts[j].QuoteCurrency
-			}
-			return alerts[i].BaseCurrency < alerts[j].BaseCurrency
-		}
-		return alerts[i].SourceTitle < alerts[j].SourceTitle
+		pi := pairLabel(alerts[i])
+		pj := pairLabel(alerts[j])
+		return pi < pj
 	})
 
-	rates := make(map[string][]string, len(alerts))
-	for _, alertItem := range alerts {
-		key := strings.TrimSpace(alertItem.SourceTitle)
-		currency := "%s/%s"
-		if alertItem.CurrencyKind == domain.RateSourceKindBID {
-			currency = fmt.Sprintf(currency, alertItem.BaseCurrency, alertItem.QuoteCurrency)
-		} else {
-			currency = fmt.Sprintf(currency, alertItem.QuoteCurrency, alertItem.BaseCurrency)
+	rows := buildRows(alerts)
+	return splitIntoParts(now, rows, alerts), nil
+}
+
+// pairLabel returns the display pair string for a row (BID → base/quote, ASK → quote/base).
+// Each currency code is HTML-escaped so that future free-text or odd source codes cannot
+// break or inject HTML into the <pre> block. Current ASCII codes are unaffected.
+func pairLabel(a alert) string {
+	base := html.EscapeString(a.BaseCurrency)
+	quote := html.EscapeString(a.QuoteCurrency)
+	if a.CurrencyKind == domain.RateSourceKindBID {
+		return fmt.Sprintf("%s/%s", base, quote)
+	}
+	return fmt.Sprintf("%s/%s", quote, base)
+}
+
+// tableRow holds pre-rendered column strings for one alert row.
+type tableRow struct {
+	pair  string // e.g. "USD/KZT" or "KZT/USD"
+	value string // e.g. "68 382.56"
+	delta string // e.g. "+2.60" or "−74.79", or "" when suppressed
+	arrow string // "↑", "↓", or "" when suppressed
+}
+
+// buildRows renders alerts into tableRow values, applying the first-fire guard
+// (Delta == 0 || Delta == CurrentPrice → blank delta+arrow cells).
+func buildRows(alerts []alert) []tableRow {
+	rows := make([]tableRow, len(alerts))
+	for i, a := range alerts {
+		row := tableRow{
+			pair:  pairLabel(a),
+			value: labelfmt.GroupThousands(a.CurrentPrice),
 		}
-		val := fmt.Sprintf(" • <b>%s</b>: %.2f", currency, alertItem.CurrentPrice)
-		if alertItem.Delta != 0 && alertItem.Delta != alertItem.CurrentPrice {
-			arrow := telegramBotArrowUp
-			if alertItem.Delta < 0 {
-				arrow = telegramBotArrowDown
+		if a.Delta != 0 && a.Delta != a.CurrentPrice {
+			if a.Delta > 0 {
+				row.delta = fmt.Sprintf("+%s", labelfmt.GroupThousands(a.Delta))
+				row.arrow = arrowUp
+			} else {
+				row.delta = fmt.Sprintf("%s%s", minusSign, labelfmt.GroupThousands(-a.Delta))
+				row.arrow = arrowDown
 			}
-			val += fmt.Sprintf(" (%.2f %s)", alertItem.Delta, arrow)
 		}
-		if alertItem.ForecastMethod != "" && alertItem.ForecastPrice != 0.0 {
-			val += fmt.Sprintf(" | %s %.2f <i>%s</i>", telegramBotForecast, alertItem.ForecastPrice, alertItem.ForecastMethod)
+		rows[i] = row
+	}
+	return rows
+}
+
+// renderBlock formats a slice of tableRow values into an aligned text block
+// ready to wrap in <pre>…</pre>. Column separator is 2 spaces. Widths are
+// computed by rune count (not bytes) so multibyte characters align correctly.
+// Trailing whitespace is trimmed from each line.
+func renderBlock(rows []tableRow) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	var pairW, valueW, deltaW int
+	for _, r := range rows {
+		if w := utf8.RuneCountInString(r.pair); w > pairW {
+			pairW = w
 		}
-		if len(alertItem.Triggers) > 0 {
-			labels := make([]string, 0, len(alertItem.Triggers))
-			for _, tr := range alertItem.Triggers {
-				if l := triggerLabel(tr.ConditionType, tr.ConditionValue); l != "" {
-					labels = append(labels, l)
-				}
+		if w := utf8.RuneCountInString(r.value); w > valueW {
+			valueW = w
+		}
+		if w := utf8.RuneCountInString(r.delta); w > deltaW {
+			deltaW = w
+		}
+	}
+
+	var sb strings.Builder
+	for _, r := range rows {
+		pairPad := pairW - utf8.RuneCountInString(r.pair)
+		valuePad := valueW - utf8.RuneCountInString(r.value)
+		deltaPad := deltaW - utf8.RuneCountInString(r.delta)
+
+		line := r.pair + strings.Repeat(" ", pairPad) +
+			"  " + strings.Repeat(" ", valuePad) + r.value +
+			"  " + strings.Repeat(" ", deltaPad) + r.delta +
+			" " + r.arrow
+		sb.WriteString(strings.TrimRight(line, " "))
+		sb.WriteByte('\n')
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// reasonBadge computes the header badge fragment for a set of alerts.
+// It returns a string such as "Δ ⏰ " (both), "Δ " (delta-only), "⏰ "
+// (schedule-only), or "" (none). The trailing space is included so callers
+// can concatenate directly with "🕒".
+func reasonBadge(partAlerts []alert) string {
+	var hasDelta, hasSched bool
+	for _, a := range partAlerts {
+		for _, tr := range a.Triggers {
+			switch tr.ConditionType {
+			case domain.ConditionTypeDelta:
+				hasDelta = true
+			case domain.ConditionTypeInterval, domain.ConditionTypeDaily, domain.ConditionTypeCron:
+				hasSched = true
 			}
-			if len(labels) > 0 {
-				val += " " + strings.Join(labels, " ")
+		}
+	}
+	var sb strings.Builder
+	if hasDelta {
+		sb.WriteString(badgeIconDelta)
+		sb.WriteByte(' ')
+	}
+	if hasSched {
+		sb.WriteString(badgeIconSchedule)
+		sb.WriteByte(' ')
+	}
+	return sb.String()
+}
+
+// headerLines returns the two header lines for a message part, using now as the
+// timestamp and the given alerts to compute the badge.
+func headerLines(now time.Time, partAlerts []alert) string {
+	ts := now.UTC().Format("Mon 2 Jan, 15:04 UTC")
+	badge := reasonBadge(partAlerts)
+	return "📊 FX rates\n" + badge + "🕒 " + ts
+}
+
+// splitIntoParts packs rows into message parts bounded by telegramMaxMessageLen,
+// re-emitting the header and a balanced <pre>…</pre> block per part.
+// Widths are recomputed per part so each part is tightly aligned.
+// A single row that would alone exceed the limit is still emitted as its own
+// part (Telegram will reject it, but the loop must not spin forever).
+func splitIntoParts(now time.Time, rows []tableRow, alerts []alert) []string {
+	var parts []string
+	start := 0
+
+	for start < len(rows) {
+		end := start + 1 // always include at least one row
+		for end < len(rows) {
+			candidate := buildPart(now, rows[start:end+1], alerts[start:end+1])
+			if len(candidate) > telegramMaxMessageLen {
+				break
 			}
+			end++
 		}
-		values := rates[key]
-		values = append(values, val)
-		rates[key] = values
+		parts = append(parts, buildPart(now, rows[start:end], alerts[start:end]))
+		start = end
 	}
+	return parts
+}
 
-	sources := make([]string, 0, len(rates))
-	for title, values := range rates {
-		sources = append(sources, fmt.Sprintf("%s:\n%s\n", title, strings.Join(values, "\n")))
-	}
-	sort.Strings(sources)
-
-	now := time.Now().UTC().Format(time.RFC850)
-
-	var buffer strings.Builder
-	messages := make([]string, 0, len(sources))
-	for _, message := range sources {
-		if l := buffer.Len() + len(message); l < telegramMaxMessageLen {
-			buffer.WriteString(message)
-			continue
-		}
-		messages = append(messages, fmt.Sprintf("#COLLECTOR %s\n%s", now, buffer.String()))
-		buffer.Reset()
-	}
-	if buffer.Len() > 0 {
-		messages = append(messages, fmt.Sprintf("#COLLECTOR %s\n%s", now, buffer.String()))
-		buffer.Reset()
-	}
-
-	return messages, nil
+// buildPart assembles one complete message part for the given row and alert slices.
+func buildPart(now time.Time, rows []tableRow, partAlerts []alert) string {
+	header := headerLines(now, partAlerts)
+	block := renderBlock(rows)
+	return header + "\n\n<pre>\n" + block + "\n</pre>"
 }

@@ -13,8 +13,7 @@ import (
 
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/repository"
-	"github.com/seilbekskindirov/monitor/pkg/api"
+	"github.com/seilbekskindirov/monitor/internal/dto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,6 +21,41 @@ import (
 var _ meSubscriptionRepository = (*mockMeSubRepo)(nil)
 var _ meSourceRepository = (*mockMeSourceRepo)(nil)
 var _ meRateValueRepository = (*mockMeRateValueRepo)(nil)
+var _ rateService = (*mockRateService)(nil)
+
+func TestHealthz(t *testing.T) {
+	t.Parallel()
+
+	t.Run("200 when service CheckUP succeeds", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockRateService{}
+		h, err := NewHandler(svc, "", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{})
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.Healthz(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.JSONEq(t, `{"status":"ok"}`, rr.Body.String())
+		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+	})
+
+	t.Run("503 when service CheckUP fails", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockRateService{err: errors.New("db unreachable")}
+		h, err := NewHandler(svc, "", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{})
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.Healthz(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+
+		require.Equal(t, http.StatusServiceUnavailable, rr.Code)
+		require.JSONEq(t, `{"status":"unavailable"}`, rr.Body.String())
+		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+	})
+}
 
 func TestListSources(t *testing.T) {
 	t.Parallel()
@@ -50,7 +84,7 @@ func TestListSources(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code)
 		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
 
-		var body []api.SourceResponse
+		var body []dto.SourceResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Len(t, body, 2)
 		require.Equal(t, "src1", body[0].Name)
@@ -68,7 +102,7 @@ func TestListSources(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rr.Code)
 
-		var body []api.SourceResponse
+		var body []dto.SourceResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Empty(t, body)
 	})
@@ -84,6 +118,30 @@ func TestListSources(t *testing.T) {
 		h.ListSources(rr, httptest.NewRequest(http.MethodGet, "/", nil))
 
 		require.Equal(t, http.StatusInternalServerError, rr.Code)
+	})
+
+	t.Run("200 with empty execution fields when bulk history fetch fails", func(t *testing.T) {
+		t.Parallel()
+
+		// Sources load succeeds; bulk history fetch fails. Handler must
+		// degrade gracefully — return 200 with sources, execution fields empty.
+		svc := &mockRateService{
+			sources:        []domain.RateSource{{Name: "src1"}, {Name: "src2"}},
+			historyBulkErr: errors.New("history unavailable"),
+		}
+		h, err := NewHandler(svc, "", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{})
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.ListSources(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		var body []dto.SourceResponse
+		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+		require.Len(t, body, 2)
+		for _, item := range body {
+			require.Empty(t, item.LastRunAt, "graceful degradation: no execution metadata when bulk fetch failed")
+		}
 	})
 }
 
@@ -110,7 +168,7 @@ func TestListRates(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code)
 		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
 
-		var body []api.RateResponse
+		var body []dto.RateResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Len(t, body, 2)
 	})
@@ -129,7 +187,7 @@ func TestListRates(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rr.Code)
 
-		var body []api.RateResponse
+		var body []dto.RateResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Empty(t, body)
 	})
@@ -186,7 +244,7 @@ func TestListHistory(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code)
 		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
 
-		var body []api.HistoryResponse
+		var body []dto.HistoryResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Len(t, body, 3)
 	})
@@ -229,7 +287,7 @@ func TestListNotifications(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code)
 		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
 
-		var body []api.NotificationResponse
+		var body []dto.NotificationResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Len(t, body, 2)
 		require.NotEmpty(t, body[0].ID)
@@ -272,7 +330,7 @@ func TestListFailedNotifications(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code)
 		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
 
-		var body []api.NotificationResponse
+		var body []dto.NotificationResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Len(t, body, 1)
 	})
@@ -324,7 +382,7 @@ func TestListPendingEvents(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rr.Code)
 
-		var body []api.NotificationResponse
+		var body []dto.NotificationResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Len(t, body, 1)
 		require.Empty(t, body[0].UserID, "user_id must be omitted")
@@ -364,7 +422,7 @@ func TestGetRatesChart(t *testing.T) {
 		t.Parallel()
 
 		svc := &mockRateService{
-			chartPoints: []repository.ChartPoint{
+			chartPoints: []domain.ChartPoint{
 				{Label: "2026-04-01", Price: 450.12},
 				{Label: "2026-04-02", Price: 451.00},
 			},
@@ -379,7 +437,7 @@ func TestGetRatesChart(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rr.Code)
 
-		var body []api.ChartPointResponse
+		var body []dto.ChartPointResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Len(t, body, 2)
 		require.Equal(t, "2026-04-01", body[0].Label)
@@ -435,7 +493,7 @@ func TestListSourceFailedEvents(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rr.Code)
 
-		var body []api.NotificationResponse
+		var body []dto.NotificationResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Len(t, body, 1)
 		require.Empty(t, body[0].UserID, "user_id must not be present")
@@ -496,7 +554,7 @@ func TestListSourceSubscriptions(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rr.Code)
 
-		var body []api.SubscriptionSummaryResponse
+		var body []dto.SubscriptionSummaryResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Len(t, body, 1)
 		require.Equal(t, "src1", body[0].SourceName)
@@ -605,7 +663,7 @@ func TestHandler_ListStats(t *testing.T) {
 	t.Run("200 with stats", func(t *testing.T) {
 		t.Parallel()
 
-		svc := &mockRateService{stats: repository.StatsResult{SourcesTotal: 5, SourcesActive: 3, ErrorsTotal: 7}}
+		svc := &mockRateService{stats: domain.StatsResult{SourcesTotal: 5, SourcesActive: 3, ErrorsTotal: 7}}
 		h, err := NewHandler(svc, "", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{})
 		require.NoError(t, err)
 
@@ -615,7 +673,7 @@ func TestHandler_ListStats(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code)
 		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
 
-		var body api.StatsResponse
+		var body dto.StatsResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Equal(t, int64(5), body.SourcesTotal)
 		require.Equal(t, int64(3), body.SourcesActive)
@@ -658,7 +716,7 @@ func TestHandler_ListSourceSubscriptionDetails(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code)
 		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
 
-		var body []api.SubscriptionDetailResponse
+		var body []dto.SubscriptionDetailResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Len(t, body, 2)
 		require.Equal(t, "sub1", body[0].ID)
@@ -714,7 +772,7 @@ func TestHandler_ListSourceDailyEvents(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code)
 		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
 
-		var body []api.DailyEventResponse
+		var body []dto.DailyEventResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Len(t, body, 2)
 		require.Equal(t, "2026-04-12", body[0].Date)
@@ -768,7 +826,7 @@ func TestHandler_ListExecutionErrors(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code)
 		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
 
-		var body []api.ExecutionErrorResponse
+		var body []dto.ExecutionErrorResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Len(t, body, 2)
 		require.Equal(t, "h1", body[0].ID)
@@ -787,7 +845,7 @@ func TestHandler_ListExecutionErrors(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rr.Code)
 
-		var body []api.ExecutionErrorResponse
+		var body []dto.ExecutionErrorResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Empty(t, body)
 	})
@@ -809,12 +867,20 @@ type mockRateService struct {
 	rates                 []domain.RateValue
 	historyItems          []domain.ExecutionHistory
 	events                []domain.RateUserEvent
-	chartPoints           []repository.ChartPoint
+	chartPoints           []domain.ChartPoint
 	subscriptionSummaries []domain.RateUserSubscriptionSummary
 	subscriptionDetails   []domain.RateUserSubscriptionDetail
 	dailySummaries        []domain.RateUserEventDailySummary
-	stats                 repository.StatsResult
+	stats                 domain.StatsResult
 	err                   error
+	// historyBulkErr lets a test fail the bulk execution-history call
+	// independently of other methods — needed to exercise ListSources'
+	// degradation path without making ObtainAllRateSources fail too.
+	historyBulkErr error
+}
+
+func (m *mockRateService) CheckUP(_ context.Context) error {
+	return m.err
 }
 
 func (m *mockRateService) ObtainAllRateSources(_ context.Context) ([]domain.RateSource, error) {
@@ -833,6 +899,26 @@ func (m *mockRateService) ObtainLastNExecutionHistoryBySourceName(_ context.Cont
 	return m.historyItems, m.err
 }
 
+func (m *mockRateService) ObtainLatestExecutionHistoryBySources(_ context.Context, names []string) (map[string]domain.ExecutionHistory, error) {
+	if m.historyBulkErr != nil {
+		return nil, m.historyBulkErr
+	}
+	if m.err != nil {
+		return nil, m.err
+	}
+	want := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		want[n] = struct{}{}
+	}
+	out := make(map[string]domain.ExecutionHistory, len(names))
+	for _, h := range m.historyItems {
+		if _, ok := want[h.SourceName]; ok {
+			out[h.SourceName] = h
+		}
+	}
+	return out, nil
+}
+
 func (m *mockRateService) ObtainLastSuccessNExecutionHistoryBySourceName(_ context.Context, _ string, _ int64) ([]domain.ExecutionHistory, error) {
 	return m.historyItems, m.err
 }
@@ -849,7 +935,7 @@ func (m *mockRateService) ObtainPendingRateUserEvents(_ context.Context) ([]doma
 	return m.events, m.err
 }
 
-func (m *mockRateService) ObtainRateValueChartBySourceName(_ context.Context, _ string, _ repository.ChartPeriod) ([]repository.ChartPoint, error) {
+func (m *mockRateService) ObtainRateValueChartBySourceName(_ context.Context, _ string, _ domain.ChartPeriod) ([]domain.ChartPoint, error) {
 	return m.chartPoints, m.err
 }
 
@@ -861,7 +947,7 @@ func (m *mockRateService) ObtainSubscriptionSummaryBySource(_ context.Context, _
 	return m.subscriptionSummaries, m.err
 }
 
-func (m *mockRateService) ObtainStats(_ context.Context) (repository.StatsResult, error) {
+func (m *mockRateService) ObtainStats(_ context.Context) (domain.StatsResult, error) {
 	return m.stats, m.err
 }
 
@@ -906,10 +992,36 @@ func (m *mockMeSourceRepo) ObtainRateSourceByName(_ context.Context, name string
 	return m.sources[name], nil
 }
 
+func (m *mockMeSourceRepo) ObtainRateSourcesByNames(_ context.Context, names []string) (map[string]domain.RateSource, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	out := make(map[string]domain.RateSource, len(names))
+	for _, n := range names {
+		if s, ok := m.sources[n]; ok && s != nil {
+			out[n] = *s
+		}
+	}
+	return out, nil
+}
+
 // mockMeRateValueRepo is a test double for meRateValueRepository.
 type mockMeRateValueRepo struct {
 	rates map[string][]domain.RateValue
 	err   error
+}
+
+func (m *mockMeRateValueRepo) ObtainLatestRateValuesBySourceNames(_ context.Context, names []string) (map[string]domain.RateValue, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	out := make(map[string]domain.RateValue, len(names))
+	for _, n := range names {
+		if rates, ok := m.rates[n]; ok && len(rates) > 0 {
+			out[n] = rates[0]
+		}
+	}
+	return out, nil
 }
 
 func (m *mockMeRateValueRepo) ObtainLastNRateValuesBySourceName(_ context.Context, name string, _ int64) ([]domain.RateValue, error) {
@@ -978,6 +1090,33 @@ func TestHandler_ListMeSubscriptions(t *testing.T) {
 		require.Equal(t, http.StatusUnauthorized, rr.Code)
 	})
 
+	t.Run("?initData= query string is not read (header-only auth)", func(t *testing.T) {
+		t.Parallel()
+
+		h, err := NewHandler(&mockRateService{}, "", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{})
+		require.NoError(t, err)
+		// Capture the initData the handler hands to the validator; with no
+		// header set, the handler must pass an empty string (NOT the URL value)
+		// so the HMAC token never leaks into access logs or Referer headers.
+		var seen string
+		h.validateInitData = func(initData, _ string, _ time.Duration, _ time.Time) (int64, error) {
+			seen = initData
+			if initData == "" {
+				return 0, errors.New("missing initData")
+			}
+			return callerUserID, nil
+		}
+
+		req := httptest.NewRequest(http.MethodGet,
+			"/api/me/subscriptions?initData=should_be_ignored", nil)
+		rr := httptest.NewRecorder()
+		h.ListMeSubscriptions(rr, req)
+
+		require.Equal(t, "", seen, "handler must not source initData from the URL query")
+		require.Equal(t, http.StatusUnauthorized, rr.Code)
+		require.Contains(t, rr.Body.String(), "unauthorized")
+	})
+
 	t.Run("happy path returns only caller's subscriptions", func(t *testing.T) {
 		t.Parallel()
 
@@ -1007,7 +1146,7 @@ func TestHandler_ListMeSubscriptions(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rr.Code)
 
-		var body api.MeSubscriptionsResponse
+		var body dto.MeSubscriptionsResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Equal(t, int64(1), body.Total)
 		require.Len(t, body.Items, 1)
@@ -1047,7 +1186,7 @@ func TestHandler_ListMeSubscriptions(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rr.Code)
 
-		var body api.MeSubscriptionsResponse
+		var body dto.MeSubscriptionsResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Equal(t, int64(1), body.Total)
 		require.Len(t, body.Items, 1)
@@ -1082,7 +1221,7 @@ func TestHandler_ListMeSubscriptions(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rr.Code)
 
-		var body api.MeSubscriptionsResponse
+		var body dto.MeSubscriptionsResponse
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Equal(t, int64(12), body.Total)
 		require.Len(t, body.Items, 2, "page 2 of 10-per-page with 12 items should return 2")

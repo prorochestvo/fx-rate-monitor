@@ -49,13 +49,44 @@ func NewRateAgent(
 
 // RateAgent fetches rates for all active sources that are due, persisting results
 // and execution history. It is designed to run to completion on each invocation.
+//
+// The chromedp slot uses a separate interface so a tick with multiple
+// chromedp-kind sources can share one Chromium subprocess (RunBatch), while
+// plain HTTP sources keep their per-source Run path.
 type RateAgent struct {
 	rateValueRepository        rateValueRepository
 	rateSourceRepository       rateSourceRepository
 	executionHistoryRepository executionHistoryRepository
 	plainExtractor             rateExtractor
-	chromedpExtractor          rateExtractor
+	chromedpExtractor          chromedpBatchExtractor
 	logger                     io.Writer
+}
+
+type rateExtractor interface {
+	Run(context.Context, *domain.RateSource) error
+}
+
+// chromedpBatchExtractor processes a slice of chromedp-kind sources under one
+// shared Chromium subprocess. Implementations must return one entry per source
+// keyed by source.Name; a nil or absent entry signals success. An empty batch
+// must be a fast no-op so plain-only ticks do not pay a Chromium cold-start.
+type chromedpBatchExtractor interface {
+	RunBatch(context.Context, []*domain.RateSource) map[string]error
+}
+
+type executionHistoryRepository interface {
+	RetainExecutionHistory(context.Context, *domain.ExecutionHistory) error
+	ObtainLastNExecutionHistoryBySourceName(context.Context, string, int64, bool) ([]domain.ExecutionHistory, error)
+}
+
+type rateSourceRepository interface {
+	ObtainRateSourceByName(context.Context, string) (*domain.RateSource, error)
+	ObtainAllRateSources(context.Context) ([]domain.RateSource, error)
+}
+
+type rateValueRepository interface {
+	ObtainLastNRateValuesBySourceName(context.Context, string, int64) ([]domain.RateValue, error)
+	RetainRateValue(context.Context, *domain.RateValue) error
 }
 
 // Run fetches all active, due rate sources and stores the results.
@@ -129,54 +160,60 @@ func (a *RateAgent) execution(ctx context.Context, sources []domain.RateSource) 
 	now := time.Now().UTC()
 	errs := make(map[string]error, len(sources))
 
+	// Partition sources by fetcher_kind so chromedp sources can share one
+	// Chromium subprocess via RunBatch. The execution_history persistence
+	// loop below preserves the original source order regardless of how the
+	// batch was partitioned.
+	sourceErrs := make(map[string]error, len(sources))
+	var chromedpBatch []*domain.RateSource
+	for i := range sources {
+		s := &sources[i]
+		switch s.FetcherKind {
+		case "", "plain":
+			sourceErrs[s.Name] = a.plainExtractor.Run(ctx, s)
+		case "chromedp":
+			chromedpBatch = append(chromedpBatch, s)
+		default:
+			err := fmt.Errorf("source %q: unsupported fetcher_kind %q", s.Name, s.FetcherKind)
+			sourceErrs[s.Name] = errors.Join(err, internal.NewTraceError())
+		}
+	}
+
+	// chromedp sources run as one batch under a shared allocator. Empty
+	// chromedpBatch is a fast no-op inside RunBatch — Chromium is never
+	// launched for plain-only ticks.
+	if len(chromedpBatch) > 0 {
+		batchResults := a.chromedpExtractor.RunBatch(ctx, chromedpBatch)
+		for _, s := range chromedpBatch {
+			sourceErrs[s.Name] = batchResults[s.Name]
+		}
+	}
+
+	// Persistence runs under context.Background() so SIGTERM (which cancels
+	// the agent's ctx) does not drop execution_history rows for sources that
+	// already finished fetching. The rows are small and idempotent-per-tick;
+	// dropping them would force the next tick to re-fetch every source that
+	// completed under the dying process (cron loses observability into what
+	// actually ran).
+	persistCtx := context.Background()
 	for _, source := range sources {
 		h := &domain.ExecutionHistory{
 			SourceName: source.Name,
 			Success:    true,
 			Timestamp:  now,
 		}
-
-		var err error
-		switch source.FetcherKind {
-		case "", "plain":
-			err = a.plainExtractor.Run(ctx, &source)
-		case "chromedp":
-			err = a.chromedpExtractor.Run(ctx, &source)
-		default:
-			err = fmt.Errorf("source %q: unsupported fetcher_kind %q", source.Name, source.FetcherKind)
-			err = errors.Join(err, internal.NewTraceError())
-		}
-
-		if err != nil {
+		runErr := sourceErrs[source.Name]
+		if runErr != nil {
 			h.Success = false
-			h.Error = errors.Join(err, internal.NewTraceError()).Error()
+			h.Error = errors.Join(runErr, internal.NewTraceError()).Error()
 		}
 
-		err = errors.Join(err, a.executionHistoryRepository.RetainExecutionHistory(ctx, h))
-		if err != nil {
-			err = errors.Join(err, internal.NewTraceError())
-			errs[source.Name] = errors.Join(errs[source.Name], err)
+		retainErr := a.executionHistoryRepository.RetainExecutionHistory(persistCtx, h)
+		combined := errors.Join(runErr, retainErr)
+		if combined != nil {
+			errs[source.Name] = errors.Join(errs[source.Name], errors.Join(combined, internal.NewTraceError()))
 		}
 	}
 
 	return errs
-}
-
-type rateExtractor interface {
-	Run(context.Context, *domain.RateSource) error
-}
-
-type executionHistoryRepository interface {
-	RetainExecutionHistory(context.Context, *domain.ExecutionHistory) error
-	ObtainLastNExecutionHistoryBySourceName(context.Context, string, int64, bool) ([]domain.ExecutionHistory, error)
-}
-
-type rateSourceRepository interface {
-	ObtainRateSourceByName(context.Context, string) (*domain.RateSource, error)
-	ObtainAllRateSources(context.Context) ([]domain.RateSource, error)
-}
-
-type rateValueRepository interface {
-	ObtainLastNRateValuesBySourceName(context.Context, string, int64) ([]domain.RateValue, error)
-	RetainRateValue(context.Context, *domain.RateValue) error
 }

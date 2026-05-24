@@ -40,6 +40,18 @@ type RateDispatchAgent struct {
 	ttl                     time.Duration
 }
 
+// rateUserEventRepository is the narrow storage interface required by this service.
+type rateUserEventRepository interface {
+	ObtainUnprocessedRateUserEvents(context.Context) ([]domain.RateUserEvent, error)
+	RetainRateUserEvent(context.Context, *domain.RateUserEvent) error
+	RemoveRateUserEventOlderThan(ctx context.Context, duration time.Duration) error
+}
+
+// telegramClient is the narrow Telegram transport interface required by this service.
+type telegramClient interface {
+	SendHTMLMessage(context.Context, integration.TelegramChatID, string) error
+}
+
 // Run fetches all unprocessed events and attempts delivery, updating each
 // event's status. Returns a joined error containing all delivery failures.
 func (a *RateDispatchAgent) Run(ctx context.Context) error {
@@ -82,11 +94,22 @@ func (a *RateDispatchAgent) Run(ctx context.Context) error {
 			errs = append(errs, errors.Join(err, internal.NewTraceError()))
 		}
 
-		// delay for avoid hitting Telegram rate limits in case of many pending notifications
-		time.Sleep(500 * time.Millisecond)
+		// Delay to avoid hitting Telegram rate limits. Use a ctx-aware wait so
+		// SIGTERM mid-batch aborts immediately instead of holding the process
+		// alive for up to (500ms × remaining events) past the signal.
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-ctx.Done():
+			return errors.Join(errs...)
+		}
 	}
 
 	return errors.Join(errs...)
+}
+
+// Vacuum removes all non-pending records older than 180 days.
+func (a *RateDispatchAgent) Vacuum(ctx context.Context) error {
+	return a.rateUserEventRepository.RemoveRateUserEventOlderThan(ctx, 180*24*time.Hour)
 }
 
 func (a *RateDispatchAgent) runUserTypeTelegram(ctx context.Context, event *domain.RateUserEvent) error {
@@ -113,21 +136,4 @@ func (a *RateDispatchAgent) runUserTypeTelegram(ctx context.Context, event *doma
 	}
 
 	return nil
-}
-
-// Vacuum removes all non-pending records older than 180 days.
-func (a *RateDispatchAgent) Vacuum(ctx context.Context) error {
-	return a.rateUserEventRepository.RemoveRateUserEventOlderThan(ctx, 180*24*time.Hour)
-}
-
-// rateUserEventRepository is the narrow storage interface required by this service.
-type rateUserEventRepository interface {
-	ObtainUnprocessedRateUserEvents(context.Context) ([]domain.RateUserEvent, error)
-	RetainRateUserEvent(context.Context, *domain.RateUserEvent) error
-	RemoveRateUserEventOlderThan(ctx context.Context, duration time.Duration) error
-}
-
-// telegramClient is the narrow Telegram transport interface required by this service.
-type telegramClient interface {
-	SendHTMLMessage(context.Context, integration.TelegramChatID, string) error
 }

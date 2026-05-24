@@ -11,22 +11,6 @@ import (
 	"github.com/seilbekskindirov/monitor/internal/gateway/httpV1/routes"
 )
 
-// meSubscriptionRepo is a thin interface used to thread the subscription repository
-// through the router without depending on the concrete repository package.
-type meSubscriptionRepo interface {
-	ObtainRateUserSubscriptionsByUserID(ctx context.Context, userType domain.UserType, userID string) ([]domain.RateUserSubscription, error)
-}
-
-// meSourceRepo is a thin interface for source look-ups in the Mini App handler.
-type meSourceRepo interface {
-	ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error)
-}
-
-// meRateValueRepo is a thin interface for rate value look-ups in the Mini App handler.
-type meRateValueRepo interface {
-	ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error)
-}
-
 // NewRouter registers all v1 HTTP routes on mux and returns it.
 func NewRouter(
 	mux *http.ServeMux,
@@ -68,5 +52,25 @@ func NewRouter(
 	mux.HandleFunc("GET "+routes.NotificationsFailed, h.ListFailedNotifications)
 	mux.HandleFunc("GET "+routes.Notifications, h.ListNotifications)
 
+	mux.HandleFunc("GET "+routes.Healthz, h.Healthz)
+
 	return mux, nil
+}
+
+// meSubscriptionRepo is a thin interface used to thread the subscription repository
+// through the router without depending on the concrete repository package.
+type meSubscriptionRepo interface {
+	ObtainRateUserSubscriptionsByUserID(ctx context.Context, userType domain.UserType, userID string) ([]domain.RateUserSubscription, error)
+}
+
+// meSourceRepo is a thin interface for source look-ups in the Mini App handler.
+type meSourceRepo interface {
+	ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error)
+	ObtainRateSourcesByNames(ctx context.Context, names []string) (map[string]domain.RateSource, error)
+}
+
+// meRateValueRepo is a thin interface for rate value look-ups in the Mini App handler.
+type meRateValueRepo interface {
+	ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error)
+	ObtainLatestRateValuesBySourceNames(ctx context.Context, names []string) (map[string]domain.RateValue, error)
 }

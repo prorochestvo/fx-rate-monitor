@@ -11,11 +11,11 @@ import (
 	"sync"
 	"syscall/js"
 
-	"github.com/seilbekskindirov/monitor/internal/wasm/apiclient"
-	"github.com/seilbekskindirov/monitor/internal/wasm/application"
-	"github.com/seilbekskindirov/monitor/internal/wasm/dom"
-	"github.com/seilbekskindirov/monitor/internal/wasm/ui"
-	"github.com/seilbekskindirov/monitor/pkg/api"
+	"github.com/seilbekskindirov/monitor/cmd/wasm/apiclient"
+	"github.com/seilbekskindirov/monitor/cmd/wasm/application"
+	"github.com/seilbekskindirov/monitor/cmd/wasm/dom"
+	"github.com/seilbekskindirov/monitor/cmd/wasm/ui"
+	"github.com/seilbekskindirov/monitor/internal/dto"
 )
 
 // screen holds the teardown closures for a single active screen. When the user
@@ -94,8 +94,8 @@ func runRenderSources(client *apiclient.Client) {
 	app.Set("innerHTML", "<p>Loading…</p>")
 
 	var (
-		srcs  []api.SourceResponse
-		stats api.StatsResponse
+		srcs  []dto.SourceResponse
+		stats dto.StatsResponse
 		err1  error
 		err2  error
 		wg    sync.WaitGroup
@@ -217,8 +217,8 @@ func runRenderSourceDetail(client *apiclient.Client, name string) {
 	app.Set("innerHTML", "<p>Loading…</p>")
 
 	var (
-		srcs  []api.SourceResponse
-		rates []api.RateResponse
+		srcs  []dto.SourceResponse
+		rates []dto.RateResponse
 		err1  error
 		err2  error
 		wg    sync.WaitGroup
@@ -436,9 +436,16 @@ func bindErrorsSections(doc js.Value, page *application.ErrorsPage, scr *screen)
 }
 
 // readInitData reads window.Telegram.WebApp.initData when the page is opened
-// inside Telegram. Falls back to the ?initData= query parameter so that the
-// server-side fallback semantics (X-Telegram-Init-Data header or ?initData=
-// query string) are mirrored on the client side.
+// inside Telegram. Falls back to the ?initData= page-URL query parameter so a
+// developer can drive the Mini App from a normal browser tab during local
+// testing; the value is always forwarded to the API via the
+// X-Telegram-Init-Data header (never as a URL parameter on the API call
+// itself — the server's URL fallback was removed in the 2026-05-21 audit).
+//
+// WARNING: when the page-URL fallback fires, the signed initData payload
+// lands in the browser address bar, history, and the static-asset server's
+// access log for up to its 24h validity window. Use it only for local dev;
+// never link production users to a URL carrying initData.
 func readInitData() string {
 	telegram := js.Global().Get("Telegram")
 	if !telegram.IsNull() && !telegram.IsUndefined() {
@@ -451,8 +458,7 @@ func readInitData() string {
 			}
 		}
 	}
-	// Fallback: read ?initData= from the page URL. This matches the server-side
-	// fallback documented in CLAUDE.md under /api/me/subscriptions.
+	// Page-URL fallback for local dev — see godoc warning above.
 	search := js.Global().Get("location").Get("search")
 	if search.IsNull() || search.IsUndefined() {
 		return ""
@@ -461,6 +467,10 @@ func readInitData() string {
 	v := params.Call("get", "initData")
 	if v.IsNull() || v.IsUndefined() {
 		return ""
+	}
+	if console := js.Global().Get("console"); !console.IsNull() && !console.IsUndefined() {
+		console.Call("warn",
+			"[dev] initData sourced from page URL — do not use in production")
 	}
 	return v.String()
 }

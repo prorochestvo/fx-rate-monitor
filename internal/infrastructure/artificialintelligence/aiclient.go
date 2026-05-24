@@ -29,12 +29,6 @@ type AIClient interface {
 	Complete(ctx context.Context, systemPrompt, userPrompt string) (string, error)
 }
 
-const (
-	clientOpenAI     = "openai"
-	clientGroq       = "groq"
-	clientOpenRouter = "openrouterai"
-)
-
 // NewClient parses the driver from dns and dispatches to the matching
 // provider constructor. On an unknown driver it logs to logger and returns
 // the deterministic stub so the service can still start without a live key.
@@ -78,6 +72,12 @@ func NewClient(dns dsninjector.DataSource, logger io.Writer) (AIClient, error) {
 func NewStubClient() (AIClient, error) {
 	return newStubAIClient(stubAIDefaultResponse)
 }
+
+const (
+	clientOpenAI     = "openai"
+	clientGroq       = "groq"
+	clientOpenRouter = "openrouterai"
+)
 
 // parseDSNTimeout reads the "timeout" DSN option and returns a duration clamped
 // to [10s, 15m]. When the option is absent or empty, it returns one minute.

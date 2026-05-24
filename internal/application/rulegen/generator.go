@@ -37,12 +37,6 @@ type Fetcher interface {
 	Fetch(ctx context.Context, url string) ([]byte, error)
 }
 
-// rateSourceRepository is the minimal persistence interface the generator needs.
-type rateSourceRepository interface {
-	ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error)
-	RetainRateSource(ctx context.Context, record *domain.RateSource) error
-}
-
 // Result holds the outcome of a successful Generate call.
 type Result struct {
 	// Source is the persisted rate source with its Rules and RuleMetadata updated.
@@ -59,13 +53,6 @@ type Result struct {
 	Escalated bool
 }
 
-// transcriptEntry records one failed attempt for inclusion in the next prompt.
-type transcriptEntry struct {
-	Attempt int
-	Rule    string // marshaled JSON of the proposed rule(s)
-	Outcome string // human-readable failure reason
-}
-
 // Generator orchestrates the LLM audit loop that produces an extraction rule
 // for a given rate source.
 type Generator struct {
@@ -78,6 +65,12 @@ type Generator struct {
 	maxPrimary         int
 	maxFallback        int
 	logger             io.Writer
+}
+
+// rateSourceRepository is the minimal persistence interface the generator needs.
+type rateSourceRepository interface {
+	ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error)
+	RetainRateSource(ctx context.Context, record *domain.RateSource) error
 }
 
 // NewGenerator constructs a Generator. maxPrimaryAttempts must be >= 1 and
@@ -402,6 +395,13 @@ func (g *Generator) buildUserMessage(src *domain.RateSource, body []byte, origin
 		}
 	}
 	return b.String()
+}
+
+// transcriptEntry records one failed attempt for inclusion in the next prompt.
+type transcriptEntry struct {
+	Attempt int
+	Rule    string // marshaled JSON of the proposed rule(s)
+	Outcome string // human-readable failure reason
 }
 
 // parseRulesResponse unmarshals the LLM response into a slice of domain rules.

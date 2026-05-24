@@ -3,9 +3,9 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 
+	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	"github.com/seilbekskindirov/monitor/internal/repository"
 	"github.com/stretchr/testify/require"
@@ -16,6 +16,30 @@ var _ rateSourceRepository = &repository.RateSourceRepository{}
 var _ rateValueRepository = &repository.RateValueRepository{}
 var _ rateUserSubscriptionRepository = &repository.RateUserSubscriptionRepository{}
 var _ rateUserEventRepository = &repository.RateUserEventRepository{}
+
+var _ executionHistoryRepository = (*mockExecutionHistoryRepository)(nil)
+var _ rateSourceRepository = (*mockRateSourceRepository)(nil)
+var _ rateValueRepository = (*mockRateValueRepository)(nil)
+var _ rateUserSubscriptionRepository = (*mockRateUserSubscriptionRepository)(nil)
+var _ rateUserEventRepository = (*mockRateUserEventRepository)(nil)
+
+func TestRateRestApi_CheckUP(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns nil when repo is healthy", func(t *testing.T) {
+		t.Parallel()
+
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+		require.NoError(t, svc.CheckUP(t.Context()))
+	})
+	t.Run("propagates repo error", func(t *testing.T) {
+		t.Parallel()
+
+		repo := &mockRateSourceRepository{err: errors.New("db down")}
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, repo, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+		require.Error(t, svc.CheckUP(t.Context()))
+	})
+}
 
 func TestRateRestApi_ObtainLastNExecutionHistoryBySourceName(t *testing.T) {
 	t.Parallel()
@@ -39,6 +63,36 @@ func TestRateRestApi_ObtainLastNExecutionHistoryBySourceName(t *testing.T) {
 		svc := newRateRestAPI(t, repo, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
 
 		_, err := svc.ObtainLastNExecutionHistoryBySourceName(t.Context(), "src1", 5)
+		require.Error(t, err)
+	})
+}
+
+func TestRateRestApi_ObtainLatestExecutionHistoryBySources(t *testing.T) {
+	t.Parallel()
+
+	t.Run("delegates and returns map keyed by source", func(t *testing.T) {
+		t.Parallel()
+
+		items := []domain.ExecutionHistory{
+			{ID: "h1", SourceName: "src1", Success: true},
+			{ID: "h2", SourceName: "src2", Success: false},
+		}
+		repo := &mockExecutionHistoryRepository{items: items}
+		svc := newRateRestAPI(t, repo, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+
+		got, err := svc.ObtainLatestExecutionHistoryBySources(t.Context(), []string{"src1", "src2"})
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+		require.True(t, got["src1"].Success)
+		require.False(t, got["src2"].Success)
+	})
+	t.Run("error propagated", func(t *testing.T) {
+		t.Parallel()
+
+		repo := &mockExecutionHistoryRepository{err: errors.New("db down")}
+		svc := newRateRestAPI(t, repo, &mockRateSourceRepository{}, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+
+		_, err := svc.ObtainLatestExecutionHistoryBySources(t.Context(), []string{"src1"})
 		require.Error(t, err)
 	})
 }
@@ -69,7 +123,42 @@ func TestRateRestApi_ObtainLastSuccessNExecutionHistoryBySourceName(t *testing.T
 
 func TestRateRestApi_UpdateRateSourceActive(t *testing.T) {
 	t.Parallel()
-	t.Skip("not implemented yet")
+
+	t.Run("toggles active and persists via repo", func(t *testing.T) {
+		t.Parallel()
+
+		src := domain.RateSource{Name: "src1", Active: false}
+		repo := &mockRateSourceRepository{sources: []domain.RateSource{src}}
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, repo, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+
+		err := svc.UpdateRateSourceActive(t.Context(), "src1", true)
+		require.NoError(t, err)
+		require.NotNil(t, repo.retainedSrc, "service must call RetainRateSource")
+		require.True(t, repo.retainedSrc.Active, "Active=true must be forwarded to repo")
+		require.Equal(t, "src1", repo.retainedSrc.Name)
+	})
+
+	t.Run("returns ErrNotFound for unknown source", func(t *testing.T) {
+		t.Parallel()
+
+		repo := &mockRateSourceRepository{}
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, repo, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+
+		err := svc.UpdateRateSourceActive(t.Context(), "no-such-source", true)
+		require.Error(t, err)
+		require.ErrorIs(t, err, internal.ErrNotFound)
+	})
+
+	t.Run("repo read error propagated and not wrapped as ErrNotFound", func(t *testing.T) {
+		t.Parallel()
+
+		repo := &mockRateSourceRepository{err: errors.New("db down")}
+		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, repo, &mockRateValueRepository{}, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
+
+		err := svc.UpdateRateSourceActive(t.Context(), "src1", true)
+		require.Error(t, err)
+		require.NotErrorIs(t, err, internal.ErrNotFound)
+	})
 }
 
 func TestRateRestApi_ObtainAllRateSources(t *testing.T) {
@@ -208,11 +297,11 @@ func TestRateRestApi_ObtainRateValueChartBySourceName(t *testing.T) {
 	t.Run("delegates and returns chart points", func(t *testing.T) {
 		t.Parallel()
 
-		want := []repository.ChartPoint{{Label: "2026-04-01", Price: 450.0}}
+		want := []domain.ChartPoint{{Label: "2026-04-01", Price: 450.0}}
 		repo := &mockRateValueRepository{chartPoints: want}
 		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, repo, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
 
-		got, err := svc.ObtainRateValueChartBySourceName(t.Context(), "src1", repository.ChartPeriodWeek)
+		got, err := svc.ObtainRateValueChartBySourceName(t.Context(), "src1", domain.ChartPeriodWeek)
 		require.NoError(t, err)
 		require.Equal(t, want, got)
 	})
@@ -222,7 +311,7 @@ func TestRateRestApi_ObtainRateValueChartBySourceName(t *testing.T) {
 		repo := &mockRateValueRepository{err: errors.New("fail")}
 		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, repo, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
 
-		_, err := svc.ObtainRateValueChartBySourceName(t.Context(), "src1", repository.ChartPeriodWeek)
+		_, err := svc.ObtainRateValueChartBySourceName(t.Context(), "src1", domain.ChartPeriodWeek)
 		require.Error(t, err)
 	})
 }
@@ -326,6 +415,23 @@ func (m *mockExecutionHistoryRepository) ObtainLastNExecutionHistoryBySourceName
 	return m.items, m.err
 }
 
+func (m *mockExecutionHistoryRepository) ObtainLatestExecutionHistoryBySources(_ context.Context, names []string) (map[string]domain.ExecutionHistory, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	want := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		want[n] = struct{}{}
+	}
+	out := make(map[string]domain.ExecutionHistory, len(names))
+	for _, h := range m.items {
+		if _, ok := want[h.SourceName]; ok {
+			out[h.SourceName] = h
+		}
+	}
+	return out, nil
+}
+
 func (m *mockExecutionHistoryRepository) ObtainExecutionHistoryErrorCount(_ context.Context) (int64, error) {
 	return m.errorCount, m.err
 }
@@ -335,8 +441,13 @@ func (m *mockExecutionHistoryRepository) ObtainLastNExecutionHistoryErrors(_ con
 }
 
 type mockRateSourceRepository struct {
-	sources []domain.RateSource
-	err     error
+	sources     []domain.RateSource
+	err         error
+	retainedSrc *domain.RateSource
+}
+
+func (m *mockRateSourceRepository) CheckUP(_ context.Context) error {
+	return m.err
 }
 
 func (m *mockRateSourceRepository) ObtainAllRateSources(_ context.Context) ([]domain.RateSource, error) {
@@ -344,21 +455,28 @@ func (m *mockRateSourceRepository) ObtainAllRateSources(_ context.Context) ([]do
 }
 
 func (m *mockRateSourceRepository) ObtainRateSourceByName(_ context.Context, n string) (*domain.RateSource, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
 	for _, s := range m.sources {
 		if s.Name == n {
 			return &s, nil
 		}
 	}
-	return nil, errors.Join(m.err, fmt.Errorf("rate source with name %s not found", n))
+	return nil, nil
 }
 
-func (m *mockRateSourceRepository) RetainRateSource(_ context.Context, _ *domain.RateSource) error {
+func (m *mockRateSourceRepository) RetainRateSource(_ context.Context, s *domain.RateSource) error {
+	if s != nil {
+		cp := *s
+		m.retainedSrc = &cp
+	}
 	return m.err
 }
 
 type mockRateValueRepository struct {
 	values      []domain.RateValue
-	chartPoints []repository.ChartPoint
+	chartPoints []domain.ChartPoint
 	err         error
 }
 
@@ -366,7 +484,7 @@ func (m *mockRateValueRepository) ObtainLastNRateValuesBySourceName(_ context.Co
 	return m.values, m.err
 }
 
-func (m *mockRateValueRepository) ObtainRateValueChartBySourceName(_ context.Context, _ string, _ repository.ChartPeriod) ([]repository.ChartPoint, error) {
+func (m *mockRateValueRepository) ObtainRateValueChartBySourceName(_ context.Context, _ string, _ domain.ChartPeriod) ([]domain.ChartPoint, error) {
 	return m.chartPoints, m.err
 }
 

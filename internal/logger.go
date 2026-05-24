@@ -101,8 +101,16 @@ type Logger struct {
 // SetTelegramHandler attaches a Telegram notification hook to the logger.
 // Error-level and severe-level log entries are forwarded to the specified Telegram chat.
 func (l *Logger) SetTelegramHandler(token, chatID string) {
-	hndl := loginjector.TelegramHandler(token, chatID, "error", "lingocrm.product.api.error")
+	hndl := loginjector.TelegramHandler(token, chatID, "error", "fx_rate_monitor.error")
 	l.telegramHookID = l.Logger.Hook(hndl, LogLevelError, LogLevelSevere)
+}
+
+// CloseOrLogError closes c and writes any resulting error to w.
+func CloseOrLogError(w io.Writer, c io.Closer) {
+	if err := c.Close(); err != nil {
+		logMsg := fmt.Sprintf("error closing resource: %s\n", err.Error())
+		_, _ = w.Write([]byte(logMsg))
+	}
 }
 
 type printer struct{}
@@ -116,12 +124,4 @@ func (p *printer) Write(msg []byte) (n int, err error) {
 	s = strings.Join(items, "\n                    ")
 	_, _ = fmt.Fprintf(os.Stdout, "%s %s\n", time.Now().Format("2006/01/02 15:04:05"), s)
 	return len(msg), nil
-}
-
-// CloseOrLogError closes c and writes any resulting error to w.
-func CloseOrLogError(w io.Writer, c io.Closer) {
-	if err := c.Close(); err != nil {
-		logMsg := fmt.Sprintf("error closing resource: %s\n", err.Error())
-		_, _ = w.Write([]byte(logMsg))
-	}
 }

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -14,15 +16,10 @@ import (
 	"github.com/seilbekskindirov/monitor/internal/domain"
 )
 
-const (
-	defaultChromedpTimeout       = 30 * time.Second
-	defaultChromedpNetworkIdleMs = 5000
-)
-
 // ChromedpRateExtractor renders pages using a headless Chrome instance, then
 // applies the source's extraction rule pipeline and persists the resulting rate
-// value. Each Run call spawns a fresh Chromium subprocess; callers that need
-// high-throughput collection should consider a future browser-pool plan.
+// value. RunBatch shares one Chromium subprocess across every source in the
+// batch; Run delegates to RunBatch with a single-element slice.
 //
 // The constructor is lazy-friendly: pass an empty chromiumPath to let chromedp
 // fall back to its own PATH lookup (chromium, chromium-browser, google-chrome, chrome).
@@ -55,54 +52,76 @@ func NewChromedpRateExtractor(chromiumPath string, logger io.Writer, repo rateVa
 	}
 }
 
-// Run renders source.URL via headless Chrome, applies all extraction rules in
-// sequence, and persists the resulting rate value via the repository supplied at
-// construction time. The WaitSelector from source.Options is honoured per call
-// so different sources with different selectors share one extractor instance.
+// Run renders source.URL via headless Chrome with a one-shot allocator and
+// applies the extraction pipeline. Prefer RunBatch when multiple sources are
+// processed in one tick — it amortises Chromium cold-start across the batch.
+//
+// Errors from RunBatch are not re-wrapped: they already carry the
+// "chromedp extractor: ..." / "chromedp fetch ..." prefix produced inside.
 func (e *ChromedpRateExtractor) Run(ctx context.Context, source *domain.RateSource) error {
-	payload, err := e.fetchRenderedPage(ctx, source)
-	if err != nil {
-		return fmt.Errorf("chromedp extractor: source %s: %w", source.Name, err)
-	}
-	return applyRulesAndStore(ctx, source, payload, e.repo)
+	return e.RunBatch(ctx, []*domain.RateSource{source})[source.Name]
 }
 
-// loadFailedURL returns the cached error for url and true if url was previously
-// recorded as failed during the current process lifetime.
-func (e *ChromedpRateExtractor) loadFailedURL(url string) (error, bool) {
-	e.failedURLsMu.Lock()
-	defer e.failedURLsMu.Unlock()
-	err, ok := e.failedURLs[url]
-	return err, ok
-}
-
-// recordFailedURL stores err as the tombstone for url. Subsequent fetches of url
-// inside the same process short-circuit and return a wrapped form of err at replay time.
-// See constructor godoc for lifetime constraint.
-func (e *ChromedpRateExtractor) recordFailedURL(url string, err error) {
-	e.failedURLsMu.Lock()
-	defer e.failedURLsMu.Unlock()
-	e.failedURLs[url] = err
-}
-
-// fetchRenderedPage navigates to source.URL with a headless Chrome instance and
-// returns the post-hydration outer HTML of the document. The hard wall-clock timeout
-// is 30 s. Both the browser context and the allocator context are cancelled before
-// return so the Chromium subprocess is reaped even on error paths.
-// Short-circuits if a prior fetch for source.URL failed during this process lifetime; see recordFailedURL.
-func (e *ChromedpRateExtractor) fetchRenderedPage(ctx context.Context, source *domain.RateSource) ([]byte, error) {
-	if cached, ok := e.loadFailedURL(source.URL); ok {
-		_, _ = fmt.Fprintf(e.logger,
-			"chromedp_extractor: short-circuit url=%s prior_error=%v\n", source.URL, cached)
-		err := fmt.Errorf("short-circuit (tombstoned this run): %w", cached)
-		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
+// RunBatch fetches and persists every source in batch under one shared
+// Chromium subprocess. The result map is keyed by source.Name; a nil or
+// absent entry signals success. An empty batch is a fast no-op — Chromium
+// is never launched, so a tick with only plain sources pays zero
+// chromedp cost.
+//
+// Sources are processed sequentially: chromedp browser contexts derived
+// from one ExecAllocator share a single CDP websocket and are not safe
+// to use concurrently. Each source gets a fresh chromedp.NewContext so
+// cookies, storage, and per-target options do not leak between rates.
+//
+// The shared ExecAllocator (and its Chromium subprocess) is cancelled
+// via defer before return, including on panic paths, so the subprocess
+// is reaped regardless of how the batch ends. If the parent ctx is
+// cancelled mid-batch the remaining sources are tagged with ctx.Err()
+// instead of being silently dropped, so the caller can still record
+// per-source execution history for them.
+//
+// Trust boundary. The shared Chromium subprocess runs with --no-sandbox
+// (required when chromedp is executed as root on the deploy host) and
+// shares one --user-data-dir across every source in the batch. That
+// shared profile means the network service, DNS cache, HTTP disk cache,
+// and HTTP credential cache are visible to every source in the batch —
+// chromedp.NewContext partitions cookies and local storage per target
+// but does not partition the network service. Callers must populate
+// batch only from operator-vetted, https-scheme, credential-free
+// `rate_sources.url` rows; mixing user-supplied or credential-bearing
+// URLs into one batch widens the blast radius of a renderer exploit
+// or auth-cache leak across every source that follows.
+func (e *ChromedpRateExtractor) RunBatch(ctx context.Context, batch []*domain.RateSource) map[string]error {
+	if len(batch) == 0 {
+		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, defaultChromedpTimeout)
-	defer cancel()
+	allocCtx, cancelAlloc := e.newExecAllocator(ctx)
+	defer cancelAlloc()
 
-	allocatorOpts := append(chromedp.DefaultExecAllocatorOptions[:],
+	out := make(map[string]error, len(batch))
+	for _, source := range batch {
+		if err := ctx.Err(); err != nil {
+			out[source.Name] = fmt.Errorf("chromedp extractor: source %s: %w", source.Name, err)
+			continue
+		}
+		out[source.Name] = e.runOneInAllocator(allocCtx, source)
+	}
+	return out
+}
+
+// newExecAllocator builds the shared chromedp allocator used by RunBatch.
+// Every context derived from the returned allocCtx shares one Chromium
+// network service: DNS cache, HTTP disk cache, and HTTP auth credential
+// cache are process-wide. Cookies and local storage are partitioned per
+// chromedp.NewContext (per-target), but the network layer is not. See
+// the trust boundary section on RunBatch for the resulting constraint
+// on what may be batched together.
+// Caller owns the returned cancel func.
+func (e *ChromedpRateExtractor) newExecAllocator(ctx context.Context) (context.Context, context.CancelFunc) {
+	// slices.Clone — never alias chromedp.DefaultExecAllocatorOptions; an
+	// upstream array-length change would otherwise let append() stomp the global.
+	opts := append(slices.Clone(chromedp.DefaultExecAllocatorOptions[:]),
 		chromedp.Headless,
 		chromedp.DisableGPU,
 		// NoSandbox is required when Chrome runs as root (systemd unit on the
@@ -111,13 +130,58 @@ func (e *ChromedpRateExtractor) fetchRenderedPage(ctx context.Context, source *d
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
 	)
 	if e.chromiumPath != "" {
-		allocatorOpts = append(allocatorOpts, chromedp.ExecPath(e.chromiumPath))
+		opts = append(opts, chromedp.ExecPath(e.chromiumPath))
+	}
+	return chromedp.NewExecAllocator(ctx, opts...)
+}
+
+// runOneInAllocator fetches one source under an existing allocator and
+// applies the extraction pipeline. The per-source 30 s timeout is scoped
+// inside fetchRenderedPageInAllocator so a slow source cannot starve the
+// rest of the batch.
+//
+// applyRulesAndStore deliberately runs under allocCtx (batch lifetime)
+// rather than under the per-source timeout: network rendering is already
+// complete at this point, payload is in memory, and a DB write must not
+// be cut off by the 30 s navigation deadline. allocCtx has no
+// independent deadline of its own — it carries whatever the caller of
+// RunBatch passed in.
+func (e *ChromedpRateExtractor) runOneInAllocator(allocCtx context.Context, source *domain.RateSource) error {
+	payload, err := e.fetchRenderedPageInAllocator(allocCtx, source)
+	if err != nil {
+		return err
+	}
+	return applyRulesAndStore(allocCtx, source, payload, e.repo)
+}
+
+// fetchRenderedPageInAllocator navigates to source.URL inside the supplied
+// allocator and returns the post-hydration outer HTML of the document.
+// The per-source wall-clock timeout (defaultChromedpTimeout) is applied
+// locally so its expiry only affects this source, not the batch's other
+// sources or the shared Chromium subprocess.
+// Short-circuits if a prior fetch for source.URL failed during this
+// process lifetime; see recordFailedURL.
+func (e *ChromedpRateExtractor) fetchRenderedPageInAllocator(allocCtx context.Context, source *domain.RateSource) ([]byte, error) {
+	if err := validateNavigableURL(source.URL); err != nil {
+		wrapped := fmt.Errorf("chromedp extractor: source %s: %w", source.Name, err)
+		// Tombstone the URL so subsequent ticks short-circuit without re-validating
+		// and re-logging — a malformed `rate_sources.url` would otherwise flood logs.
+		e.recordFailedURL(source.URL, wrapped)
+		return nil, wrapped
 	}
 
-	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, allocatorOpts...)
-	defer cancelAlloc()
+	if cached, ok := e.loadFailedURL(source.URL); ok {
+		_, _ = fmt.Fprintf(e.logger,
+			"chromedp_extractor: short-circuit url=%s prior_error=%v\n", source.URL, cached)
+		err := fmt.Errorf("short-circuit (tombstoned this run): %w", cached)
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
 
-	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx)
+	sourceCtx, cancelSource := context.WithTimeout(allocCtx, defaultChromedpTimeout)
+	defer cancelSource()
+
+	browserCtx, cancelBrowser := chromedp.NewContext(sourceCtx)
 	defer cancelBrowser()
 
 	waitSelector := strings.TrimSpace(source.Options.WaitSelector)
@@ -144,4 +208,56 @@ func (e *ChromedpRateExtractor) fetchRenderedPage(ctx context.Context, source *d
 		source.URL, waitSelector, len(rendered))
 
 	return []byte(rendered), nil
+}
+
+// loadFailedURL returns the cached error for url and true if url was previously
+// recorded as failed during the current process lifetime.
+func (e *ChromedpRateExtractor) loadFailedURL(url string) (error, bool) {
+	e.failedURLsMu.Lock()
+	defer e.failedURLsMu.Unlock()
+	err, ok := e.failedURLs[url]
+	return err, ok
+}
+
+// recordFailedURL stores err as the tombstone for url. Subsequent fetches of url
+// inside the same process short-circuit and return a wrapped form of err at replay time.
+// See constructor godoc for lifetime constraint.
+func (e *ChromedpRateExtractor) recordFailedURL(url string, err error) {
+	e.failedURLsMu.Lock()
+	defer e.failedURLsMu.Unlock()
+	e.failedURLs[url] = err
+}
+
+const (
+	defaultChromedpTimeout       = 30 * time.Second
+	defaultChromedpNetworkIdleMs = 5000
+)
+
+// validateNavigableURL rejects URLs that the chromedp Navigate call must never
+// touch — empty, malformed, or non-http(s) (file://, javascript:, data:, ...).
+// The source URL originates from the database; an operator with write access
+// could otherwise turn a chromedp source into a local-file read or SSRF.
+func validateNavigableURL(rawURL string) error {
+	if rawURL == "" {
+		return errors.New("source URL must not be empty")
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		if u.Host == "" {
+			return fmt.Errorf("URL %q has no host", rawURL)
+		}
+		// Reject userinfo so credentials embedded in `rate_sources.url` never
+		// reach the chromedp navigate call or the error/log message that
+		// quotes the URL on failure.
+		if u.User != nil {
+			return fmt.Errorf("URL must not contain userinfo (credentials in URLs are not allowed)")
+		}
+		return nil
+	default:
+		return fmt.Errorf("URL scheme %q is not allowed (only http/https)", u.Scheme)
+	}
 }

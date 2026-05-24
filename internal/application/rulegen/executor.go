@@ -23,6 +23,8 @@ import (
 	"github.com/seilbekskindirov/monitor/internal/tools/rateextractor"
 )
 
+var _ RuleExecutor = (*defaultRuleExecutor)(nil)
+
 // RuleExecutor applies a chain of RateSourceRules to a body and returns the
 // final numeric value. Implementations must be deterministic and must not
 // mutate the caller's body slice.
@@ -35,12 +37,10 @@ type RuleExecutor interface {
 	Execute(rules []domain.RateSourceRule, body []byte, base, quote string) (float64, error)
 }
 
-type defaultRuleExecutor struct{}
-
-var _ RuleExecutor = (*defaultRuleExecutor)(nil)
-
 // NewRuleExecutor returns the default RuleExecutor implementation.
 func NewRuleExecutor() RuleExecutor { return &defaultRuleExecutor{} }
+
+type defaultRuleExecutor struct{}
 
 // Execute runs the rule chain against body. It copies body before mutation
 // so the caller can reuse the slice across multiple Execute calls (e.g. the

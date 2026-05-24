@@ -6,12 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/seilbekskindirov/monitor/internal"
 )
+
+// Committer is the minimal DB interface required by NewMigrator.
+type Committer interface {
+	Transaction(context.Context) (*sql.Tx, error)
+}
 
 // NewMigrator creates a Migrator that will apply all .sql files from fsys
 // (read via fs.ReadDir(fsys, ".")) followed by any migrations returned by the
@@ -78,6 +84,10 @@ type Migrator struct {
 	applied int
 }
 
+type source interface {
+	Migration() (map[string]string, error)
+}
+
 // Run executes all pending migration statements from every source in order.
 func (m *Migrator) Run(ctx context.Context) error {
 	tx, err := m.db.Transaction(ctx)
@@ -106,6 +116,7 @@ func (m *Migrator) Run(ctx context.Context) error {
 			continue
 		}
 
+		log.Printf("migrator: applying %s", item.name)
 		if _, err = tx.ExecContext(ctx, item.content); err != nil {
 			err = fmt.Errorf("migrations[%d]: apply of the %s is failed, reason %s", i, item.name, err.Error())
 			err = errors.Join(err, internal.NewTraceError())
@@ -170,17 +181,12 @@ func RequireMigratedSchema(ctx context.Context, db Committer) error {
 	return nil
 }
 
-// Committer is the minimal DB interface required by NewMigrator.
-type Committer interface {
-	Transaction(context.Context) (*sql.Tx, error)
-}
+const (
+	migrationTableName = "__schema_migrations"
+)
 
 // committer is kept as a type alias so internal call sites are unaffected.
 type committer = Committer
-
-type source interface {
-	Migration() (map[string]string, error)
-}
 
 // migration is a sqlAction that executes a single SQL statement.
 type migration struct {
@@ -225,10 +231,6 @@ func newDefaultMigrations(fsys fs.FS) ([]migration, error) {
 
 	return items, nil
 }
-
-const (
-	migrationTableName = "__schema_migrations"
-)
 
 func sqlCreateTable() string {
 	return "CREATE TABLE IF NOT EXISTS" + " " + migrationTableName + " (filename TEXT PRIMARY KEY, applied_at TEXT NOT NULL);"

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
-	"github.com/seilbekskindirov/monitor/internal/application/labelfmt"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
 	"github.com/stretchr/testify/assert"
@@ -58,10 +57,6 @@ func TestTelegramApi_handleShow(t *testing.T) {
 		require.Len(t, client.htmlMessages, 1)
 		assert.Contains(t, client.htmlMessages[0], "⚠️")
 	})
-}
-
-func TestTelegramApi_handleShow_editMode(t *testing.T) {
-	t.Parallel()
 	t.Run("edits existing message when msgID is non-zero", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
@@ -148,10 +143,6 @@ func TestTelegramApi_handleLatestUpdates(t *testing.T) {
 		require.Len(t, client.htmlMessages, 1)
 		assert.Contains(t, client.htmlMessages[0], "⚠️")
 	})
-}
-
-func TestTelegramApi_handleLatestUpdates_editMode(t *testing.T) {
-	t.Parallel()
 	t.Run("edits existing message when msgID is non-zero", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
@@ -239,10 +230,6 @@ func TestTelegramApi_handleAddSourceList(t *testing.T) {
 		require.Len(t, client.htmlMessages, 1)
 		assert.Contains(t, client.htmlMessages[0], "⚠️")
 	})
-}
-
-func TestTelegramApi_handleAddSourceList_editMode(t *testing.T) {
-	t.Parallel()
 	t.Run("edits existing message when msgID is non-zero", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
@@ -347,10 +334,6 @@ func TestTelegramApi_handleAddTitleSelect(t *testing.T) {
 		assert.Contains(t, client.htmlMessages[0], "⚠️")
 		assert.Empty(t, client.keyboards)
 	})
-}
-
-func TestTelegramApi_handleAddTitleSelect_editMode(t *testing.T) {
-	t.Parallel()
 	t.Run("edits existing message when msgID is non-zero", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
@@ -408,10 +391,6 @@ func TestTelegramApi_handleAddSourceSelect(t *testing.T) {
 			assert.Contains(t, *row[0].CallbackData, "Halyk")
 		}
 	})
-}
-
-func TestTelegramApi_handleAddSourceSelect_editMode(t *testing.T) {
-	t.Parallel()
 	t.Run("edits existing message when msgID is non-zero", func(t *testing.T) {
 		t.Parallel()
 		client := &mockTelegramClient{}
@@ -529,7 +508,7 @@ func TestTelegramApi_routeAddFlow(t *testing.T) {
 	})
 }
 
-func TestTelegramApi_handleDeleteList_editMode(t *testing.T) {
+func TestTelegramApi_handleDeleteList(t *testing.T) {
 	t.Parallel()
 	t.Run("edits existing message when msgID is non-zero", func(t *testing.T) {
 		t.Parallel()
@@ -560,7 +539,7 @@ func TestTelegramApi_handleDeleteList_editMode(t *testing.T) {
 	})
 }
 
-func TestTelegramApi_handleDeleteAsk_editMode(t *testing.T) {
+func TestTelegramApi_handleDeleteAsk(t *testing.T) {
 	t.Parallel()
 	t.Run("edits existing message when msgID is non-zero", func(t *testing.T) {
 		t.Parallel()
@@ -761,60 +740,8 @@ func TestTelegramApi_sendMainMenu(t *testing.T) {
 	})
 }
 
-// Task 7: TestSubscriptionConditionLabel — fixed expected strings and added interval alias cases.
-func TestSubscriptionConditionLabel(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name     string
-		sub      domain.RateUserSubscription
-		expected string
-	}{
-		{
-			name:     "delta appends percent sign",
-			sub:      domain.RateUserSubscription{ConditionType: domain.ConditionTypeDelta, ConditionValue: "0.5"},
-			expected: "Δ ≥ 0.5%",
-		},
-		{
-			name:     "interval passthrough for short duration",
-			sub:      domain.RateUserSubscription{ConditionType: domain.ConditionTypeInterval, ConditionValue: "30m"},
-			expected: "every 30m",
-		},
-		{
-			name:     "interval_24h maps to 1d",
-			sub:      domain.RateUserSubscription{ConditionType: domain.ConditionTypeInterval, ConditionValue: "24h"},
-			expected: "every 1d",
-		},
-		{
-			name:     "interval_168h maps to 1w",
-			sub:      domain.RateUserSubscription{ConditionType: domain.ConditionTypeInterval, ConditionValue: "168h"},
-			expected: "every 1w",
-		},
-		{
-			name:     "daily truncates to HH:MM UTC",
-			sub:      domain.RateUserSubscription{ConditionType: domain.ConditionTypeDaily, ConditionValue: "08:00:00"},
-			expected: "daily at 08:00 UTC",
-		},
-		{
-			name:     "cron renders weekday name",
-			sub:      domain.RateUserSubscription{ConditionType: domain.ConditionTypeCron, ConditionValue: "0 9 * * 1"},
-			expected: "weekly on Monday (UTC 09:00)",
-		},
-		{
-			name:     "unknown condition falls back to raw type string",
-			sub:      domain.RateUserSubscription{ConditionType: "unknown", ConditionValue: ""},
-			expected: "unknown",
-		},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tc.expected, labelfmt.SubscriptionConditionLabel(tc.sub))
-		})
-	}
-}
-
-// Task 8: TestConditionFromString — added daily and cron branches.
+// TestConditionFromString covers daily and cron branches in addition to the
+// canonical delta/interval cases.
 func TestConditionFromString(t *testing.T) {
 	t.Parallel()
 	t.Run("returns delta for delta string", func(t *testing.T) {

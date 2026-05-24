@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/seilbekskindirov/monitor/internal"
@@ -23,12 +24,22 @@ type RateValueRepository struct {
 	db db
 }
 
+// db is the minimal SQLite client surface every repository depends on.
+// Transaction opens a read-write transaction; ReadOnlyTransaction opens a
+// read-only one. SELECT-only methods must use the read-only variant so they
+// don't compete with collector/notifier writers for the write lock at
+// COMMIT/ROLLBACK time.
+type db interface {
+	Transaction(ctx context.Context) (*sql.Tx, error)
+	ReadOnlyTransaction(ctx context.Context) (*sql.Tx, error)
+}
+
 // Name returns the name of the underlying database table.
 func (r *RateValueRepository) Name() string { return rateValueTableName }
 
 // CheckUP verifies that the repository can read from the rate_values table.
 func (r *RateValueRepository) CheckUP(ctx context.Context) error {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
@@ -38,11 +49,6 @@ func (r *RateValueRepository) CheckUP(ctx context.Context) error {
 	count, err := rateValueCount(tx, ctx, ";")
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
-		return err
-	}
-
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}
 
@@ -58,7 +64,7 @@ func (r *RateValueRepository) CheckUP(ctx context.Context) error {
 // ObtainAllRateValueBySourceName returns all rate value records for the given source name.
 // Always returns a non-nil slice on success.
 func (r *RateValueRepository) ObtainAllRateValueBySourceName(ctx context.Context, sourceName string) ([]domain.RateValue, error) {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
@@ -72,18 +78,87 @@ func (r *RateValueRepository) ObtainAllRateValueBySourceName(ctx context.Context
 		return nil, err
 	}
 
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return nil, err
+	return rates, nil
+}
+
+// ObtainLatestRateValuesBySourceNames returns the most recent rate_value row
+// per source for every name in sourceNames, keyed by source_name. Sources
+// without any rows are absent from the result. Used by ListMeSubscriptions to
+// replace an N+1 of one ObtainLastNRateValuesBySourceName transaction per
+// page item with a single bulk read.
+//
+// Empty input is a fast no-op (no query is issued).
+func (r *RateValueRepository) ObtainLatestRateValuesBySourceNames(ctx context.Context, sourceNames []string) (map[string]domain.RateValue, error) {
+	if len(sourceNames) == 0 {
+		return map[string]domain.RateValue{}, nil
 	}
 
-	return rates, nil
+	tx, err := r.db.ReadOnlyTransaction(ctx)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewStackTraceError())
+	}
+	defer printRollbackError(tx)
+
+	// ROW_NUMBER() OVER (PARTITION BY source_name ORDER BY timestamp DESC, id DESC)
+	// rides idx_rate_values_lookup (source_name, base_currency, quote_currency,
+	// timestamp DESC). id DESC is the deterministic tie-break for rows sharing
+	// the second-resolution RFC3339 timestamp.
+	placeholders := strings.Repeat("?,", len(sourceNames)-1) + "?"
+	query := "SELECT " +
+		rateValueIdFieldName + ", " +
+		rateValueSourceNameFieldName + ", " +
+		rateValueBaseCurrencyFieldName + ", " +
+		rateValueQuoteCurrencyFieldName + ", " +
+		rateValuePriceFieldName + ", " +
+		rateValueTimestampFieldName + " FROM (\n" +
+		"  SELECT " +
+		rateValueIdFieldName + ", " +
+		rateValueSourceNameFieldName + ", " +
+		rateValueBaseCurrencyFieldName + ", " +
+		rateValueQuoteCurrencyFieldName + ", " +
+		rateValuePriceFieldName + ", " +
+		rateValueTimestampFieldName + ",\n" +
+		"  ROW_NUMBER() OVER (PARTITION BY " + rateValueSourceNameFieldName +
+		" ORDER BY " + rateValueTimestampFieldName + " DESC, " + rateValueIdFieldName + " DESC) AS rn\n" +
+		"  FROM " + rateValueTableName +
+		"  WHERE " + rateValueSourceNameFieldName + " IN (" + placeholders + ")\n" +
+		") AS ranked WHERE ranked.rn = 1;"
+
+	args := make([]any, 0, len(sourceNames))
+	for _, n := range sourceNames {
+		args = append(args, n)
+	}
+
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, errors.Join(err, fmt.Errorf("SQL: %s", query), internal.NewTraceError())
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	result := make(map[string]domain.RateValue, len(sourceNames))
+	for rows.Next() {
+		var item domain.RateValue
+		var timestamp string
+		if scanErr := rows.Scan(
+			&item.ID, &item.SourceName, &item.BaseCurrency, &item.QuoteCurrency, &item.Price, &timestamp,
+		); scanErr != nil {
+			return nil, errors.Join(scanErr, internal.NewTraceError())
+		}
+		if parsed, parseErr := time.Parse(time.RFC3339, timestamp); parseErr == nil {
+			item.Timestamp = parsed
+		}
+		result[item.SourceName] = item
+	}
+	if err = rows.Err(); err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
+	}
+	return result, nil
 }
 
 // ObtainLastNRateValuesBySourceName returns the most recent limit rate values for the given source,
 // ordered newest-first. Always returns a non-nil slice on success.
 func (r *RateValueRepository) ObtainLastNRateValuesBySourceName(ctx context.Context, sourceName string, limit int64) ([]domain.RateValue, error) {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
@@ -96,11 +171,6 @@ func (r *RateValueRepository) ObtainLastNRateValuesBySourceName(ctx context.Cont
 	rates, err := rateValueQueryContext(tx, ctx, sqlCommand, sourceName, limit)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	}
-
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
 	}
 
@@ -210,39 +280,21 @@ func (r *RateValueRepository) RemoveRateValue(ctx context.Context, record *domai
 	return nil
 }
 
-// ChartPeriod specifies the time window for aggregated rate chart data.
-type ChartPeriod string
-
-const (
-	// ChartPeriodWeek aggregates rate data over the past 7 days, grouped by day.
-	ChartPeriodWeek ChartPeriod = "week"
-	// ChartPeriodMonth aggregates rate data over the past 30 days, grouped by day.
-	ChartPeriodMonth ChartPeriod = "month"
-	// ChartPeriodYear aggregates rate data over the past 12 months, grouped by month.
-	ChartPeriodYear ChartPeriod = "year"
-)
-
-// ChartPoint is one aggregated data point returned by ObtainRateValueChartBySourceName.
-type ChartPoint struct {
-	Label string  // "2026-04-03" (week/month) or "2026-04" (year)
-	Price float64 // AVG(price) for the bucket
-}
-
 // ObtainRateValueChartBySourceName returns aggregated rate data grouped by day (week/month)
 // or month (year) for the given source and period.
-func (r *RateValueRepository) ObtainRateValueChartBySourceName(ctx context.Context, sourceName string, period ChartPeriod) ([]ChartPoint, error) {
+func (r *RateValueRepository) ObtainRateValueChartBySourceName(ctx context.Context, sourceName string, period domain.ChartPeriod) ([]domain.ChartPoint, error) {
 	now := time.Now().UTC()
 
 	var since time.Time
 	var groupExpr string
 	switch period {
-	case ChartPeriodWeek:
+	case domain.ChartPeriodWeek:
 		since = now.AddDate(0, 0, -7)
 		groupExpr = "strftime('%Y-%m-%d', " + rateValueTimestampFieldName + ")"
-	case ChartPeriodMonth:
+	case domain.ChartPeriodMonth:
 		since = now.AddDate(0, -1, 0)
 		groupExpr = "strftime('%Y-%m-%d', " + rateValueTimestampFieldName + ")"
-	case ChartPeriodYear:
+	case domain.ChartPeriodYear:
 		since = now.AddDate(-1, 0, 0)
 		groupExpr = "strftime('%Y-%m', " + rateValueTimestampFieldName + ")"
 	default:
@@ -259,7 +311,7 @@ func (r *RateValueRepository) ObtainRateValueChartBySourceName(ctx context.Conte
 		rateValueTimestampFieldName,
 	)
 
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewStackTraceError())
 	}
@@ -271,20 +323,21 @@ func (r *RateValueRepository) ObtainRateValueChartBySourceName(ctx context.Conte
 	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
 
-	var result []ChartPoint
+	var result []domain.ChartPoint
 	for rows.Next() {
-		var p ChartPoint
+		var p domain.ChartPoint
 		if scanErr := rows.Scan(&p.Label, &p.Price); scanErr != nil {
 			return nil, errors.Join(scanErr, internal.NewTraceError())
 		}
 		result = append(result, p)
 	}
-	printRollbackError(tx)
+	// rows.Next returns false on both EOF and a mid-iteration error; without
+	// this check a context cancellation between Next() calls would silently
+	// truncate the chart in the HTTP response.
+	if iterErr := rows.Err(); iterErr != nil {
+		return nil, errors.Join(iterErr, internal.NewTraceError())
+	}
 	return result, nil
-}
-
-type db interface {
-	Transaction(ctx context.Context) (*sql.Tx, error)
 }
 
 const (

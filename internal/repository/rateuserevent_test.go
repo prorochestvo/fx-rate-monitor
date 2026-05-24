@@ -466,7 +466,7 @@ func TestRateUserEventRepository_SourceNameRoundTrip(t *testing.T) {
 	t.Run("source_name persists and is read back correctly", func(t *testing.T) {
 		t.Parallel()
 
-		r, err := NewRateUserEventRepository(stubSQLiteDB(t))
+		r, err := NewRateUserEventRepository(stubSQLiteDB(t, "KAZ_NATIONALBANK_USD_KZT"))
 		require.NoError(t, err)
 
 		event := &domain.RateUserEvent{
@@ -513,7 +513,7 @@ func TestRateUserEventRepository_ObtainRateUserEventsBySourceName(t *testing.T) 
 	t.Run("returns only events for the given source", func(t *testing.T) {
 		t.Parallel()
 
-		r, err := NewRateUserEventRepository(stubSQLiteDB(t))
+		r, err := NewRateUserEventRepository(stubSQLiteDB(t, "src-A", "src-B"))
 		require.NoError(t, err)
 
 		require.NoError(t, r.RetainRateUserEvent(t.Context(), &domain.RateUserEvent{
@@ -540,7 +540,7 @@ func TestRateUserEventRepository_ObtainRateUserEventsBySourceName(t *testing.T) 
 	t.Run("status filter works correctly", func(t *testing.T) {
 		t.Parallel()
 
-		r, err := NewRateUserEventRepository(stubSQLiteDB(t))
+		r, err := NewRateUserEventRepository(stubSQLiteDB(t, "src-X"))
 		require.NoError(t, err)
 
 		for _, status := range []domain.RateUserEventStatus{
@@ -566,7 +566,7 @@ func TestRateUserEventRepository_ObtainRateUserEventsBySourceName(t *testing.T) 
 	t.Run("no status args returns all statuses for source", func(t *testing.T) {
 		t.Parallel()
 
-		r, err := NewRateUserEventRepository(stubSQLiteDB(t))
+		r, err := NewRateUserEventRepository(stubSQLiteDB(t, "src-Y"))
 		require.NoError(t, err)
 
 		for _, status := range []domain.RateUserEventStatus{
@@ -590,7 +590,7 @@ func TestRateUserEventRepository_ObtainRateUserEventsBySourceName(t *testing.T) 
 	t.Run("offset and limit paginate correctly", func(t *testing.T) {
 		t.Parallel()
 
-		r, err := NewRateUserEventRepository(stubSQLiteDB(t))
+		r, err := NewRateUserEventRepository(stubSQLiteDB(t, "src-Z"))
 		require.NoError(t, err)
 
 		for i := 0; i < 5; i++ {
@@ -799,7 +799,7 @@ func TestRateUserEventRepository_TransactionErrors(t *testing.T) {
 func TestRateUserEventRepository_ObtainDailyBySource(t *testing.T) {
 	t.Parallel()
 
-	r, err := NewRateUserEventRepository(stubSQLiteDB(t))
+	r, err := NewRateUserEventRepository(stubSQLiteDB(t, "daily-source"))
 	require.NoError(t, err)
 
 	srcName := "daily-source"

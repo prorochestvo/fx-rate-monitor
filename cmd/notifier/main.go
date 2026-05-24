@@ -10,7 +10,9 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path"
+	"syscall"
 
 	"github.com/prorochestvo/dsninjector"
 	"github.com/seilbekskindirov/monitor/internal"
@@ -48,84 +50,96 @@ func main() {
 	}
 	log.Println("logger: initiated")
 
-	dsnSQLiteDB, err := dsninjector.Unmarshal(envDsnSqliteDB)
-	if err != nil {
-		log.Fatalf("settings: %s, %s", envDsnSqliteDB, err.Error())
-	}
 	dsnTelegramBOT, err := dsninjector.Unmarshal(envDsnTelegramBOT)
 	if err != nil {
 		log.Fatalf("settings: %s, %s", envDsnTelegramBOT, err.Error())
 	}
+	dsnDB, err := dsninjector.Unmarshal(envDsnSqliteDB)
+	if err != nil {
+		log.Fatalf("settings: %s, %s", envDsnSqliteDB, err.Error())
+	}
 	log.Println("settings: initiated")
 
-	db, err := sqlitedb.NewSQLiteClient(dsnSQLiteDB, l.WriterAs(internal.LogLevelInfo))
+	db, err := sqlitedb.NewSQLiteClient(dsnDB, l.WriterAs(internal.LogLevelInfo))
 	if err != nil {
-		log.Fatalf("dependencies: sqlite connection is failed, %s", err.Error())
+		log.Fatalf("dependencies: %s", err.Error())
+	}
+	if err = sqlitedb.RequireMigratedSchema(context.Background(), db); err != nil {
+		log.Fatalf("dependencies: schema check: %s", err.Error())
 	}
 	defer func(c io.Closer) {
 		if e := c.Close(); e != nil {
 			log.Printf("close sqlite client: %v", e)
 		}
 	}(db)
-	if err = sqlitedb.RequireMigratedSchema(context.Background(), db); err != nil {
-		log.Fatalf("schema check: %s", err.Error())
-	}
 	tbot, err := integration.NewTBotClient(dsnTelegramBOT, l.WriterAs(internal.LogLevelInfo))
 	if err != nil {
 		log.Fatalf("dependencies: telegram bot connection is failed, %s", err.Error())
 	}
 	log.Println("dependencies: initiated")
 
-	rRateSource, err := repository.NewRateSourceRepository(db)
+	sourceRepo, err := repository.NewRateSourceRepository(db)
 	if err != nil {
-		log.Fatalf("repositories: rate source build is failed, %s", err.Error())
+		log.Fatalf("repositories: %s", err.Error())
 	}
-	rRateValue, err := repository.NewRateValueRepository(db)
+	rateValueRepo, err := repository.NewRateValueRepository(db)
 	if err != nil {
-		log.Fatalf("repositories: rate value build is failed, %s", err.Error())
+		log.Fatalf("repositories: %s", err.Error())
 	}
-	rRateUserSubscription, err := repository.NewRateUserSubscriptionRepository(db)
+	subscriptionRepo, err := repository.NewRateUserSubscriptionRepository(db)
 	if err != nil {
-		log.Fatalf("repositories: subscription build is failed, %s", err.Error())
+		log.Fatalf("repositories: %s", err.Error())
 	}
-	rRateUserEvent, err := repository.NewRateUserEventRepository(db)
+	eventRepo, err := repository.NewRateUserEventRepository(db)
 	if err != nil {
-		log.Fatalf("repositories: notification pool build is failed, %s", err.Error())
+		log.Fatalf("repositories: %s", err.Error())
 	}
 	log.Println("repositories: initiated")
 
-	ctx := context.Background()
+	// SIGTERM and SIGINT cancel ctx mid-run so an in-flight tick aborts the
+	// next dispatch instead of the OS killing the process between
+	// transactions. The migrator uses the same pattern.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	checkAgent, err := notification.NewRateCheckAgent(
-		rRateSource,
-		rRateValue,
-		rRateUserSubscription,
-		rRateUserEvent,
+		sourceRepo,
+		rateValueRepo,
+		subscriptionRepo,
+		eventRepo,
 		l.WriterAs(internal.LogLevelWarning),
 	)
 	if err != nil {
 		log.Fatalf("runners: check agent build is failed: %s", err)
 	}
 
-	dispatchAgent, err := notification.NewRateDispatchAgent(tbot, rRateUserEvent)
+	dispatchAgent, err := notification.NewRateDispatchAgent(tbot, eventRepo)
 	if err != nil {
 		log.Fatalf("runners: dispatch agent build is failed: %s", err)
 	}
 
-	if err = dispatchAgent.Vacuum(ctx); err != nil {
-		log.Fatalf("runners: vacuum failed: %s", err)
+	// Vacuum is housekeeping — never block execution on its failure. Use a
+	// background context so a SIGTERM mid-run doesn't surface as a Vacuum
+	// cancellation followed by Fatalf (and a false-positive crash exit).
+	if err = dispatchAgent.Vacuum(context.Background()); err != nil {
+		log.Printf("runners: vacuum failed (non-fatal): %s", err)
 	}
 	log.Println("runners: initiated")
 
 	var errs []error
-	if err = checkAgent.Run(ctx); err != nil {
+	// Skip context.Canceled so a clean shutdown reason isn't logged twice (once
+	// in the joined errors line, once in the "stopped by signal" line below).
+	if err = checkAgent.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		errs = append(errs, err)
 	}
-	if err = dispatchAgent.Run(ctx); err != nil {
+	if err = dispatchAgent.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		errs = append(errs, err)
 	}
 	if err = errors.Join(errs...); err != nil {
 		log.Printf("execution: completed with errors: %s", err)
+	}
+	if ctx.Err() != nil {
+		log.Printf("execution: stopped by signal: %s", ctx.Err())
 	}
 
 	log.Println("execution: done")

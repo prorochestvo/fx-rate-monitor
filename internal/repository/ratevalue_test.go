@@ -64,6 +64,11 @@ func TestRateRepository_TransactionErrors(t *testing.T) {
 		_, err := newBrokenRepo(t).ObtainLastNRateValuesBySourceName(t.Context(), "src", 1)
 		require.Error(t, err)
 	})
+	t.Run("ObtainLatestRateValuesBySourceNames propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainLatestRateValuesBySourceNames(t.Context(), []string{"src"})
+		require.Error(t, err)
+	})
 	t.Run("RetainRateValue propagates transaction error", func(t *testing.T) {
 		t.Parallel()
 		err := newBrokenRepo(t).RetainRateValue(t.Context(), &domain.RateValue{Price: 1.0})
@@ -76,7 +81,7 @@ func TestRateRepository_TransactionErrors(t *testing.T) {
 	})
 	t.Run("ObtainRateValueChartBySourceName propagates transaction error", func(t *testing.T) {
 		t.Parallel()
-		_, err := newBrokenRepo(t).ObtainRateValueChartBySourceName(t.Context(), "src", ChartPeriodWeek)
+		_, err := newBrokenRepo(t).ObtainRateValueChartBySourceName(t.Context(), "src", domain.ChartPeriodWeek)
 		require.Error(t, err)
 	})
 }
@@ -84,7 +89,7 @@ func TestRateRepository_TransactionErrors(t *testing.T) {
 func TestRateRepository_RetainRateValue(t *testing.T) {
 	t.Parallel()
 
-	r, err := NewRateValueRepository(stubSQLiteDB(t))
+	r, err := NewRateValueRepository(stubSQLiteDB(t, "test-source"))
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
@@ -161,7 +166,7 @@ func TestRateRepository_RetainRateValue(t *testing.T) {
 func TestRateRepository_RemoveRateValue(t *testing.T) {
 	t.Parallel()
 
-	r, err := NewRateValueRepository(stubSQLiteDB(t))
+	r, err := NewRateValueRepository(stubSQLiteDB(t, "test-source"))
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
@@ -205,7 +210,7 @@ func TestRateRepository_RemoveRateValue(t *testing.T) {
 func TestRateRepository_ObtainAllRateValueBySourceName(t *testing.T) {
 	t.Parallel()
 
-	r, err := NewRateValueRepository(stubSQLiteDB(t))
+	r, err := NewRateValueRepository(stubSQLiteDB(t, "src-a", "src-b"))
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
@@ -244,7 +249,7 @@ func TestRateRepository_ObtainAllRateValueBySourceName(t *testing.T) {
 func TestRateRepository_ObtainLastNRateValuesBySourceName(t *testing.T) {
 	t.Parallel()
 
-	r, err := NewRateValueRepository(stubSQLiteDB(t))
+	r, err := NewRateValueRepository(stubSQLiteDB(t, "few-source", "many-source"))
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
@@ -286,6 +291,43 @@ func TestRateRepository_ObtainLastNRateValuesBySourceName(t *testing.T) {
 	})
 }
 
+func TestRateValueRepository_ObtainLatestRateValuesBySourceNames(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty input returns empty map without querying", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateValueRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		got, err := r.ObtainLatestRateValuesBySourceNames(t.Context(), nil)
+		require.NoError(t, err)
+		require.Empty(t, got)
+	})
+	t.Run("returns newest row per source, missing sources absent", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateValueRepository(stubSQLiteDB(t, "bulk-rv-a", "bulk-rv-b"))
+		require.NoError(t, err)
+
+		base := time.Now().UTC().Truncate(time.Second)
+		for _, rv := range []domain.RateValue{
+			{SourceName: "bulk-rv-a", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 100, Timestamp: base.Add(-time.Minute)},
+			{SourceName: "bulk-rv-a", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 200, Timestamp: base},
+			{SourceName: "bulk-rv-b", BaseCurrency: "EUR", QuoteCurrency: "KZT", Price: 500, Timestamp: base},
+		} {
+			require.NoError(t, r.RetainRateValue(t.Context(), &rv))
+		}
+
+		got, err := r.ObtainLatestRateValuesBySourceNames(t.Context(),
+			[]string{"bulk-rv-a", "bulk-rv-b", "missing-rv"})
+		require.NoError(t, err)
+		require.Len(t, got, 2, "missing-rv must be absent")
+		require.Equal(t, 200.0, got["bulk-rv-a"].Price, "must return the newest row")
+		require.Equal(t, 500.0, got["bulk-rv-b"].Price)
+	})
+}
+
 func TestRateValueRepository_ObtainRateValueChartBySourceName(t *testing.T) {
 	t.Parallel()
 
@@ -315,7 +357,7 @@ func TestRateValueRepository_ObtainRateValueChartBySourceName(t *testing.T) {
 	t.Run("week period returns daily buckets within last 7 days", func(t *testing.T) {
 		t.Parallel()
 
-		r, err := NewRateValueRepository(stubSQLiteDB(t))
+		r, err := NewRateValueRepository(stubSQLiteDB(t, "chart-src"))
 		require.NoError(t, err)
 
 		now := time.Now().UTC()
@@ -327,7 +369,7 @@ func TestRateValueRepository_ObtainRateValueChartBySourceName(t *testing.T) {
 		}
 		seedRates(t, r, "chart-src", prices, ts)
 
-		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "chart-src", ChartPeriodWeek)
+		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "chart-src", domain.ChartPeriodWeek)
 		require.NoError(t, err)
 		require.NotEmpty(t, points)
 		require.LessOrEqual(t, len(points), 7)
@@ -338,7 +380,7 @@ func TestRateValueRepository_ObtainRateValueChartBySourceName(t *testing.T) {
 	t.Run("year period returns monthly buckets in YYYY-MM format", func(t *testing.T) {
 		t.Parallel()
 
-		r, err := NewRateValueRepository(stubSQLiteDB(t))
+		r, err := NewRateValueRepository(stubSQLiteDB(t, "chart-year-src"))
 		require.NoError(t, err)
 
 		now := time.Now().UTC()
@@ -349,7 +391,7 @@ func TestRateValueRepository_ObtainRateValueChartBySourceName(t *testing.T) {
 		}
 		seedRates(t, r, "chart-year-src", prices, ts)
 
-		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "chart-year-src", ChartPeriodYear)
+		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "chart-year-src", domain.ChartPeriodYear)
 		require.NoError(t, err)
 		require.NotEmpty(t, points)
 		require.LessOrEqual(t, len(points), 12)
@@ -359,7 +401,7 @@ func TestRateValueRepository_ObtainRateValueChartBySourceName(t *testing.T) {
 	t.Run("month period returns daily buckets within last 30 days", func(t *testing.T) {
 		t.Parallel()
 
-		r, err := NewRateValueRepository(stubSQLiteDB(t))
+		r, err := NewRateValueRepository(stubSQLiteDB(t, "chart-month-src"))
 		require.NoError(t, err)
 
 		now := time.Now().UTC()
@@ -371,7 +413,7 @@ func TestRateValueRepository_ObtainRateValueChartBySourceName(t *testing.T) {
 		}
 		seedRates(t, r, "chart-month-src", prices, ts)
 
-		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "chart-month-src", ChartPeriodMonth)
+		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "chart-month-src", domain.ChartPeriodMonth)
 		require.NoError(t, err)
 		require.NotEmpty(t, points)
 		require.LessOrEqual(t, len(points), 30)
@@ -384,7 +426,7 @@ func TestRateValueRepository_ObtainRateValueChartBySourceName(t *testing.T) {
 		r, err := NewRateValueRepository(stubSQLiteDB(t))
 		require.NoError(t, err)
 
-		_, err = r.ObtainRateValueChartBySourceName(t.Context(), "any", ChartPeriod("bogus"))
+		_, err = r.ObtainRateValueChartBySourceName(t.Context(), "any", domain.ChartPeriod("bogus"))
 		require.Error(t, err)
 	})
 
@@ -394,7 +436,7 @@ func TestRateValueRepository_ObtainRateValueChartBySourceName(t *testing.T) {
 		r, err := NewRateValueRepository(stubSQLiteDB(t))
 		require.NoError(t, err)
 
-		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "empty-source", ChartPeriodWeek)
+		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "empty-source", domain.ChartPeriodWeek)
 		require.NoError(t, err)
 		require.Empty(t, points)
 	})

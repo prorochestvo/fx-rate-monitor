@@ -53,11 +53,6 @@ type Auditor struct {
 	Fetcher Fetcher
 }
 
-type fetchEntry struct {
-	result *FetchResult
-	err    error
-}
-
 // Run audits all sources sequentially, deduplicating fetches by URL.
 // The output slice is parallel to sources.
 func (a *Auditor) Run(ctx context.Context, sources []SeededSource) ([]ProbeResult, error) {
@@ -167,6 +162,11 @@ func (a *Auditor) probeSource(src SeededSource, fetch *fetchEntry) ProbeResult {
 	pr.Status = StatusOK
 	pr.Value = valueStr
 	return pr
+}
+
+type fetchEntry struct {
+	result *FetchResult
+	err    error
 }
 
 func truncate(s string, max int) string {

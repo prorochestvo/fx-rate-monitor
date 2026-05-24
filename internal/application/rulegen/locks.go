@@ -2,6 +2,11 @@ package rulegen
 
 import "sync"
 
+// NewLockManager constructs a ready-to-use LockManager.
+func NewLockManager() *LockManager {
+	return &LockManager{locks: make(map[string]*sync.Mutex)}
+}
+
 // LockManager serialises rule generation per source name.
 // TryAcquire returns (release, true) on success; (nil, false) when another
 // call holds the lock for the same source. The caller MUST invoke release
@@ -12,11 +17,6 @@ import "sync"
 type LockManager struct {
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
-}
-
-// NewLockManager constructs a ready-to-use LockManager.
-func NewLockManager() *LockManager {
-	return &LockManager{locks: make(map[string]*sync.Mutex)}
 }
 
 // TryAcquire attempts to acquire the per-source lock for sourceName.

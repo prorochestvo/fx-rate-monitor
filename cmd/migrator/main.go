@@ -43,7 +43,7 @@ const (
 func main() {
 	log.Printf("build: %s (%s) at %s\n", BuildVersion, BuildHash, BuildTime)
 
-	l, err := internal.NewLogger(LogsDir, "collector", LogVerbosity)
+	l, err := internal.NewLogger(LogsDir, "migrator", LogVerbosity)
 	if err != nil {
 		log.Fatalf("logger: %s", err.Error())
 	}

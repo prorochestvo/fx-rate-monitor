@@ -8,10 +8,13 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path"
+	"syscall"
 
 	"github.com/prorochestvo/dsninjector"
 	"github.com/seilbekskindirov/monitor/internal"
@@ -41,90 +44,99 @@ var (
 )
 
 const (
-	envProxyUrl    = "PROXY_URL"
-	envDsnSqliteDB = "SQLITEDB_DSN"
+	envProxyUrl = "PROXY_URL"
 	// envChromiumPath is an optional absolute path to the Chromium/Chrome binary.
 	// When unset, chromedp searches PATH on first use for a chromedp-kind source.
 	envChromiumPath = "CHROMIUM_PATH"
+	envDsnSqliteDB  = "SQLITEDB_DSN"
 )
 
 func main() {
 	log.Printf("build: %s (%s) at %s\n", BuildVersion, BuildHash, BuildTime)
 
-	// init logger
 	l, err := internal.NewLogger(LogsDir, "collector", LogVerbosity)
 	if err != nil {
 		log.Fatalf("logger: %s", err.Error())
 	}
 	log.Println("logger: initiated")
 
-	// init settings
-	dsnSQLiteDB, err := dsninjector.Unmarshal(envDsnSqliteDB)
+	// Preserve the startup-marker sequence (logger -> settings ->
+	// dependencies -> repositories -> runners) that operators grep on.
+	dsnDB, err := dsninjector.Unmarshal(envDsnSqliteDB)
 	if err != nil {
-		if env := os.Getenv(envDsnSqliteDB); env == "" {
-			err = errors.Join(errors.New("environment variable is not set"), err)
-		}
 		log.Fatalf("settings: %s, %s", envDsnSqliteDB, err.Error())
-		return
 	}
 	log.Println("settings: initiated")
 
-	// init dependencies
-	db, err := sqlitedb.NewSQLiteClient(dsnSQLiteDB, l.WriterAs(internal.LogLevelInfo))
+	db, err := sqlitedb.NewSQLiteClient(dsnDB, l.WriterAs(internal.LogLevelInfo))
 	if err != nil {
-		log.Fatalf("dependencies: sqlite connection is failed, %s", err.Error())
-		return
+		log.Fatalf("dependencies: %s", err.Error())
+	}
+	if err = sqlitedb.RequireMigratedSchema(context.Background(), db); err != nil {
+		log.Fatalf("dependencies: schema check: %s", err.Error())
 	}
 	defer func(c io.Closer) {
 		if e := c.Close(); e != nil {
 			log.Printf("close sqlite client: %v", e)
 		}
 	}(db)
-	if err = sqlitedb.RequireMigratedSchema(context.Background(), db); err != nil {
-		log.Fatalf("schema check: %s", err.Error())
-	}
 	log.Println("dependencies: initiated")
 
-	// init repositories
-	rRateSource, err := repository.NewRateSourceRepository(db)
+	sourceRepo, err := repository.NewRateSourceRepository(db)
 	if err != nil {
-		log.Fatalf("repositories: rate source build is failed, %s", err.Error())
-		return
+		log.Fatalf("repositories: %s", err.Error())
 	}
-	rExecutionHistory, err := repository.NewExecutionHistoryRepository(db)
+	historyRepo, err := repository.NewExecutionHistoryRepository(db)
 	if err != nil {
-		log.Fatalf("repositories: execution history build is failed, %s", err.Error())
-		return
+		log.Fatalf("repositories: %s", err.Error())
 	}
-	rRateValue, err := repository.NewRateValueRepository(db)
+	rateValueRepo, err := repository.NewRateValueRepository(db)
 	if err != nil {
-		log.Fatalf("repositories: rate value build is failed, %s", err.Error())
-		return
+		log.Fatalf("repositories: %s", err.Error())
 	}
 	log.Println("repositories: initiated")
 
-	runners, err := buildRunners(
-		rRateSource,
-		rExecutionHistory,
-		rRateValue,
-		l.WriterAs(internal.LogLevelWarning),
-	)
+	runners, err := buildRunners(sourceRepo, historyRepo, rateValueRepo, l.WriterAs(internal.LogLevelWarning))
 	if err != nil {
 		log.Fatalf("runners: runners building is failed: %s", err)
 		return
 	}
 	log.Println("runners: initiated")
 
-	ctx := context.Background()
+	// SIGTERM and SIGINT cancel ctx mid-run so an in-flight tick aborts the
+	// next source fetch instead of the OS killing the process between
+	// transactions. The migrator uses the same pattern.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	errs := make([]error, 0, len(runners))
 	for _, r := range runners {
-		if err = r.Run(ctx); err != nil {
-			errs = append(errs, err)
-		}
+		// errors.Is also matches ctx.DeadlineExceeded, but the only deadline
+		// here is the OS signal; skip both to avoid duplicating the shutdown
+		// reason in two log lines.
+		//
+		// Panic recovery: the removed scheduler package wrapped every job
+		// invocation in a defer-recover so a single bad source did not crash
+		// the whole tick. Preserve that semantics inline since this loop is
+		// the only consumer left.
+		func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					stackErr := internal.NewStackTraceError()
+					log.Printf("execution: runner panic recovered: %v\n%s", rec, stackErr.Error())
+					errs = append(errs, fmt.Errorf("runner panic: %v", rec))
+				}
+			}()
+			if rerr := r.Run(ctx); rerr != nil && !errors.Is(rerr, context.Canceled) {
+				errs = append(errs, rerr)
+			}
+		}()
 	}
 	if err = errors.Join(errs...); err != nil {
 		log.Printf("execution: completed with errors: %s", err)
+	}
+	if ctx.Err() != nil {
+		log.Printf("execution: stopped by signal: %s", ctx.Err())
 	}
 
 	log.Println("execution: done")
@@ -144,23 +156,25 @@ func init() {
 	}
 }
 
-// runner is the minimal interface that the scheduler needs from each agent.
+// runner is the minimal interface the collector needs from each agent.
+// One Run call per binary invocation; the loop in main wraps each call in a
+// panic-recover shim (replacing the deleted scheduler package's recovery).
 type runner interface {
 	Run(context.Context) error
 }
 
 func buildRunners(
-	rRateSource *repository.RateSourceRepository,
-	rExecutionHistory *repository.ExecutionHistoryRepository,
-	rRateValue *repository.RateValueRepository,
+	source *repository.RateSourceRepository,
+	history *repository.ExecutionHistoryRepository,
+	value *repository.RateValueRepository,
 	logger io.Writer,
 ) ([]runner, error) {
 	collectionRateAgent, err := collection.NewRateAgent(
 		ProxyURL,
 		ChromiumPath,
-		rRateSource,
-		rExecutionHistory,
-		rRateValue,
+		source,
+		history,
+		value,
 		logger,
 	)
 	if err != nil {

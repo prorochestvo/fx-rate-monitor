@@ -6,28 +6,6 @@ import (
 	"regexp"
 )
 
-const (
-	maxRawBodyBytes    = 5 * 1024 * 1024 // 5 MB hard reject before stripping
-	maxBodyBytesForLLM = 80 * 1024       // 80 KB sent to the LLM after locate/truncate
-	locateWindowBytes  = 80 * 1024       // ±40 KB centred on the earliest anchor match
-
-	// defaultCoLocationBytes is the radius (in bytes) around a tier-1 anchor
-	// hit within which at least one currency anchor must appear for the hit to
-	// qualify. 5 KB is chosen because the production seed regexes use
-	// [\s\S]{0,400}? between a structural marker and the rate value — roughly
-	// a few hundred bytes of slack. 5 KB gives ~12× headroom for pages that
-	// embed multiple unrelated currency codes between the structural anchor
-	// and the target row, while staying tight enough to reject a marketing
-	// heading 280 KB away from the rate table.
-	defaultCoLocationBytes = 5 * 1024
-)
-
-var (
-	scriptRe = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>`)
-	styleRe  = regexp.MustCompile(`(?is)<style\b[^>]*>.*?</style>`)
-	headRe   = regexp.MustCompile(`(?is)<head\b[^>]*>.*?</head>`)
-)
-
 // Locate returns the smallest window of body centred on the earliest qualifying
 // structural anchor match. A tier-1 hit at offset i qualifies only when at
 // least one non-empty currency anchor occurs inside [i-coLocationBytes,
@@ -50,6 +28,65 @@ func Locate(body []byte, structural, currency []string, windowBytes, coLocationB
 	}
 	return body, false
 }
+
+// Sanitize strips <script>, <style>, and <head> blocks (case-insensitive,
+// non-greedy), then uses Locate to find the region around the best anchor
+// match, and finally caps the result at maxBodyBytesForLLM bytes.
+//
+// Tier-1 structural anchors are tried first; a hit qualifies only when a
+// currency anchor appears within ±defaultCoLocationBytes of it (the
+// co-location guard prevents marketing headings from capturing the window).
+// Only when no structural anchor qualifies does Sanitize fall back to
+// currency anchors (tier-2). When neither tier matches, the leading
+// maxBodyBytesForLLM bytes are returned (existing behaviour).
+//
+// It returns the sanitized body and the original byte count (before stripping)
+// for use in log messages. If the raw body exceeds maxRawBodyBytes (5 MB),
+// Sanitize returns an error and callers must abort before any LLM call.
+func Sanitize(body []byte, structural, currency []string) ([]byte, int, error) {
+	original := len(body)
+	if original > maxRawBodyBytes {
+		return nil, original, fmt.Errorf("rulegen: body size %d bytes exceeds limit of %d bytes (5 MB); narrow the URL", original, maxRawBodyBytes)
+	}
+
+	out := scriptRe.ReplaceAll(body, nil)
+	out = styleRe.ReplaceAll(out, nil)
+	out = headRe.ReplaceAll(out, nil)
+
+	if located, found := Locate(out, structural, currency, locateWindowBytes, defaultCoLocationBytes); found {
+		out = located
+	} else if len(out) > maxBodyBytesForLLM {
+		out = out[:maxBodyBytesForLLM]
+	}
+
+	if len(out) > maxBodyBytesForLLM {
+		out = out[:maxBodyBytesForLLM]
+	}
+
+	return out, original, nil
+}
+
+const (
+	maxRawBodyBytes    = 5 * 1024 * 1024 // 5 MB hard reject before stripping
+	maxBodyBytesForLLM = 80 * 1024       // 80 KB sent to the LLM after locate/truncate
+	locateWindowBytes  = 80 * 1024       // ±40 KB centred on the earliest anchor match
+
+	// defaultCoLocationBytes is the radius (in bytes) around a tier-1 anchor
+	// hit within which at least one currency anchor must appear for the hit to
+	// qualify. 5 KB is chosen because the production seed regexes use
+	// [\s\S]{0,400}? between a structural marker and the rate value — roughly
+	// a few hundred bytes of slack. 5 KB gives ~12× headroom for pages that
+	// embed multiple unrelated currency codes between the structural anchor
+	// and the target row, while staying tight enough to reject a marketing
+	// heading 280 KB away from the rate table.
+	defaultCoLocationBytes = 5 * 1024
+)
+
+var (
+	scriptRe = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>`)
+	styleRe  = regexp.MustCompile(`(?is)<style\b[^>]*>.*?</style>`)
+	headRe   = regexp.MustCompile(`(?is)<head\b[^>]*>.*?</head>`)
+)
 
 // smallestQualifyingTier1Hit scans every occurrence of every distinct structural
 // anchor and returns the smallest offset that passes the co-location check. When
@@ -148,41 +185,4 @@ func windowAround(body []byte, centre, windowBytes int) []byte {
 		end = len(body)
 	}
 	return body[start:end]
-}
-
-// Sanitize strips <script>, <style>, and <head> blocks (case-insensitive,
-// non-greedy), then uses Locate to find the region around the best anchor
-// match, and finally caps the result at maxBodyBytesForLLM bytes.
-//
-// Tier-1 structural anchors are tried first; a hit qualifies only when a
-// currency anchor appears within ±defaultCoLocationBytes of it (the
-// co-location guard prevents marketing headings from capturing the window).
-// Only when no structural anchor qualifies does Sanitize fall back to
-// currency anchors (tier-2). When neither tier matches, the leading
-// maxBodyBytesForLLM bytes are returned (existing behaviour).
-//
-// It returns the sanitized body and the original byte count (before stripping)
-// for use in log messages. If the raw body exceeds maxRawBodyBytes (5 MB),
-// Sanitize returns an error and callers must abort before any LLM call.
-func Sanitize(body []byte, structural, currency []string) ([]byte, int, error) {
-	original := len(body)
-	if original > maxRawBodyBytes {
-		return nil, original, fmt.Errorf("rulegen: body size %d bytes exceeds limit of %d bytes (5 MB); narrow the URL", original, maxRawBodyBytes)
-	}
-
-	out := scriptRe.ReplaceAll(body, nil)
-	out = styleRe.ReplaceAll(out, nil)
-	out = headRe.ReplaceAll(out, nil)
-
-	if located, found := Locate(out, structural, currency, locateWindowBytes, defaultCoLocationBytes); found {
-		out = located
-	} else if len(out) > maxBodyBytesForLLM {
-		out = out[:maxBodyBytesForLLM]
-	}
-
-	if len(out) > maxBodyBytesForLLM {
-		out = out[:maxBodyBytesForLLM]
-	}
-
-	return out, original, nil
 }

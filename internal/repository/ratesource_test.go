@@ -3,9 +3,14 @@ package repository
 import (
 	"database/sql"
 	"errors"
+	"fmt"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/seilbekskindirov/monitor/internal/domain"
+	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
+	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb/sqlitedbtest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -301,6 +306,124 @@ func TestSourceRepository_RemoveSource(t *testing.T) {
 		).Scan(&count))
 		require.Equal(t, 0, count)
 	})
+	t.Run("cascade removes dependent rows", func(t *testing.T) {
+		t.Parallel()
+
+		// Dedicated DB with pool > 1 so FK enforcement runs against the
+		// production-like wiring (plan 010). The shared stubSQLiteDB helper
+		// uses SetMaxOpenConns(1), which would hide a per-connection PRAGMA
+		// regression behind a single connection that always inherits the
+		// db.Exec defaults in NewSQLiteClientEx.
+		db := newCascadeDB(t)
+
+		// Pin the first pool slot in a parked transaction so the cascade
+		// workload below opens fresh connections from later slots. Without
+		// per-connection PRAGMA wiring those fresh slots would have
+		// foreign_keys=0 and the DELETE on rate_sources would leave child
+		// rows behind, failing the post-condition assertions.
+		park, err := db.Transaction(t.Context())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = park.Rollback() })
+
+		rateSources, err := NewRateSourceRepository(db)
+		require.NoError(t, err)
+		rateValues, err := NewRateValueRepository(db)
+		require.NoError(t, err)
+		rateSubs, err := NewRateUserSubscriptionRepository(db)
+		require.NoError(t, err)
+		rateEvents, err := NewRateUserEventRepository(db)
+		require.NoError(t, err)
+
+		const srcName = "src-cascade"
+		src := &domain.RateSource{
+			Name:          srcName,
+			Title:         "cascade-test",
+			URL:           "https://example.com/cascade",
+			Interval:      "10m",
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			Kind:          "BID",
+			Active:        true,
+		}
+		require.NoError(t, rateSources.RetainRateSource(t.Context(), src))
+
+		require.NoError(t, rateValues.RetainRateValue(t.Context(), &domain.RateValue{
+			SourceName:    srcName,
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			Price:         500.0,
+		}))
+		require.NoError(t, rateSubs.RetainRateUserSubscription(t.Context(), &domain.RateUserSubscription{
+			UserType:       domain.UserTypeTelegram,
+			UserID:         "user-cascade",
+			SourceName:     srcName,
+			ConditionType:  domain.ConditionTypeDelta,
+			ConditionValue: "0.5",
+		}))
+		require.NoError(t, rateEvents.RetainRateUserEvent(t.Context(), &domain.RateUserEvent{
+			UserType:   domain.UserTypeTelegram,
+			UserID:     "user-cascade",
+			SourceName: srcName,
+			Message:    "cascade-test",
+		}))
+
+		// Sanity: child rows are present before removal so the post-condition
+		// assertions are not vacuously satisfied.
+		require.Equal(t, 1, countRowsBySource(t, db,
+			rateValueTableName, rateValueSourceNameFieldName, srcName))
+		require.Equal(t, 1, countRowsBySource(t, db,
+			rateUserSubscriptionTableName, rateUserSubscriptionSourceNameFieldName, srcName))
+		require.Equal(t, 1, countRowsBySource(t, db,
+			rateUserEventTableName, rateUserEventSourceNameFieldName, srcName))
+
+		require.NoError(t, rateSources.RemoveRateSource(t.Context(), src))
+
+		// CASCADE contract: every child row keyed on the removed source
+		// must be gone.
+		require.Zero(t, countRowsBySource(t, db,
+			rateValueTableName, rateValueSourceNameFieldName, srcName))
+		require.Zero(t, countRowsBySource(t, db,
+			rateUserSubscriptionTableName, rateUserSubscriptionSourceNameFieldName, srcName))
+		require.Zero(t, countRowsBySource(t, db,
+			rateUserEventTableName, rateUserEventSourceNameFieldName, srcName))
+	})
+}
+
+// newCascadeDB opens an in-memory SQLite DB with SetMaxOpenConns(4) and the
+// production PRAGMA wiring (foreign_keys=1, busy_timeout=5000) supplied via
+// DSN parameters so every pool connection inherits them. Used by the
+// cascade subtest to exercise the same FK enforcement path as production.
+func newCascadeDB(t *testing.T) *sqlitedb.SQLiteClient {
+	t.Helper()
+
+	safeName := strings.ReplaceAll(t.Name(), "/", "_")
+	dsn := fmt.Sprintf(
+		"file:%s?mode=memory&cache=shared&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)",
+		safeName,
+	)
+	mem, err := sql.Open("sqlite", dsn)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = mem.Close() })
+	mem.SetMaxOpenConns(4)
+
+	db, err := sqlitedb.NewSQLiteClientEx(mem, os.Stdout)
+	require.NoError(t, err)
+	sqlitedbtest.Apply(t, db)
+	return db
+}
+
+// countRowsBySource counts rows in table where field equals name.
+func countRowsBySource(t *testing.T, db *sqlitedb.SQLiteClient, table, field, name string) int {
+	t.Helper()
+	tx, err := db.Transaction(t.Context())
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	var n int
+	require.NoError(t, tx.QueryRow(
+		"SELECT COUNT(*) FROM"+" "+table+" WHERE "+field+" = ?",
+		name,
+	).Scan(&n))
+	return n
 }
 
 func TestSourceRepository_ObtainSourceByName(t *testing.T) {
@@ -382,59 +505,54 @@ func TestSourceRepository_ObtainAllSources(t *testing.T) {
 	})
 }
 
-//func TestRateSourceRepository_UpdateRateSourceActive(t *testing.T) {
-//	t.Parallel()
-//
-//	// TODO: rethink
-//	newRepo := func(t *testing.T) (*RateSourceRepository, *domain.RateSource) {
-//		t.Helper()
-//		r, err := NewRateSourceRepository(stubSQLiteDB(t))
-//		require.NoError(t, err)
-//		src := &domain.RateSource{
-//			Name:          "toggle-src-" + t.Name(),
-//			Title:         "Toggle Source",
-//			URL:           "https://example.com/toggle",
-//			Interval:      "10m",
-//			BaseCurrency:  "USD",
-//			QuoteCurrency: "KZT",
-//			Rules:         []domain.RateSourceRule{},
-//		}
-//		require.NoError(t, r.RetainRateSource(t.Context(), src))
-//		return r, src
-//	}
-//
-//	t.Run("sets active to true", func(t *testing.T) {
-//		t.Parallel()
-//		r, src := newRepo(t)
-//
-//		require.NoError(t, r.UpdateRateSourceActive(t.Context(), src.Name, true))
-//
-//		result, err := r.ObtainRateSourceByName(t.Context(), src.Name)
-//		require.NoError(t, err)
-//		require.NotNil(t, result)
-//		require.True(t, result.Active)
-//	})
-//	t.Run("sets active to false", func(t *testing.T) {
-//		t.Parallel()
-//		r, src := newRepo(t)
-//
-//		require.NoError(t, r.UpdateRateSourceActive(t.Context(), src.Name, true))
-//		require.NoError(t, r.UpdateRateSourceActive(t.Context(), src.Name, false))
-//
-//		result, err := r.ObtainRateSourceByName(t.Context(), src.Name)
-//		require.NoError(t, err)
-//		require.NotNil(t, result)
-//		require.False(t, result.Active)
-//	})
-//	t.Run("returns ErrNotFound for unknown source", func(t *testing.T) {
-//		t.Parallel()
-//		r, err := NewRateSourceRepository(stubSQLiteDB(t))
-//		require.NoError(t, err)
-//
-//		err = r.UpdateRateSourceActive(t.Context(), "no-such-source", true)
-//		require.ErrorIs(t, err, internal.ErrNotFound)
-//	})
-//}
+func TestSourceRepository_ObtainRateSourcesByNames(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty input returns empty map without querying", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateSourceRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		got, err := r.ObtainRateSourcesByNames(t.Context(), nil)
+		require.NoError(t, err)
+		require.Empty(t, got)
+	})
+	t.Run("returns requested sources, missing names absent from map", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateSourceRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+		for _, src := range []domain.RateSource{
+			{Name: "bulk-src-a", URL: "https://example.com/a", Interval: "5m", BaseCurrency: "USD", QuoteCurrency: "KZT", Kind: domain.RateSourceKindBID, Title: "Bulk A"},
+			{Name: "bulk-src-b", URL: "https://example.com/b", Interval: "5m", BaseCurrency: "EUR", QuoteCurrency: "KZT", Kind: domain.RateSourceKindASK, Title: "Bulk B"},
+		} {
+			require.NoError(t, r.RetainRateSource(t.Context(), &src))
+		}
+
+		got, err := r.ObtainRateSourcesByNames(t.Context(),
+			[]string{"bulk-src-a", "bulk-src-b", "missing-source"})
+		require.NoError(t, err)
+		require.Len(t, got, 2, "missing-source must be absent")
+		require.Equal(t, "Bulk A", got["bulk-src-a"].Title)
+		require.Equal(t, "Bulk B", got["bulk-src-b"].Title)
+	})
+	t.Run("single-name list works (placeholder edge case)", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateSourceRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+		require.NoError(t, r.RetainRateSource(t.Context(), &domain.RateSource{
+			Name: "bulk-solo", URL: "https://example.com/solo", Interval: "5m",
+			BaseCurrency: "USD", QuoteCurrency: "KZT", Kind: domain.RateSourceKindBID,
+		}))
+
+		got, err := r.ObtainRateSourcesByNames(t.Context(), []string{"bulk-solo"})
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		require.Contains(t, got, "bulk-solo")
+	})
+}
 
 func TestSourceRepository_TransactionErrors(t *testing.T) {
 	t.Parallel()
@@ -459,6 +577,11 @@ func TestSourceRepository_TransactionErrors(t *testing.T) {
 	t.Run("ObtainAllRateSources propagates transaction error", func(t *testing.T) {
 		t.Parallel()
 		_, err := newBrokenRepo(t).ObtainAllRateSources(t.Context())
+		require.Error(t, err)
+	})
+	t.Run("ObtainRateSourcesByNames propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainRateSourcesByNames(t.Context(), []string{"src"})
 		require.Error(t, err)
 	})
 	t.Run("RetainRateSource propagates transaction error", func(t *testing.T) {

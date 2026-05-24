@@ -11,7 +11,6 @@ import (
 
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/repository"
 )
 
 // NewRateRestAPI returns a RateRestApi wired to the given repository implementations.
@@ -43,10 +42,35 @@ type RateRestApi struct {
 	rateUserEventRepository        rateUserEventRepository
 }
 
-// HealthCheck verifies basic service availability.
-func (h *RateRestApi) HealthCheck(_ context.Context) error {
-	// TODO: not implemented yet
-	return nil
+type executionHistoryRepository interface {
+	ObtainLastNExecutionHistoryBySourceName(context.Context, string, int64, bool) ([]domain.ExecutionHistory, error)
+	ObtainLatestExecutionHistoryBySources(context.Context, []string) (map[string]domain.ExecutionHistory, error)
+	ObtainExecutionHistoryErrorCount(context.Context) (int64, error)
+	ObtainLastNExecutionHistoryErrors(context.Context, int64, int64) ([]domain.ExecutionHistory, error)
+}
+
+type rateSourceRepository interface {
+	CheckUP(context.Context) error
+	ObtainAllRateSources(context.Context) ([]domain.RateSource, error)
+	ObtainRateSourceByName(context.Context, string) (*domain.RateSource, error)
+	RetainRateSource(context.Context, *domain.RateSource) error
+}
+
+type rateValueRepository interface {
+	ObtainLastNRateValuesBySourceName(context.Context, string, int64) ([]domain.RateValue, error)
+	ObtainRateValueChartBySourceName(context.Context, string, domain.ChartPeriod) ([]domain.ChartPoint, error)
+}
+
+type rateUserSubscriptionRepository interface {
+	ObtainRateUserSubscriptionsBySource(context.Context, string) ([]domain.RateUserSubscription, error)
+	ObtainSubscriptionSummaryBySource(context.Context, string) ([]domain.RateUserSubscriptionSummary, error)
+	ObtainRateUserSubscriptionsBySourcePaged(context.Context, string, int64, int64) ([]domain.RateUserSubscriptionDetail, error)
+}
+
+type rateUserEventRepository interface {
+	ObtainLastNRateUserEvents(context.Context, int64, int64, ...domain.RateUserEventStatus) ([]domain.RateUserEvent, error)
+	ObtainRateUserEventsBySourceName(context.Context, string, int64, int64, ...domain.RateUserEventStatus) ([]domain.RateUserEvent, error)
+	ObtainDailyEventSummaryBySource(context.Context, string, int64, int64) ([]domain.RateUserEventDailySummary, error)
 }
 
 // ObtainLastNExecutionHistoryBySourceName returns the most recent limit execution history records
@@ -56,6 +80,27 @@ func (h *RateRestApi) ObtainLastNExecutionHistoryBySourceName(ctx context.Contex
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return nil, err
+	}
+	return items, nil
+}
+
+// CheckUP runs a cheap read against the rate_sources repository to confirm
+// the database is reachable. Used by the /healthz endpoint.
+func (h *RateRestApi) CheckUP(ctx context.Context) error {
+	if err := h.rateSourceRepository.CheckUP(ctx); err != nil {
+		return errors.Join(err, internal.NewTraceError())
+	}
+	return nil
+}
+
+// ObtainLatestExecutionHistoryBySources returns the most recent execution_history
+// row per source, keyed by source name. Sources with no rows are absent from
+// the map. Used by ListSources to replace an N+1 of one query per source with
+// a single bulk read.
+func (h *RateRestApi) ObtainLatestExecutionHistoryBySources(ctx context.Context, names []string) (map[string]domain.ExecutionHistory, error) {
+	items, err := h.executionHistoryRepository.ObtainLatestExecutionHistoryBySources(ctx, names)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
 	}
 	return items, nil
 }
@@ -72,15 +117,18 @@ func (h *RateRestApi) ObtainLastSuccessNExecutionHistoryBySourceName(ctx context
 }
 
 // UpdateRateSourceActive enables or disables the rate source identified by name.
-// Returns a plain error if the source is not found.
+// Returns an error wrapping internal.ErrNotFound when the source does not exist,
+// so callers can distinguish 404 from 500 via errors.Is.
 func (h *RateRestApi) UpdateRateSourceActive(ctx context.Context, name string, active bool) error {
 	src, err := h.rateSourceRepository.ObtainRateSourceByName(ctx, name)
-	if err != nil || src == nil {
-		if err == nil {
-			err = fmt.Errorf("rate source is null or not found")
-		}
-		err = errors.Join(err, internal.NewTraceError())
-		return err
+	if err != nil {
+		return errors.Join(err, internal.NewTraceError())
+	}
+	if src == nil {
+		return errors.Join(
+			fmt.Errorf("rate source %q: %w", name, internal.ErrNotFound),
+			internal.NewTraceError(),
+		)
 	}
 
 	src.Active = active
@@ -163,7 +211,7 @@ func (h *RateRestApi) ObtainPendingRateUserEvents(ctx context.Context) ([]domain
 }
 
 // ObtainRateValueChartBySourceName returns aggregated chart data for the given source and period.
-func (h *RateRestApi) ObtainRateValueChartBySourceName(ctx context.Context, name string, period repository.ChartPeriod) ([]repository.ChartPoint, error) {
+func (h *RateRestApi) ObtainRateValueChartBySourceName(ctx context.Context, name string, period domain.ChartPeriod) ([]domain.ChartPoint, error) {
 	items, err := h.rateValueRepository.ObtainRateValueChartBySourceName(ctx, name, period)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewTraceError())
@@ -184,10 +232,10 @@ func (h *RateRestApi) ObtainFailedRateUserEventsBySourceName(ctx context.Context
 }
 
 // ObtainStats returns global source and error counts.
-func (h *RateRestApi) ObtainStats(ctx context.Context) (repository.StatsResult, error) {
+func (h *RateRestApi) ObtainStats(ctx context.Context) (domain.StatsResult, error) {
 	sources, err := h.rateSourceRepository.ObtainAllRateSources(ctx)
 	if err != nil {
-		return repository.StatsResult{}, errors.Join(err, internal.NewTraceError())
+		return domain.StatsResult{}, errors.Join(err, internal.NewTraceError())
 	}
 	var active int64
 	for _, s := range sources {
@@ -197,9 +245,9 @@ func (h *RateRestApi) ObtainStats(ctx context.Context) (repository.StatsResult, 
 	}
 	errCount, err := h.executionHistoryRepository.ObtainExecutionHistoryErrorCount(ctx)
 	if err != nil {
-		return repository.StatsResult{}, errors.Join(err, internal.NewTraceError())
+		return domain.StatsResult{}, errors.Join(err, internal.NewTraceError())
 	}
-	return repository.StatsResult{
+	return domain.StatsResult{
 		SourcesTotal:  int64(len(sources)),
 		SourcesActive: active,
 		ErrorsTotal:   errCount,
@@ -240,33 +288,4 @@ func (h *RateRestApi) ObtainSubscriptionSummaryBySource(ctx context.Context, sou
 		return nil, errors.Join(err, internal.NewTraceError())
 	}
 	return items, nil
-}
-
-type executionHistoryRepository interface {
-	ObtainLastNExecutionHistoryBySourceName(context.Context, string, int64, bool) ([]domain.ExecutionHistory, error)
-	ObtainExecutionHistoryErrorCount(context.Context) (int64, error)
-	ObtainLastNExecutionHistoryErrors(context.Context, int64, int64) ([]domain.ExecutionHistory, error)
-}
-
-type rateSourceRepository interface {
-	ObtainAllRateSources(context.Context) ([]domain.RateSource, error)
-	ObtainRateSourceByName(context.Context, string) (*domain.RateSource, error)
-	RetainRateSource(context.Context, *domain.RateSource) error
-}
-
-type rateValueRepository interface {
-	ObtainLastNRateValuesBySourceName(context.Context, string, int64) ([]domain.RateValue, error)
-	ObtainRateValueChartBySourceName(context.Context, string, repository.ChartPeriod) ([]repository.ChartPoint, error)
-}
-
-type rateUserSubscriptionRepository interface {
-	ObtainRateUserSubscriptionsBySource(context.Context, string) ([]domain.RateUserSubscription, error)
-	ObtainSubscriptionSummaryBySource(context.Context, string) ([]domain.RateUserSubscriptionSummary, error)
-	ObtainRateUserSubscriptionsBySourcePaged(context.Context, string, int64, int64) ([]domain.RateUserSubscriptionDetail, error)
-}
-
-type rateUserEventRepository interface {
-	ObtainLastNRateUserEvents(context.Context, int64, int64, ...domain.RateUserEventStatus) ([]domain.RateUserEvent, error)
-	ObtainRateUserEventsBySourceName(context.Context, string, int64, int64, ...domain.RateUserEventStatus) ([]domain.RateUserEvent, error)
-	ObtainDailyEventSummaryBySource(context.Context, string, int64, int64) ([]domain.RateUserEventDailySummary, error)
 }

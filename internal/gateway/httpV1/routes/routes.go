@@ -51,4 +51,9 @@ const (
 	// MeSubscriptions returns the calling user's own subscriptions enriched with the
 	// latest rate value per source. Authentication is via Telegram WebApp initData HMAC.
 	MeSubscriptions = "/api/me/subscriptions"
+
+	// Healthz reports service readiness. Returns 200 when the database is
+	// reachable, 503 otherwise. Intended for monitoring probes and systemd
+	// ExecStartPost checks. No authentication; no PII; cheap (one Ping).
+	Healthz = "/healthz"
 )

@@ -16,6 +16,7 @@ var _ executionHistoryRepository = &repository.ExecutionHistoryRepository{}
 var _ rateSourceRepository = &repository.RateSourceRepository{}
 var _ rateValueRepository = &repository.RateValueRepository{}
 var _ rateExtractor = &mockRateExtractor{}
+var _ chromedpBatchExtractor = &mockRateExtractor{}
 
 func TestNewRateAgent(t *testing.T) {
 	t.Parallel()
@@ -64,7 +65,9 @@ func TestRateAgent_execution(t *testing.T) {
 			executionHistoryRepository: histRepo,
 		}
 
-		_ = a.execution(t.Context(), []domain.RateSource{{Name: "src1"}})
+		errs := a.execution(t.Context(), []domain.RateSource{{Name: "src1"}})
+		require.Contains(t, errs, "src1", "failed source must appear in the returned error map")
+		require.ErrorContains(t, errs["src1"], "fetch error")
 		require.Len(t, histRepo.retained, 1)
 		require.False(t, histRepo.retained[0].Success)
 		require.NotEmpty(t, histRepo.retained[0].Error)
@@ -351,4 +354,16 @@ type mockRateExtractor struct {
 func (m *mockRateExtractor) Run(_ context.Context, _ *domain.RateSource) error {
 	m.calls++
 	return m.err
+}
+
+// RunBatch lets the same mock satisfy chromedpBatchExtractor. Each source in
+// the batch counts as one call so existing per-source assertions (chrome.calls
+// == 1 for a single chromedp source) still hold.
+func (m *mockRateExtractor) RunBatch(_ context.Context, batch []*domain.RateSource) map[string]error {
+	out := make(map[string]error, len(batch))
+	for _, s := range batch {
+		m.calls++
+		out[s.Name] = m.err
+	}
+	return out
 }

@@ -150,6 +150,57 @@ func TestExecutionHistoryRepository_ObtainLastN(t *testing.T) {
 	})
 }
 
+func TestExecutionHistoryRepository_ObtainLatestExecutionHistoryBySources(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty input returns empty map without querying", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewExecutionHistoryRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		got, err := r.ObtainLatestExecutionHistoryBySources(t.Context(), nil)
+		require.NoError(t, err)
+		require.Empty(t, got)
+	})
+	t.Run("returns newest row per source, missing sources absent from map", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewExecutionHistoryRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		now := time.Now().UTC()
+		for _, row := range []domain.ExecutionHistory{
+			{SourceName: "bulk-a", Success: false, Error: "old", Timestamp: now.Add(-time.Hour)},
+			{SourceName: "bulk-a", Success: true, Timestamp: now},
+			{SourceName: "bulk-b", Success: true, Timestamp: now.Add(-30 * time.Minute)},
+		} {
+			require.NoError(t, r.RetainExecutionHistory(t.Context(), &row))
+		}
+
+		got, err := r.ObtainLatestExecutionHistoryBySources(t.Context(),
+			[]string{"bulk-a", "bulk-b", "missing-source"})
+		require.NoError(t, err)
+		require.Len(t, got, 2, "missing-source has no rows so must be absent from the map")
+		require.True(t, got["bulk-a"].Success, "must return the newest row for bulk-a")
+		require.Equal(t, "bulk-b", got["bulk-b"].SourceName)
+	})
+	t.Run("single-name list works (placeholder edge case)", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewExecutionHistoryRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		require.NoError(t, r.RetainExecutionHistory(t.Context(),
+			&domain.ExecutionHistory{SourceName: "solo", Success: true, Timestamp: time.Now().UTC()}))
+
+		got, err := r.ObtainLatestExecutionHistoryBySources(t.Context(), []string{"solo"})
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		require.Contains(t, got, "solo")
+	})
+}
+
 func TestExecutionHistoryRepository_RemoveSourceExecutionHistory(t *testing.T) {
 	t.Parallel()
 
@@ -201,6 +252,11 @@ func TestExecutionHistoryRepository_TransactionErrors(t *testing.T) {
 	t.Run("ObtainLastNExecutionHistoryBySourceName propagates transaction error", func(t *testing.T) {
 		t.Parallel()
 		_, err := newBrokenRepo(t).ObtainLastNExecutionHistoryBySourceName(t.Context(), "src", 1, false)
+		require.Error(t, err)
+	})
+	t.Run("ObtainLatestExecutionHistoryBySources propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		_, err := newBrokenRepo(t).ObtainLatestExecutionHistoryBySources(t.Context(), []string{"src"})
 		require.Error(t, err)
 	})
 	t.Run("RetainExecutionHistory propagates transaction error", func(t *testing.T) {

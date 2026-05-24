@@ -13,21 +13,6 @@ import (
 	"github.com/seilbekskindirov/monitor/internal/gateway/httpV1"
 )
 
-// meSubscriptionRepo is a pass-through interface from the concrete repository layer.
-type meSubscriptionRepo interface {
-	ObtainRateUserSubscriptionsByUserID(ctx context.Context, userType domain.UserType, userID string) ([]domain.RateUserSubscription, error)
-}
-
-// meSourceRepo is a pass-through interface for source look-ups.
-type meSourceRepo interface {
-	ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error)
-}
-
-// meRateValueRepo is a pass-through interface for rate value look-ups.
-type meRateValueRepo interface {
-	ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error)
-}
-
 // NewGateway builds the v1 HTTP mux with all routes registered.
 // It returns the configured *http.ServeMux ready to be passed to http.ListenAndServe.
 func NewGateway(
@@ -44,4 +29,21 @@ func NewGateway(
 		return nil, err
 	}
 	return mux, nil
+}
+
+// meSubscriptionRepo is a pass-through interface from the concrete repository layer.
+type meSubscriptionRepo interface {
+	ObtainRateUserSubscriptionsByUserID(ctx context.Context, userType domain.UserType, userID string) ([]domain.RateUserSubscription, error)
+}
+
+// meSourceRepo is a pass-through interface for source look-ups.
+type meSourceRepo interface {
+	ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error)
+	ObtainRateSourcesByNames(ctx context.Context, names []string) (map[string]domain.RateSource, error)
+}
+
+// meRateValueRepo is a pass-through interface for rate value look-ups.
+type meRateValueRepo interface {
+	ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error)
+	ObtainLatestRateValuesBySourceNames(ctx context.Context, names []string) (map[string]domain.RateValue, error)
 }

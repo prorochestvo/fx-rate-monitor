@@ -8,14 +8,17 @@ import (
 	"gonum.org/v1/gonum/stat"
 )
 
-// LinearRegressionForecaster fits a least-squares line price = alpha + beta*t
-// over historical timestamps and extrapolates one average interval into the future.
-type LinearRegressionForecaster struct{}
+// Ensure interface is satisfied at compile time.
+var _ Forecaster = (*LinearRegressionForecaster)(nil)
 
 // NewLinearRegressionForecaster returns a new LinearRegressionForecaster.
 func NewLinearRegressionForecaster() *LinearRegressionForecaster {
 	return &LinearRegressionForecaster{}
 }
+
+// LinearRegressionForecaster fits a least-squares line price = alpha + beta*t
+// over historical timestamps and extrapolates one average interval into the future.
+type LinearRegressionForecaster struct{}
 
 // Forecast fits a linear model to the provided rate history and predicts the next price.
 // rates must be ordered newest-first. Returns ErrInsufficientData when len(rates) < 3.
@@ -62,6 +65,3 @@ func (f *LinearRegressionForecaster) Forecast(_ context.Context, rates []*domain
 		DataPoints:     n,
 	}, nil
 }
-
-// Ensure interface is satisfied at compile time.
-var _ Forecaster = (*LinearRegressionForecaster)(nil)

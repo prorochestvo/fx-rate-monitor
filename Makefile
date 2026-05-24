@@ -11,7 +11,7 @@ TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 BUILD_OPTIONS := "-s -w -X main.BuildVersion=${BRANCH} -X main.BuildTime=${TIME} -X main.BuildHash=${BUILD}"
 
-.PHONY: all claude_task claude_evaluates_project claude_auto_fix_tests run build build-collector build-notifier build-web build-wasm build-migrator migrate test test-wasm lint format audit audit-help doctor-help swagger clean deploy_environment
+.PHONY: all claude_task claude_evaluates_project claude_auto_fix_tests run build build-collector build-notifier build-web build-wasm build-migrator migrate test test-wasm lint format audit audit-help doctor-help swagger clean deploy_environment backup-logs backup-db
 
 
 deploy_environment:
@@ -86,7 +86,8 @@ migrate: build
 	@set -a; . .env; set +a; ./build/migrator
 
 ## build:
-build:
+build: format
+	go vet ./...
 	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" ./cmd/web/static/wasm_exec.js
 	CGO_ENABLED=0 GOOS=js GOARCH=wasm go build -o ./cmd/web/static/app.wasm ./cmd/wasm/main.go
 	CGO_ENABLED=0 go build -o ./build/collector  -ldflags ${BUILD_OPTIONS} ./cmd/collector/main.go
@@ -119,11 +120,7 @@ test-wasm:
 	fi
 	CGO_ENABLED=0 GOOS=js GOARCH=wasm go test \
 		-exec "$$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
-		./internal/wasm/dom/... ./internal/wasm/apiclient/...
-
-## lint: run go vet across all packages
-lint: format
-	CGO_ENABLED=0 go vet ./...
+		./cmd/wasm/dom/... ./cmd/wasm/apiclient/...
 
 ## audit: probe seeded rate sources; default audits all sources; override with ARGS="--source halyk_usd" (exits non-zero on any MISS)
 ARGS ?= --all
@@ -151,3 +148,20 @@ clean:
 	rm -f ./cmd/web/static/app.wasm ./cmd/web/static/wasm_exec.js
 	rm -rf ./build/static
 	go mod tidy
+
+
+## backup-logs: pull prime+stage service logs from the host into ./tmp/ (replaces local copies)
+backup-logs:
+	mkdir -p ./tmp
+	rm -rf ./tmp/prime
+	rm -rf ./tmp/stage
+	scp -r be-happy.kz:/opt/monitor/logs/prime ./tmp/prime
+	scp -r be-happy.kz:/opt/monitor/logs/stage ./tmp/stage
+
+## backup-db: pull prime+stage SQLite databases from the host into ./tmp/ (replaces local copies)
+backup-db:
+	mkdir -p ./tmp
+	rm -f ./tmp/prime_monitor.sqlite
+	rm -f ./tmp/stage_monitor.sqlite
+	scp be-happy.kz:/opt/monitor/prime_monitor.sqlite ./tmp/prime_monitor.sqlite
+	scp be-happy.kz:/opt/monitor/stage_monitor.sqlite ./tmp/stage_monitor.sqlite

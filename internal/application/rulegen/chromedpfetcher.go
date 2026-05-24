@@ -4,55 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/chromedp/chromedp"
-)
-
-// ChromedpFetcher renders pages with a headless Chrome instance and returns
-// the post-hydration outer HTML of the <html> element. It implements the
-// rulegen.Fetcher interface.
-//
-// Lifecycle: each Fetch call spawns a fresh browser. This is intentional for
-// the cmd/doctor rulegen single-source-per-invocation use case. When cmd/collector
-// integrates the fetcher (future plan), reuse a long-lived allocator via a
-// browser pool.
-type ChromedpFetcher struct {
-	timeout       time.Duration
-	chromiumPath  string
-	networkIdleMs int
-	waitSelector  string // empty means "wait for body only"
-	logger        io.Writer
-}
-
-// ChromedpFetcherOptions carries construction parameters for ChromedpFetcher.
-// Zero values for numeric fields default to the package constants below.
-type ChromedpFetcherOptions struct {
-	// Timeout is the hard wall-clock deadline per Fetch call. Defaults to 30 s.
-	Timeout time.Duration
-	// ChromiumPath is the absolute path to the Chromium/Chrome binary. When
-	// empty, chromedp falls back to its own PATH lookup order: chromium,
-	// chromium-browser, google-chrome, chrome.
-	ChromiumPath string
-	// NetworkIdleMillis is the additional wait after body is visible before
-	// capturing outerHTML. Defaults to 5000 ms — bumped from 1500 ms in plan 014
-	// after live smoke-tests showed bank SPAs need 3–5 s post-body for the
-	// rate table to hydrate.
-	NetworkIdleMillis int
-	// WaitSelector, if non-empty, replaces the default body+sleep wait
-	// strategy with WaitVisible(selector). Use this for SPAs where the
-	// rate table appears only after JS hydration. Empty falls back to
-	// WaitVisible("body") + NetworkIdleMillis sleep.
-	WaitSelector string
-	// Logger receives one-line diagnostic messages per fetch. Nil defaults to
-	// io.Discard (best-effort; errors writing to logger are not returned).
-	Logger io.Writer
-}
-
-const (
-	defaultChromedpTimeout       = 30 * time.Second
-	defaultChromedpNetworkIdleMs = 5000
 )
 
 // NewChromedpFetcher constructs a ChromedpFetcher with the given options, applying
@@ -76,10 +32,20 @@ func NewChromedpFetcher(opts ChromedpFetcherOptions) *ChromedpFetcher {
 	}
 }
 
-// networkIdleMillisForTest exposes the internal networkIdleMs field for
-// assertions in package tests. It is intentionally unexported.
-func (f *ChromedpFetcher) networkIdleMillisForTest() int {
-	return f.networkIdleMs
+// ChromedpFetcher renders pages with a headless Chrome instance and returns
+// the post-hydration outer HTML of the <html> element. It implements the
+// rulegen.Fetcher interface.
+//
+// Lifecycle: each Fetch call spawns a fresh browser. This is intentional for
+// the cmd/doctor rulegen single-source-per-invocation use case. When cmd/collector
+// integrates the fetcher (future plan), reuse a long-lived allocator via a
+// browser pool.
+type ChromedpFetcher struct {
+	timeout       time.Duration
+	chromiumPath  string
+	networkIdleMs int
+	waitSelector  string // empty means "wait for body only"
+	logger        io.Writer
 }
 
 // Fetch navigates to url with a headless Chrome instance and returns the
@@ -93,7 +59,9 @@ func (f *ChromedpFetcher) Fetch(ctx context.Context, url string) ([]byte, error)
 	ctx, cancelCtx := context.WithTimeout(ctx, f.timeout)
 	defer cancelCtx()
 
-	allocatorOpts := append(chromedp.DefaultExecAllocatorOptions[:],
+	// slices.Clone — never alias chromedp.DefaultExecAllocatorOptions; an
+	// upstream array-length change would otherwise let append() stomp the global.
+	allocatorOpts := append(slices.Clone(chromedp.DefaultExecAllocatorOptions[:]),
 		chromedp.Headless,
 		chromedp.DisableGPU,
 		// NoSandbox is required when Chrome runs as root (systemd unit on the
@@ -135,3 +103,38 @@ func (f *ChromedpFetcher) Fetch(ctx context.Context, url string) ([]byte, error)
 
 	return []byte(rendered), nil
 }
+
+// networkIdleMillisForTest exposes the internal networkIdleMs field for
+// assertions in package tests. It is intentionally unexported.
+func (f *ChromedpFetcher) networkIdleMillisForTest() int {
+	return f.networkIdleMs
+}
+
+// ChromedpFetcherOptions carries construction parameters for ChromedpFetcher.
+// Zero values for numeric fields default to the package constants below.
+type ChromedpFetcherOptions struct {
+	// Timeout is the hard wall-clock deadline per Fetch call. Defaults to 30 s.
+	Timeout time.Duration
+	// ChromiumPath is the absolute path to the Chromium/Chrome binary. When
+	// empty, chromedp falls back to its own PATH lookup order: chromium,
+	// chromium-browser, google-chrome, chrome.
+	ChromiumPath string
+	// NetworkIdleMillis is the additional wait after body is visible before
+	// capturing outerHTML. Defaults to 5000 ms — bumped from 1500 ms in plan 014
+	// after live smoke-tests showed bank SPAs need 3–5 s post-body for the
+	// rate table to hydrate.
+	NetworkIdleMillis int
+	// WaitSelector, if non-empty, replaces the default body+sleep wait
+	// strategy with WaitVisible(selector). Use this for SPAs where the
+	// rate table appears only after JS hydration. Empty falls back to
+	// WaitVisible("body") + NetworkIdleMillis sleep.
+	WaitSelector string
+	// Logger receives one-line diagnostic messages per fetch. Nil defaults to
+	// io.Discard (best-effort; errors writing to logger are not returned).
+	Logger io.Writer
+}
+
+const (
+	defaultChromedpTimeout       = 30 * time.Second
+	defaultChromedpNetworkIdleMs = 5000
+)

@@ -38,7 +38,7 @@ func TestRateUserSubscriptionRepository_CheckUP(t *testing.T) {
 func TestRateUserSubscriptionRepository_RetainRateUserSubscription(t *testing.T) {
 	t.Parallel()
 
-	r, err := NewRateUserSubscriptionRepository(stubSQLiteDB(t))
+	r, err := NewRateUserSubscriptionRepository(stubSQLiteDB(t, "src-a", "src-b", "src-dt"))
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
@@ -128,7 +128,7 @@ func TestRateUserSubscriptionRepository_RetainRateUserSubscription(t *testing.T)
 func TestRateUserSubscriptionRepository_RemoveRateUserSubscription(t *testing.T) {
 	t.Parallel()
 
-	r, err := NewRateUserSubscriptionRepository(stubSQLiteDB(t))
+	r, err := NewRateUserSubscriptionRepository(stubSQLiteDB(t, "src-c"))
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
@@ -170,7 +170,7 @@ func TestRateUserSubscriptionRepository_RemoveRateUserSubscription(t *testing.T)
 func TestRateUserSubscriptionRepository_ObtainRateUserSubscriptionsByUserID(t *testing.T) {
 	t.Parallel()
 
-	r, err := NewRateUserSubscriptionRepository(stubSQLiteDB(t))
+	r, err := NewRateUserSubscriptionRepository(stubSQLiteDB(t, "src-a", "src-b", "src-c"))
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
@@ -216,7 +216,7 @@ func TestRateUserSubscriptionRepository_ObtainRateUserSubscriptionsByUserID(t *t
 func TestRateUserSubscriptionRepository_ObtainRateUserSubscriptionsBySource(t *testing.T) {
 	t.Parallel()
 
-	r, err := NewRateUserSubscriptionRepository(stubSQLiteDB(t))
+	r, err := NewRateUserSubscriptionRepository(stubSQLiteDB(t, "src-x", "src-y"))
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
@@ -253,9 +253,9 @@ func TestRateUserSubscriptionRepository_ObtainSubscriptionSummaryBySource(t *tes
 
 	// ObtainSubscriptionSummaryBySource JOINs rate_user_events, so both repositories
 	// must be initialised on the same DB to ensure both tables exist.
-	newSubAndEventRepos := func(t *testing.T) (*RateUserSubscriptionRepository, *RateUserEventRepository) {
+	newSubAndEventRepos := func(t *testing.T, sourceNames ...string) (*RateUserSubscriptionRepository, *RateUserEventRepository) {
 		t.Helper()
-		db := stubSQLiteDB(t)
+		db := stubSQLiteDB(t, sourceNames...)
 		subRepo, err := NewRateUserSubscriptionRepository(db)
 		require.NoError(t, err)
 		eventRepo, err := NewRateUserEventRepository(db)
@@ -275,7 +275,7 @@ func TestRateUserSubscriptionRepository_ObtainSubscriptionSummaryBySource(t *tes
 	t.Run("returns aggregated counts per user_type", func(t *testing.T) {
 		t.Parallel()
 
-		r, _ := newSubAndEventRepos(t)
+		r, _ := newSubAndEventRepos(t, "src-sum")
 
 		subs := []domain.RateUserSubscription{
 			{UserType: domain.UserTypeTelegram, UserID: "u-sum-1", SourceName: "src-sum"},
@@ -292,6 +292,68 @@ func TestRateUserSubscriptionRepository_ObtainSubscriptionSummaryBySource(t *tes
 		require.Equal(t, domain.UserTypeTelegram, result[0].UserType)
 		require.Equal(t, int64(2), result[0].SubscriptionCount)
 		require.True(t, result[0].LastSentAt.IsZero(), "no events sent yet")
+	})
+	t.Run("one user with multiple subscriptions — events counted once, not per-subscription", func(t *testing.T) {
+		t.Parallel()
+
+		subRepo, eventRepo := newSubAndEventRepos(t, "src-multi")
+
+		// One user has two subscriptions to the same source (e.g. delta + daily).
+		for _, cond := range []domain.SubscriptionConditionType{
+			domain.ConditionTypeDelta, domain.ConditionTypeDaily,
+		} {
+			require.NoError(t, subRepo.RetainRateUserSubscription(t.Context(), &domain.RateUserSubscription{
+				UserType: domain.UserTypeTelegram, UserID: "u-multi", SourceName: "src-multi",
+				ConditionType: cond, ConditionValue: "x",
+			}))
+		}
+
+		// Three sent events for that user.
+		for i := 0; i < 3; i++ {
+			require.NoError(t, eventRepo.RetainRateUserEvent(t.Context(), &domain.RateUserEvent{
+				UserType: domain.UserTypeTelegram, UserID: "u-multi", SourceName: "src-multi",
+				Message: "m", Status: domain.RateUserEventStatusSent,
+			}))
+		}
+
+		result, err := subRepo.ObtainSubscriptionSummaryBySource(t.Context(), "src-multi")
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		// Without per-user event pre-aggregation, SuccessCount would be 6 (3 events × 2 subs).
+		require.Equal(t, int64(3), result[0].SuccessCount,
+			"events must count once per user regardless of subscription count")
+	})
+	t.Run("per-user JOIN — events do not double-count across subscribers", func(t *testing.T) {
+		t.Parallel()
+
+		subRepo, eventRepo := newSubAndEventRepos(t, "src-join")
+
+		// Two users subscribe to src-join.
+		for _, uid := range []string{"u-join-1", "u-join-2"} {
+			require.NoError(t, subRepo.RetainRateUserSubscription(t.Context(), &domain.RateUserSubscription{
+				UserType: domain.UserTypeTelegram, UserID: uid, SourceName: "src-join",
+			}))
+		}
+
+		// Each user has 3 'sent' events for src-join.
+		for _, uid := range []string{"u-join-1", "u-join-2"} {
+			for i := 0; i < 3; i++ {
+				require.NoError(t, eventRepo.RetainRateUserEvent(t.Context(), &domain.RateUserEvent{
+					UserType: domain.UserTypeTelegram, UserID: uid, SourceName: "src-join",
+					Message: "m", Status: domain.RateUserEventStatusSent,
+				}))
+			}
+		}
+
+		result, err := subRepo.ObtainSubscriptionSummaryBySource(t.Context(), "src-join")
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		require.Equal(t, int64(2), result[0].SubscriptionCount)
+		// Without the per-user JOIN (e.user_id = s.user_id), success_count
+		// would be 2*6 = 12 instead of 6.
+		require.Equal(t, int64(6), result[0].SuccessCount,
+			"per-user JOIN must yield 6 sent events, not 12 from cross-product")
+		require.Equal(t, int64(0), result[0].FailedCount)
 	})
 }
 
@@ -340,7 +402,7 @@ func TestRateUserSubscriptionRepository_TransactionErrors(t *testing.T) {
 func TestRateUserSubscriptionRepository_ObtainBySourcePaged(t *testing.T) {
 	t.Parallel()
 
-	r, err := NewRateUserSubscriptionRepository(stubSQLiteDB(t))
+	r, err := NewRateUserSubscriptionRepository(stubSQLiteDB(t, "paged-source"))
 	require.NoError(t, err)
 
 	sourceName := "paged-source"

@@ -211,6 +211,35 @@ func TestMigrator_Run(t *testing.T) {
 	})
 }
 
+func TestRequireMigratedSchema(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns nil when schema is migrated", func(t *testing.T) {
+		t.Parallel()
+		// newTestClient applies a one-file stub migration, which is enough to
+		// satisfy the gate's COUNT(*) > 0 check on __schema_migrations without
+		// pulling in the full application schema.
+		c := newTestClient(t)
+		err := RequireMigratedSchema(t.Context(), c)
+		require.NoError(t, err)
+	})
+
+	t.Run("returns error when schema is unmigrated", func(t *testing.T) {
+		t.Parallel()
+		mem, err := sql.Open("sqlite", ":memory:")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = mem.Close() })
+		mem.SetMaxOpenConns(1)
+
+		c, err := NewSQLiteClientEx(mem, os.Stdout)
+		require.NoError(t, err)
+
+		err = RequireMigratedSchema(t.Context(), c)
+		require.Error(t, err)
+		require.ErrorContains(t, err, "schema not initialised")
+	})
+}
+
 // stubMigrationSource implements source for testing.
 type stubMigrationSource struct {
 	migrations map[string]string

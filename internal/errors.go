@@ -17,6 +17,9 @@ import (
 	"github.com/shirou/gopsutil/v4/mem"
 )
 
+// ErrNotFound is returned when a requested entity does not exist in the data store.
+var ErrNotFound = errors.New("not found")
+
 // NewTraceError creates a new TraceError with the current caller information.
 // It captures the file name, line number, and function name where the error occurred.
 func NewTraceError() *TraceError {
@@ -101,6 +104,9 @@ func (e *StackTraceError) StackTrace() []string { return e.lines }
 // Error returns the full stack trace as a multi-line string.
 func (e *StackTraceError) Error() string { return strings.Join(append(e.lines, e.info), "\n") }
 
+// debugOSDetails contains cached system and runtime information collected at init time.
+var debugOSDetails string
+
 // init initializes the debugOSDetails variable with system and runtime information.
 // this information is collected once at package initialization and includes:
 // go version, OS, architecture, CPU count, process IDs, CPU model, and memory stats.
@@ -136,9 +142,3 @@ func init() {
 
 	debugOSDetails = strings.Join(details, "\n")
 }
-
-// debugOSDetails contains cached system and runtime information collected at init time.
-var debugOSDetails string
-
-// ErrNotFound is returned when a requested entity does not exist in the data store.
-var ErrNotFound = errors.New("not found")

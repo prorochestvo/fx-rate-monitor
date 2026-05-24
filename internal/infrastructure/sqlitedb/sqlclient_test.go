@@ -4,10 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -336,3 +340,122 @@ func (s *stubDataSource) Option(_ string, _ ...string) string { return "" }
 func (s *stubDataSource) OptionsNames() []string              { return nil }
 func (s *stubDataSource) Password() string                    { return "" }
 func (s *stubDataSource) Port() int                           { return 0 }
+
+// TestSQLitePoolPerConnectionPragmas is the plan 010 regression for the
+// pre-fix wiring where PRAGMA foreign_keys and busy_timeout were issued via
+// db.Exec on a single anonymous connection from the pool, leaving the other
+// six connections in production with the SQLite defaults. With the DSN-based
+// wiring every new pool connection picks up both PRAGMAs in the driver's
+// Open hook. The test exercises SetMaxOpenConns(N>1) so a regression would
+// surface here rather than as a non-deterministic production failure.
+func TestSQLitePoolPerConnectionPragmas(t *testing.T) {
+	t.Parallel()
+
+	const poolSize = 4
+
+	openPoolDB := func(t *testing.T) *sql.DB {
+		t.Helper()
+		// Shared-cache in-memory DB so every pool connection sees the same
+		// database; the per-test name keeps parallel subtests from sharing
+		// state.
+		safeName := strings.ReplaceAll(t.Name(), "/", "_")
+		dsn := connectionOptions(
+			fmt.Sprintf("file:%s?mode=memory&cache=shared", safeName))
+		db, err := sql.Open("sqlite", dsn)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+		db.SetMaxOpenConns(poolSize)
+		return db
+	}
+
+	t.Run("foreign_keys and busy_timeout apply to every pool connection", func(t *testing.T) {
+		t.Parallel()
+		db := openPoolDB(t)
+		ctx := t.Context()
+
+		// Reserve every slot in the pool before reading PRAGMA values so each
+		// db.Conn call is forced to open a fresh connection. With the pre-fix
+		// wiring all but one would report foreign_keys=0 / busy_timeout=0.
+		conns := make([]*sql.Conn, poolSize)
+		for i := 0; i < poolSize; i++ {
+			c, err := db.Conn(ctx)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = c.Close() })
+			conns[i] = c
+		}
+		for i, c := range conns {
+			var fk int
+			require.NoError(t, c.QueryRowContext(ctx, "PRAGMA foreign_keys;").Scan(&fk))
+			require.Equalf(t, 1, fk, "pool connection %d: foreign_keys not enabled", i)
+			var bt int
+			require.NoError(t, c.QueryRowContext(ctx, "PRAGMA busy_timeout;").Scan(&bt))
+			require.Equalf(t, 5000, bt, "pool connection %d: busy_timeout not 5000ms", i)
+		}
+	})
+
+	t.Run("orphan FK INSERT is rejected on every pool connection", func(t *testing.T) {
+		t.Parallel()
+		db := openPoolDB(t)
+		ctx := t.Context()
+
+		// Minimal schema. Two ExecContext calls because the modernc driver
+		// can stop at the first terminator when multiple statements are
+		// batched in one Exec — the production migrator splits per file
+		// for the same reason.
+		_, err := db.ExecContext(ctx, `CREATE TABLE rate_sources (name TEXT PRIMARY KEY);`)
+		require.NoError(t, err)
+		_, err = db.ExecContext(ctx, `CREATE TABLE rate_values (
+			id          TEXT PRIMARY KEY,
+			source_name TEXT NOT NULL REFERENCES rate_sources(name) ON DELETE CASCADE,
+			price       REAL NOT NULL
+		);`)
+		require.NoError(t, err)
+
+		// poolSize goroutines each open a transaction (pinning a distinct
+		// connection), wait at the barrier, then race their orphan INSERT.
+		// Without per-connection foreign_keys=ON, 6/7 (here, ~3/4) of these
+		// would succeed silently.
+		var (
+			wg      sync.WaitGroup
+			ready   = make(chan struct{}, poolSize)
+			start   = make(chan struct{})
+			results = make(chan error, poolSize)
+		)
+		for i := 0; i < poolSize; i++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				tx, err := db.BeginTx(ctx, nil)
+				if err != nil {
+					results <- fmt.Errorf("worker %d begin: %w", idx, err)
+					return
+				}
+				defer func() { _ = tx.Rollback() }()
+				ready <- struct{}{}
+				<-start
+				_, err = tx.ExecContext(ctx,
+					`INSERT INTO rate_values (id, source_name, price) VALUES (?, ?, ?);`,
+					fmt.Sprintf("rv-%d-%d", idx, time.Now().UnixNano()),
+					"DOES_NOT_EXIST",
+					100.0,
+				)
+				results <- err
+			}(i)
+		}
+		for i := 0; i < poolSize; i++ {
+			<-ready
+		}
+		close(start)
+		wg.Wait()
+		close(results)
+
+		var n int
+		for err := range results {
+			n++
+			require.Error(t, err, "INSERT with orphan source_name must be rejected")
+			require.Containsf(t, strings.ToLower(err.Error()), "foreign key",
+				"expected FOREIGN KEY constraint failure, got: %v", err)
+		}
+		require.Equal(t, poolSize, n)
+	})
+}

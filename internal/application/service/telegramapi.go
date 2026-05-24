@@ -9,9 +9,9 @@ import (
 	"strings"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
-	"github.com/seilbekskindirov/monitor/internal/application/labelfmt"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
+	"github.com/seilbekskindirov/monitor/internal/tools/labelfmt"
 )
 
 // NewTelegramApi constructs a fully stateless handler. The first three arguments are required.
@@ -40,6 +40,31 @@ type TelegramApi struct {
 	webAppURL      string
 }
 
+// telegramClient interface — includes all methods needed by the handlers.
+// *integration.TelegramBotClient satisfies this interface.
+type telegramClient interface {
+	Listen(context.Context, integration.UpdateHandler)
+	SendPlainTextMessage(context.Context, integration.TelegramChatID, string) error
+	SendMarkdownMessage(context.Context, integration.TelegramChatID, string) error
+	SendHTMLMessage(context.Context, integration.TelegramChatID, string) error
+	SendHTMLMessageReturning(context.Context, integration.TelegramChatID, string) (int, error)
+	SendHTMLMessageWithKeyboard(context.Context, integration.TelegramChatID, string, tgbotapi.InlineKeyboardMarkup) error
+	EditHTMLMessageWithKeyboard(context.Context, integration.TelegramChatID, int, string, tgbotapi.InlineKeyboardMarkup) error
+	EditMessageText(context.Context, integration.TelegramChatID, int, string) error
+	AnswerCallbackQuery(context.Context, string, string) error
+}
+
+type subscriptionRepository interface {
+	ObtainRateUserSubscriptionsByUserID(ctx context.Context, userType domain.UserType, userID string) ([]domain.RateUserSubscription, error)
+	RetainRateUserSubscription(ctx context.Context, sub *domain.RateUserSubscription) error
+	RemoveRateUserSubscription(ctx context.Context, sub *domain.RateUserSubscription) error
+}
+
+type sourceRepository interface {
+	ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error)
+	ObtainAllRateSources(ctx context.Context) ([]domain.RateSource, error)
+}
+
 // Run starts the Telegram bot update loop in the background.
 // It returns immediately; the loop runs until ctx is cancelled.
 func (h *TelegramApi) Run(ctx context.Context) {
@@ -52,8 +77,11 @@ func (h *TelegramApi) Run(ctx context.Context) {
 			h.handleCallback(ctx, cb)
 		case update.Message != nil:
 			m := update.Message
-			log.Printf("telegram: update id=%d chat=%d kind=message text=%q",
-				update.UpdateID, m.Chat.ID, m.Text)
+			// Log message metadata only; the body may contain PII or
+			// operator-supplied tokens. The handler decides what (if
+			// anything) to record about the content.
+			log.Printf("telegram: update id=%d chat=%d kind=message text_len=%d",
+				update.UpdateID, m.Chat.ID, len(m.Text))
 			h.handleMessage(ctx, m)
 		default:
 			log.Printf("telegram: update id=%d kind=other", update.UpdateID)
@@ -71,6 +99,13 @@ func (h *TelegramApi) handleMessage(ctx context.Context, msg *tgbotapi.Message) 
 	if lower == commandSubscriptions || lower == commandStart {
 		h.sendMainMenu(ctx, chatID, 0)
 		return
+	}
+
+	// Log slash-prefixed unknown commands so an operator can see WHICH command
+	// a user tried. Free-form text is deliberately omitted to keep PII out of
+	// logs (see the metadata-only log line in Run).
+	if strings.HasPrefix(lower, "/") {
+		log.Printf("telegram: unknown command chat=%d cmd=%q", chatID, lower)
 	}
 
 	h.notifyText(ctx, chatID,
@@ -210,12 +245,6 @@ func (h *TelegramApi) sendMainMenu(ctx context.Context, chatID int64, msgID int)
 	kb := tgbotapi.NewInlineKeyboardMarkup(rows...)
 	const text = "<b>Subscription Management</b>\nChoose an action:"
 	h.sendOrEditWithKeyboard(ctx, chatID, msgID, text, kb)
-}
-
-// newWebAppButton builds an inline keyboard button that opens the Telegram Mini App.
-// Uses the Bot API 6.0+ WebApp button type so Telegram injects initData into the page.
-func newWebAppButton(text, webAppURL string) tgbotapi.InlineKeyboardButton {
-	return tgbotapi.NewInlineKeyboardButtonWebApp(text, tgbotapi.WebAppInfo{URL: webAppURL})
 }
 
 // handleShow lists the caller's active subscriptions.
@@ -588,31 +617,6 @@ const (
 	maxCallbackDataBytes = 64
 )
 
-// telegramClient interface — includes all methods needed by the handlers.
-// *integration.TelegramBotClient satisfies this interface.
-type telegramClient interface {
-	Listen(context.Context, integration.UpdateHandler)
-	SendPlainTextMessage(context.Context, integration.TelegramChatID, string) error
-	SendMarkdownMessage(context.Context, integration.TelegramChatID, string) error
-	SendHTMLMessage(context.Context, integration.TelegramChatID, string) error
-	SendHTMLMessageReturning(context.Context, integration.TelegramChatID, string) (int, error)
-	SendHTMLMessageWithKeyboard(context.Context, integration.TelegramChatID, string, tgbotapi.InlineKeyboardMarkup) error
-	EditHTMLMessageWithKeyboard(context.Context, integration.TelegramChatID, int, string, tgbotapi.InlineKeyboardMarkup) error
-	EditMessageText(context.Context, integration.TelegramChatID, int, string) error
-	AnswerCallbackQuery(context.Context, string, string) error
-}
-
-type subscriptionRepository interface {
-	ObtainRateUserSubscriptionsByUserID(ctx context.Context, userType domain.UserType, userID string) ([]domain.RateUserSubscription, error)
-	RetainRateUserSubscription(ctx context.Context, sub *domain.RateUserSubscription) error
-	RemoveRateUserSubscription(ctx context.Context, sub *domain.RateUserSubscription) error
-}
-
-type sourceRepository interface {
-	ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error)
-	ObtainAllRateSources(ctx context.Context) ([]domain.RateSource, error)
-}
-
 func backKeyboard() tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
@@ -636,4 +640,10 @@ func conditionFromString(s string) domain.SubscriptionConditionType {
 	default:
 		return ""
 	}
+}
+
+// newWebAppButton builds an inline keyboard button that opens the Telegram Mini App.
+// Uses the Bot API 6.0+ WebApp button type so Telegram injects initData into the page.
+func newWebAppButton(text, webAppURL string) tgbotapi.InlineKeyboardButton {
+	return tgbotapi.NewInlineKeyboardButtonWebApp(text, tgbotapi.WebAppInfo{URL: webAppURL})
 }

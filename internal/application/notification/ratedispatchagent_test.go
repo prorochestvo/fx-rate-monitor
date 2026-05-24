@@ -73,7 +73,9 @@ func TestRateDispatchAgent_Run(t *testing.T) {
 		agent, err := NewRateDispatchAgent(tg, repo)
 		require.NoError(t, err)
 
-		_ = agent.Run(t.Context())
+		err = agent.Run(t.Context())
+		require.Error(t, err, "telegram send failure must surface to the caller")
+		require.Contains(t, err.Error(), "send failed")
 		require.Len(t, repo.retained, 1)
 		require.Equal(t, domain.RateUserEventStatusFailed, repo.retained[0].Status)
 		require.NotEmpty(t, repo.retained[0].LastError)

@@ -13,6 +13,30 @@ service. It hosts two subcommands:
 Run `doctor --help` for a combined overview, or `doctor <subcommand> --help` for
 per-subcommand flags and exit codes.
 
+## Lifecycle: one-shot cron binary
+
+Like `cmd/collector` and `cmd/notifier`, `doctor` is a one-shot process — it
+opens the DB, does its work, and exits. The only long-lived binary in this
+project is `cmd/web`. All three one-shot binaries are scheduled by host-side
+cron wrappers; none of them have systemd units.
+
+Suggested cadences (host-side `crontab`, times in UTC):
+
+| Binary | Cadence | Crontab |
+|--------|---------|---------|
+| `collector` | hourly | `0 * * * *` |
+| `notifier` | every 30 minutes | `*/30 * * * *` |
+| `doctor audit --all` | weekly, Saturday 00:00 | `0 0 * * 6` |
+
+Tighten `collector` to match your shortest source interval if needed —
+pick whichever is more frequent. `notifier` cadence sets dispatch latency
+for due notifications and is independent of the collector tick.
+
+`doctor rulegen` is on-demand by design: run it after a seed migration adds a
+new source, or after `doctor audit` reports a MISS. `doctor rulegen --all`
+exists as a batch escape hatch (and is safe to wire to cron — see the cost
+note below — but is not the default schedule).
+
 ## `doctor rulegen` — Rule generation
 
 ### When to run

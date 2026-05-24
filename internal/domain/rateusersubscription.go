@@ -83,12 +83,6 @@ func (rus *RateUserSubscription) IntervalDuration() (time.Duration, error) {
 	return d, nil
 }
 
-// parseCronSchedule is an unexported helper shared by IsCronDue and Validate.
-func parseCronSchedule(expr string) (cron.Schedule, error) {
-	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-	return parser.Parse(expr)
-}
-
 // IsCronDue reports whether the cron schedule has fired at least once since the
 // last notification (rus.UpdatedAt). now must be UTC.
 func (rus *RateUserSubscription) IsCronDue(now time.Time) (bool, error) {
@@ -214,3 +208,9 @@ const (
 	// ConditionTypeCron triggers according to a standard cron schedule expression.
 	ConditionTypeCron SubscriptionConditionType = "cron"
 )
+
+// parseCronSchedule is an unexported helper shared by IsCronDue and Validate.
+func parseCronSchedule(expr string) (cron.Schedule, error) {
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	return parser.Parse(expr)
+}

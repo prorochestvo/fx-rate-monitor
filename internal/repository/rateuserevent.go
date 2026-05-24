@@ -31,7 +31,7 @@ func (r *RateUserEventRepository) Name() string { return rateUserEventTableName 
 
 // CheckUP verifies that the repository can read from the rate_user_events table.
 func (r *RateUserEventRepository) CheckUP(ctx context.Context) error {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
@@ -41,11 +41,6 @@ func (r *RateUserEventRepository) CheckUP(ctx context.Context) error {
 	count, err := rateUserEventCount(tx, ctx, ";")
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
-		return err
-	}
-
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}
 
@@ -62,7 +57,7 @@ func (r *RateUserEventRepository) CheckUP(ctx context.Context) error {
 // ordered by created_at ASC. Pass no status arguments to return all statuses.
 // Always returns a non-nil slice on success.
 func (r *RateUserEventRepository) ObtainLastNRateUserEvents(ctx context.Context, offset, limit int64, status ...domain.RateUserEventStatus) ([]domain.RateUserEvent, error) {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
@@ -85,10 +80,6 @@ func (r *RateUserEventRepository) ObtainLastNRateUserEvents(ctx context.Context,
 		return nil, err
 	}
 	if count == 0 {
-		if err = tx.Rollback(); err != nil {
-			err = errors.Join(err, internal.NewStackTraceError())
-			return nil, err
-		}
 		return []domain.RateUserEvent{}, nil
 	}
 
@@ -142,18 +133,15 @@ func (r *RateUserEventRepository) ObtainLastNRateUserEvents(ctx context.Context,
 		items = append(items, item)
 	}
 
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return nil, err
-	}
-
 	return items, nil
 }
 
 // ObtainRateUserEventsBySourceName returns paginated events for one source,
 // optionally filtered by status. Pass no status args to get all statuses.
+// Events produced by cross-source dedup are stored with source_name = NULL and
+// will NOT appear in this query; use the global events view for those.
 func (r *RateUserEventRepository) ObtainRateUserEventsBySourceName(ctx context.Context, sourceName string, offset, limit int64, status ...domain.RateUserEventStatus) ([]domain.RateUserEvent, error) {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewStackTraceError())
 	}
@@ -175,7 +163,6 @@ func (r *RateUserEventRepository) ObtainRateUserEventsBySourceName(ctx context.C
 		return nil, errors.Join(err, internal.NewTraceError())
 	}
 	if count == 0 {
-		printRollbackError(tx)
 		return []domain.RateUserEvent{}, nil
 	}
 
@@ -220,7 +207,6 @@ func (r *RateUserEventRepository) ObtainRateUserEventsBySourceName(ctx context.C
 		}
 		items = append(items, item)
 	}
-	printRollbackError(tx)
 	return items, nil
 }
 
@@ -240,7 +226,7 @@ func (r *RateUserEventRepository) ObtainDailyEventSummaryBySource(ctx context.Co
 		`ORDER BY event_date DESC ` +
 		`LIMIT ? OFFSET ?;`
 
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewStackTraceError())
 	}
@@ -265,18 +251,13 @@ func (r *RateUserEventRepository) ObtainDailyEventSummaryBySource(ctx context.Co
 		items = append(items, item)
 	}
 
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return nil, err
-	}
-
 	return items, nil
 }
 
 // ObtainUnprocessedRateUserEvents returns all events in pending or failed status,
 // ordered by created_at ASC. Always returns a non-nil slice on success.
 func (r *RateUserEventRepository) ObtainUnprocessedRateUserEvents(ctx context.Context) ([]domain.RateUserEvent, error) {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
@@ -288,17 +269,12 @@ func (r *RateUserEventRepository) ObtainUnprocessedRateUserEvents(ctx context.Co
 		return nil, err
 	}
 
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return nil, err
-	}
-
 	return rows, nil
 }
 
 // ObtainRateUserEventById returns the event with the given ID, or nil if no row matches.
 func (r *RateUserEventRepository) ObtainRateUserEventById(ctx context.Context, id string) (*domain.RateUserEvent, error) {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
@@ -307,11 +283,6 @@ func (r *RateUserEventRepository) ObtainRateUserEventById(ctx context.Context, i
 
 	row, err := rateUserEventQueryRowContext(tx, ctx, "WHERE "+rateUserEventIdFieldName+" = ? ORDER BY "+rateUserEventCreatedAtFieldName+" ASC;", id)
 	if err != nil {
-		return nil, err
-	}
-
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
 	}
 
@@ -343,7 +314,7 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 	}
 	defer printRollbackError(tx)
 
-	count, err := rateUserEventCount(tx, ctx, " WHERE "+rateValueIdFieldName+" = ?;", record.ID)
+	count, err := rateUserEventCount(tx, ctx, " WHERE "+rateUserEventIdFieldName+" = ?;", record.ID)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return err
@@ -354,6 +325,10 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 		s := record.SentAt.Format(time.RFC3339)
 		sentAt = &s
 	}
+
+	// source_name became nullable in migration 202605.009. Empty string would
+	// violate the FK (no rate_source has name=''); send NULL instead.
+	sourceName := sourceNameForDB(record.SourceName)
 
 	var res sql.Result
 	if count > 0 {
@@ -368,7 +343,7 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 			rateUserEventCreatedAtFieldName + " = ? " +
 			"WHERE " + rateUserEventIdFieldName + " = ?;"
 		res, err = tx.ExecContext(ctx, cmd,
-			record.SourceName,
+			sourceName,
 			record.UserType,
 			record.UserID,
 			record.Message,
@@ -392,7 +367,7 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 			") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);"
 		res, err = tx.ExecContext(ctx, cmd,
 			record.ID,
-			record.SourceName,
+			sourceName,
 			record.UserType,
 			record.UserID,
 			record.Message,
@@ -502,9 +477,12 @@ const (
 	rateUserEventCreatedAtFieldName  = "created_at"
 	rateUserEventSentAtFieldName     = "sent_at"
 
+	// rateUserEventSqlSelect emits IFNULL(source_name, '') so callers can scan
+	// into a non-pointer string field; migration 202605.009 made the column
+	// nullable to support events created before a source was bound.
 	rateUserEventSqlSelect = "SELECT\n" +
 		rateUserEventIdFieldName + ", " +
-		rateUserEventSourceNameFieldName + ", " +
+		"IFNULL(" + rateUserEventSourceNameFieldName + ", '') AS " + rateUserEventSourceNameFieldName + ", " +
 		rateUserEventUserTypeFieldName + ", " +
 		rateUserEventUserIdFieldName + ", " +
 		rateUserEventMessageFieldName + ", " +
@@ -514,6 +492,16 @@ const (
 		rateUserEventSentAtFieldName +
 		"\nFROM " + rateUserEventTableName
 )
+
+// sourceNameForDB returns nil for empty source name so the INSERT/UPDATE
+// produces SQL NULL and skips FK enforcement; SQLite only checks the FK on
+// non-NULL values.
+func sourceNameForDB(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
 
 func generateRateUserEventID() string {
 	now := time.Now().UTC()

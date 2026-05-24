@@ -36,14 +36,15 @@ cmd/
   collector/     # scrapes active rate sources on each invocation
   notifier/      # check-agent + dispatch-agent, drains the notification pool
   web/           # HTTP dashboard + REST API + Telegram callback router
-  wasm/          # GOOS=js GOARCH=wasm dashboard renderer
+  wasm/          # GOOS=js GOARCH=wasm frontend: renderer + apiclient/application/ui/dom
 internal/
   application/   # collection / notification agents, REST + Telegram services
   domain/        # RateSource, RateValue, RateUserSubscription, RateUserEvent, …
-  gateway/       # http.ServeMux wiring; httpV1/{router,handlers,routes,dto}
+  dto/           # JSON wire DTOs shared by the server (gateway) and the WASM client
+  gateway/       # http.ServeMux wiring; httpV1/{handlers,routes}
   repository/    # one repo per table; each owns its own DDL via Migration()
-  infrastructure/# sqlitedb client + migrator, telegrambot client, scheduler
-  tools/         # rateextractor, rateforecaster, threadsafe (buffer + cache)
+  infrastructure/# sqlitedb client + migrator, telegrambot client
+  tools/         # rateextractor, rateforecaster, labelfmt, tgwebapp, threadsafe
   errors.go      # PublicError / TraceError / StackTraceError / HttpCodeError
   logger.go      # cyclic file logger built on loginjector
 configs/         # nginx, systemd, sources example
@@ -237,11 +238,11 @@ guidance see `cmd/doctor/README.md`.
 
 ## Deployment
 
-`deploy/monitor.service` is a reference systemd unit; `deploy/README.md` walks
-through creating a dedicated user, installing the binary, and enabling the unit.
-`configs/srv.{prime,stage}_monitor.service` are the production units used by
-the `make deploy_environment` target (which `scp`s nginx + systemd config to the
-target host).
+CI workflows in `.github/workflows/{stage,prime}.yml` drive every deploy:
+checksum-validate binaries, pause cron wrappers, run `cmd/migrator`, swap
+the webapp binary, restart the unit, resume cron. The live systemd units are
+`configs/srv.{stage,prime}_monitor.service`. See `deploy/README.md` for the
+operator-facing summary, including the "Exit code & alerting" contract.
 
 ## License
 

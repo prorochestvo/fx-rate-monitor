@@ -15,9 +15,8 @@ import (
 
 	"github.com/seilbekskindirov/monitor/internal"
 	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/repository"
+	"github.com/seilbekskindirov/monitor/internal/dto"
 	"github.com/seilbekskindirov/monitor/internal/tools/tgwebapp"
-	"github.com/seilbekskindirov/monitor/pkg/api"
 )
 
 // NewHandler constructs a Handler wired to the rate service and, optionally,
@@ -58,10 +57,62 @@ type Handler struct {
 	nowFn func() time.Time
 }
 
-// internalError logs the underlying error with a trace and returns a generic 500 to the client.
-func (h *Handler) internalError(w http.ResponseWriter, err error) {
-	log.Print(errors.Join(err, internal.NewTraceError()))
-	http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+type rateService interface {
+	CheckUP(ctx context.Context) error
+	ObtainLastNExecutionHistoryBySourceName(ctx context.Context, name string, limit int64) ([]domain.ExecutionHistory, error)
+	ObtainLatestExecutionHistoryBySources(ctx context.Context, names []string) (map[string]domain.ExecutionHistory, error)
+	ObtainLastSuccessNExecutionHistoryBySourceName(ctx context.Context, name string, limit int64) ([]domain.ExecutionHistory, error)
+	ObtainAllRateSources(ctx context.Context) ([]domain.RateSource, error)
+	UpdateRateSourceActive(ctx context.Context, name string, active bool) error
+	ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error)
+	ObtainListOfLastRateUserEvent(ctx context.Context, limit int64) ([]domain.RateUserEvent, error)
+	ObtainFailedListOfRateUserEvent(ctx context.Context, offset, limit int64) ([]domain.RateUserEvent, error)
+	ObtainPendingRateUserEvents(ctx context.Context) ([]domain.RateUserEvent, error)
+	ObtainRateValueChartBySourceName(ctx context.Context, name string, period domain.ChartPeriod) ([]domain.ChartPoint, error)
+	ObtainFailedRateUserEventsBySourceName(ctx context.Context, sourceName string, page, pageSize int64) ([]domain.RateUserEvent, error)
+	ObtainSubscriptionSummaryBySource(ctx context.Context, sourceName string) ([]domain.RateUserSubscriptionSummary, error)
+	ObtainStats(ctx context.Context) (domain.StatsResult, error)
+	ObtainRateUserSubscriptionsBySourcePaged(ctx context.Context, sourceName string, offset, limit int64) ([]domain.RateUserSubscriptionDetail, error)
+	ObtainDailyEventSummaryBySource(ctx context.Context, sourceName string, offset, limit int64) ([]domain.RateUserEventDailySummary, error)
+	ObtainLastNExecutionHistoryErrors(ctx context.Context, offset, limit int64) ([]domain.ExecutionHistory, error)
+}
+
+type meSubscriptionRepository interface {
+	ObtainRateUserSubscriptionsByUserID(ctx context.Context, userType domain.UserType, userID string) ([]domain.RateUserSubscription, error)
+}
+
+type meSourceRepository interface {
+	ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error)
+	ObtainRateSourcesByNames(ctx context.Context, names []string) (map[string]domain.RateSource, error)
+}
+
+type meRateValueRepository interface {
+	ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error)
+	ObtainLatestRateValuesBySourceNames(ctx context.Context, names []string) (map[string]domain.RateValue, error)
+}
+
+// Healthz reports whether the service can reach its dependencies. Returns
+// 200 OK when the database is reachable, 503 Service Unavailable otherwise.
+// No authentication; the response body carries no PII; intended for
+// monitoring probes and systemd readiness checks.
+//
+// GET /healthz
+func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
+	if err := h.rateService.CheckUP(r.Context()); err != nil {
+		// The service layer already attaches a trace via errors.Join in
+		// RateRestApi.CheckUP; don't double-wrap.
+		log.Print(fmt.Errorf("healthz: %w", err))
+		// Write the headers manually so the response advertises JSON.
+		// http.Error would force Content-Type=text/plain and add a
+		// trailing newline.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"status":"unavailable"}`))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
 // ListSources returns every configured rate source decorated with its latest execution status.
@@ -74,9 +125,26 @@ func (h *Handler) ListSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := make([]api.SourceResponse, 0, len(sources))
+	// Bulk-load the latest execution_history row per source so the response
+	// loop is O(1) per source instead of issuing one DB transaction per
+	// source (the previous N+1 pattern). A bulk failure is logged but the
+	// loop still emits source rows without execution fields populated.
+	names := make([]string, 0, len(sources))
 	for _, s := range sources {
-		item := api.SourceResponse{
+		names = append(names, s.Name)
+	}
+	latest, latestErr := h.rateService.ObtainLatestExecutionHistoryBySources(r.Context(), names)
+	if latestErr != nil {
+		log.Print(errors.Join(
+			fmt.Errorf("bulk latest execution: %w", latestErr),
+			internal.NewTraceError(),
+		))
+		latest = map[string]domain.ExecutionHistory{}
+	}
+
+	resp := make([]dto.SourceResponse, 0, len(sources))
+	for _, s := range sources {
+		item := dto.SourceResponse{
 			Name:          s.Name,
 			Title:         s.Title,
 			BaseCurrency:  s.BaseCurrency,
@@ -84,16 +152,10 @@ func (h *Handler) ListSources(w http.ResponseWriter, r *http.Request) {
 			Interval:      s.Interval,
 			Active:        s.Active,
 		}
-		recs, recsErr := h.rateService.ObtainLastNExecutionHistoryBySourceName(r.Context(), s.Name, 1)
-		if recsErr != nil {
-			log.Print(errors.Join(
-				fmt.Errorf("list last execution for %q: %w", s.Name, recsErr),
-				internal.NewTraceError(),
-			))
-		} else if len(recs) > 0 {
-			item.LastSuccess = recs[0].Success
-			item.LastError = recs[0].Error
-			item.LastRunAt = recs[0].Timestamp.Format(time.RFC3339)
+		if rec, ok := latest[s.Name]; ok {
+			item.LastSuccess = rec.Success
+			item.LastError = rec.Error
+			item.LastRunAt = rec.Timestamp.Format(time.RFC3339)
 		}
 		resp = append(resp, item)
 	}
@@ -122,9 +184,9 @@ func (h *Handler) ListRates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := make([]api.RateResponse, 0, len(rates))
+	resp := make([]dto.RateResponse, 0, len(rates))
 	for _, rv := range rates {
-		resp = append(resp, api.RateResponse{
+		resp = append(resp, dto.RateResponse{
 			ID:            rv.ID,
 			Price:         rv.Price,
 			BaseCurrency:  rv.BaseCurrency,
@@ -155,9 +217,9 @@ func (h *Handler) ListHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := make([]api.HistoryResponse, 0, len(recs))
+	resp := make([]dto.HistoryResponse, 0, len(recs))
 	for _, rec := range recs {
-		resp = append(resp, api.HistoryResponse{
+		resp = append(resp, dto.HistoryResponse{
 			ID:         rec.ID,
 			SourceName: rec.SourceName,
 			Success:    rec.Success,
@@ -185,9 +247,9 @@ func (h *Handler) ListNotifications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := make([]api.NotificationResponse, 0, len(records))
+	resp := make([]dto.NotificationResponse, 0, len(records))
 	for _, rec := range records {
-		resp = append(resp, api.NotificationResponse{
+		resp = append(resp, dto.NotificationResponse{
 			ID:        rec.ID,
 			UserType:  string(rec.UserType),
 			UserID:    rec.UserID,
@@ -221,9 +283,9 @@ func (h *Handler) ListFailedNotifications(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	resp := make([]api.NotificationResponse, 0, len(records))
+	resp := make([]dto.NotificationResponse, 0, len(records))
 	for _, rec := range records {
-		resp = append(resp, api.NotificationResponse{
+		resp = append(resp, dto.NotificationResponse{
 			ID:        rec.ID,
 			UserType:  string(rec.UserType),
 			UserID:    rec.UserID,
@@ -245,9 +307,9 @@ func (h *Handler) ListPendingEvents(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
-	resp := make([]api.NotificationResponse, 0, len(events))
+	resp := make([]dto.NotificationResponse, 0, len(events))
 	for _, e := range events {
-		resp = append(resp, api.NotificationResponse{
+		resp = append(resp, dto.NotificationResponse{
 			ID:        e.ID,
 			UserType:  string(e.UserType),
 			Status:    string(e.Status),
@@ -266,18 +328,18 @@ func (h *Handler) GetRatesChart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"missing source name"}`, http.StatusBadRequest)
 		return
 	}
-	period := repository.ChartPeriod(r.URL.Query().Get("period"))
+	period := domain.ChartPeriod(r.URL.Query().Get("period"))
 	if period == "" {
-		period = repository.ChartPeriodWeek
+		period = domain.ChartPeriodWeek
 	}
 	points, err := h.rateService.ObtainRateValueChartBySourceName(r.Context(), name, period)
 	if err != nil {
 		h.internalError(w, err)
 		return
 	}
-	resp := make([]api.ChartPointResponse, 0, len(points))
+	resp := make([]dto.ChartPointResponse, 0, len(points))
 	for _, p := range points {
-		resp = append(resp, api.ChartPointResponse{Label: p.Label, Price: p.Price})
+		resp = append(resp, dto.ChartPointResponse{Label: p.Label, Price: p.Price})
 	}
 	writeJSON(w, resp)
 }
@@ -298,9 +360,9 @@ func (h *Handler) ListSourceFailedEvents(w http.ResponseWriter, r *http.Request)
 		h.internalError(w, err)
 		return
 	}
-	resp := make([]api.NotificationResponse, 0, len(events))
+	resp := make([]dto.NotificationResponse, 0, len(events))
 	for _, e := range events {
-		resp = append(resp, api.NotificationResponse{
+		resp = append(resp, dto.NotificationResponse{
 			ID:        e.ID,
 			UserType:  string(e.UserType),
 			Status:    string(e.Status),
@@ -326,9 +388,9 @@ func (h *Handler) ListSourceSubscriptions(w http.ResponseWriter, r *http.Request
 		h.internalError(w, err)
 		return
 	}
-	resp := make([]api.SubscriptionSummaryResponse, 0, len(summaries))
+	resp := make([]dto.SubscriptionSummaryResponse, 0, len(summaries))
 	for _, s := range summaries {
-		item := api.SubscriptionSummaryResponse{
+		item := dto.SubscriptionSummaryResponse{
 			SourceName:        s.SourceName,
 			UserType:          string(s.UserType),
 			SubscriptionCount: s.SubscriptionCount,
@@ -353,7 +415,7 @@ func (h *Handler) ToggleSourceActive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var body api.SourceActiveRequest
+	var body dto.SourceActiveRequest
 	if err = json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
@@ -379,7 +441,7 @@ func (h *Handler) ListStats(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
-	writeJSON(w, api.StatsResponse{
+	writeJSON(w, dto.StatsResponse{
 		SourcesTotal:  stats.SourcesTotal,
 		SourcesActive: stats.SourcesActive,
 		ErrorsTotal:   stats.ErrorsTotal,
@@ -404,9 +466,9 @@ func (h *Handler) ListSourceSubscriptionDetails(w http.ResponseWriter, r *http.R
 		h.internalError(w, err)
 		return
 	}
-	resp := make([]api.SubscriptionDetailResponse, 0, len(items))
+	resp := make([]dto.SubscriptionDetailResponse, 0, len(items))
 	for _, s := range items {
-		item := api.SubscriptionDetailResponse{
+		item := dto.SubscriptionDetailResponse{
 			ID:         s.ID,
 			UserType:   string(s.UserType),
 			SourceName: s.SourceName,
@@ -438,9 +500,9 @@ func (h *Handler) ListSourceDailyEvents(w http.ResponseWriter, r *http.Request) 
 		h.internalError(w, err)
 		return
 	}
-	resp := make([]api.DailyEventResponse, 0, len(items))
+	resp := make([]dto.DailyEventResponse, 0, len(items))
 	for _, s := range items {
-		resp = append(resp, api.DailyEventResponse{
+		resp = append(resp, dto.DailyEventResponse{
 			Type:         s.UserType,
 			Date:         s.Date,
 			SuccessCount: s.SuccessCount,
@@ -463,9 +525,9 @@ func (h *Handler) ListExecutionErrors(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, err)
 		return
 	}
-	resp := make([]api.ExecutionErrorResponse, 0, len(items))
+	resp := make([]dto.ExecutionErrorResponse, 0, len(items))
 	for _, rec := range items {
-		resp = append(resp, api.ExecutionErrorResponse{
+		resp = append(resp, dto.ExecutionErrorResponse{
 			ID:         rec.ID,
 			SourceName: rec.SourceName,
 			Error:      rec.Error,
@@ -474,6 +536,156 @@ func (h *Handler) ListExecutionErrors(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, resp)
 }
+
+// ListMeSubscriptions returns the caller's own subscriptions enriched with the
+// latest rate value and timestamp per source.
+//
+// GET /api/me/subscriptions
+// Auth: X-Telegram-Init-Data header. The Telegram WebApp JS SDK always sends
+// this header; the previous ?initData= query-string fallback was removed
+// because the HMAC-signed initData would otherwise land in access logs and
+// Referer headers for up to its 24h validity window.
+func (h *Handler) ListMeSubscriptions(w http.ResponseWriter, r *http.Request) {
+	initData := r.Header.Get("X-Telegram-Init-Data")
+
+	userID, err := h.validateInitData(initData, h.botToken, meSubscriptionsMaxAge, h.nowFn())
+	if err != nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	q := r.URL.Query().Get("q")
+	page := parsePage(r.URL.Query().Get("page"))
+	pageSize, err := parsePageSize(r.URL.Query().Get("page_size"))
+	if err != nil {
+		http.Error(w, `{"error":"page_size must be a number"}`, http.StatusBadRequest)
+		return
+	}
+
+	// TODO: DM-only assumption — this bot stores subscriptions keyed by Telegram chat_id,
+	// which equals user_id for direct chats. If the bot is ever added to groups the
+	// subscriptions keyed under group chat_ids will not appear here. See plan R5.
+	tgUserID := strconv.FormatInt(userID, 10)
+	subs, err := h.meSubRepo.ObtainRateUserSubscriptionsByUserID(r.Context(), domain.UserTypeTelegram, tgUserID)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+
+	// Group subscriptions by source name, collecting conditions for the same source.
+	type group struct {
+		sourceName string
+		conditions []string
+	}
+	seen := make(map[string]int) // sourceName → index in groups
+	groups := make([]group, 0)
+	for _, s := range subs {
+		cond := string(s.ConditionType) + ":" + s.ConditionValue
+		if idx, ok := seen[s.SourceName]; ok {
+			groups[idx].conditions = append(groups[idx].conditions, cond)
+		} else {
+			seen[s.SourceName] = len(groups)
+			groups = append(groups, group{sourceName: s.SourceName, conditions: []string{cond}})
+		}
+	}
+
+	// Bulk-load every distinct source up front so the search and render loops
+	// are O(1) per group instead of issuing one ObtainRateSourceByName
+	// transaction each (the previous 2*M N+1 pattern).
+	sourceNames := make([]string, 0, len(groups))
+	for _, g := range groups {
+		sourceNames = append(sourceNames, g.sourceName)
+	}
+	sourceMap, err := h.meSourceRepo.ObtainRateSourcesByNames(r.Context(), sourceNames)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+
+	// Apply case-insensitive substring search before pagination.
+	var filtered []group
+	if q == "" {
+		filtered = groups
+	} else {
+		lq := strings.ToLower(q)
+		for _, g := range groups {
+			src, ok := sourceMap[g.sourceName]
+			if !ok {
+				continue
+			}
+			pair := strings.ToLower(src.BaseCurrency + "/" + src.QuoteCurrency)
+			if strings.Contains(strings.ToLower(src.Title), lq) ||
+				strings.Contains(strings.ToLower(src.Name), lq) ||
+				strings.Contains(pair, lq) {
+				filtered = append(filtered, g)
+			}
+		}
+	}
+
+	total := int64(len(filtered))
+
+	// Paginate.
+	offset := (page - 1) * pageSize
+	if offset >= total {
+		offset = max(total, 0)
+	}
+	end := offset + pageSize
+	if end > total {
+		end = total
+	}
+	pageItems := filtered[offset:end]
+
+	// Bulk-load the latest rate value per page item so the render loop is
+	// O(1) per row. Previously this issued one ObtainLastNRateValuesBySourceName
+	// transaction per page item — pageSize=50 → 50 round-trips per request.
+	rateNames := make([]string, 0, len(pageItems))
+	for _, g := range pageItems {
+		rateNames = append(rateNames, g.sourceName)
+	}
+	latestRates, err := h.meRateValueRepo.ObtainLatestRateValuesBySourceNames(r.Context(), rateNames)
+	if err != nil {
+		h.internalError(w, err)
+		return
+	}
+
+	items := make([]dto.MeSubscriptionRow, 0, len(pageItems))
+	for _, g := range pageItems {
+		row := dto.MeSubscriptionRow{
+			SourceName: g.sourceName,
+			Conditions: g.conditions,
+		}
+		if src, ok := sourceMap[g.sourceName]; ok {
+			row.SourceTitle = src.Title
+			row.BaseCurrency = src.BaseCurrency
+			row.QuoteCurrency = src.QuoteCurrency
+		}
+		if rv, ok := latestRates[g.sourceName]; ok {
+			row.LatestPrice = rv.Price
+			row.LatestAt = rv.Timestamp.UTC().Format(time.RFC3339)
+		}
+		items = append(items, row)
+	}
+
+	writeJSON(w, dto.MeSubscriptionsResponse{
+		Items:    items,
+		Page:     page,
+		PageSize: pageSize,
+		Total:    total,
+	})
+}
+
+// internalError logs the underlying error with a trace and returns a generic 500 to the client.
+func (h *Handler) internalError(w http.ResponseWriter, err error) {
+	log.Print(errors.Join(err, internal.NewTraceError()))
+	http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+}
+
+const (
+	meSubscriptionsMaxAge      = 24 * time.Hour
+	meSubscriptionsDefaultPage = int64(1)
+	meSubscriptionsDefaultSize = int64(10)
+	meSubscriptionsMaxSize     = int64(50)
+)
 
 // writeJSON sets Content-Type and encodes v as JSON.
 func writeJSON(w http.ResponseWriter, v any) {
@@ -505,24 +717,6 @@ func parsePage(raw string) int64 {
 		return 1
 	}
 	return page
-}
-
-type rateService interface {
-	ObtainLastNExecutionHistoryBySourceName(ctx context.Context, name string, limit int64) ([]domain.ExecutionHistory, error)
-	ObtainLastSuccessNExecutionHistoryBySourceName(ctx context.Context, name string, limit int64) ([]domain.ExecutionHistory, error)
-	ObtainAllRateSources(ctx context.Context) ([]domain.RateSource, error)
-	UpdateRateSourceActive(ctx context.Context, name string, active bool) error
-	ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error)
-	ObtainListOfLastRateUserEvent(ctx context.Context, limit int64) ([]domain.RateUserEvent, error)
-	ObtainFailedListOfRateUserEvent(ctx context.Context, offset, limit int64) ([]domain.RateUserEvent, error)
-	ObtainPendingRateUserEvents(ctx context.Context) ([]domain.RateUserEvent, error)
-	ObtainRateValueChartBySourceName(ctx context.Context, name string, period repository.ChartPeriod) ([]repository.ChartPoint, error)
-	ObtainFailedRateUserEventsBySourceName(ctx context.Context, sourceName string, page, pageSize int64) ([]domain.RateUserEvent, error)
-	ObtainSubscriptionSummaryBySource(ctx context.Context, sourceName string) ([]domain.RateUserSubscriptionSummary, error)
-	ObtainStats(ctx context.Context) (repository.StatsResult, error)
-	ObtainRateUserSubscriptionsBySourcePaged(ctx context.Context, sourceName string, offset, limit int64) ([]domain.RateUserSubscriptionDetail, error)
-	ObtainDailyEventSummaryBySource(ctx context.Context, sourceName string, offset, limit int64) ([]domain.RateUserEventDailySummary, error)
-	ObtainLastNExecutionHistoryErrors(ctx context.Context, offset, limit int64) ([]domain.ExecutionHistory, error)
 }
 
 // extractLimit reads the ?limit= query parameter, clamped to [10, 100], default 50.
@@ -570,134 +764,6 @@ func extractName(r *http.Request) (string, error) {
 	return v, nil
 }
 
-const (
-	meSubscriptionsMaxAge      = 24 * time.Hour
-	meSubscriptionsDefaultPage = int64(1)
-	meSubscriptionsDefaultSize = int64(10)
-	meSubscriptionsMaxSize     = int64(50)
-)
-
-// ListMeSubscriptions returns the caller's own subscriptions enriched with the
-// latest rate value and timestamp per source.
-//
-// GET /api/me/subscriptions
-// Auth: X-Telegram-Init-Data header, or ?initData= query string as fallback.
-func (h *Handler) ListMeSubscriptions(w http.ResponseWriter, r *http.Request) {
-	initData := r.Header.Get("X-Telegram-Init-Data")
-	if initData == "" {
-		initData = r.URL.Query().Get("initData")
-	}
-
-	userID, err := h.validateInitData(initData, h.botToken, meSubscriptionsMaxAge, h.nowFn())
-	if err != nil {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-		return
-	}
-
-	q := r.URL.Query().Get("q")
-	page := parsePage(r.URL.Query().Get("page"))
-	pageSize, err := parsePageSize(r.URL.Query().Get("page_size"))
-	if err != nil {
-		http.Error(w, `{"error":"page_size must be a number"}`, http.StatusBadRequest)
-		return
-	}
-
-	// TODO: DM-only assumption — this bot stores subscriptions keyed by Telegram chat_id,
-	// which equals user_id for direct chats. If the bot is ever added to groups the
-	// subscriptions keyed under group chat_ids will not appear here. See plan R5.
-	tgUserID := strconv.FormatInt(userID, 10)
-	subs, err := h.meSubRepo.ObtainRateUserSubscriptionsByUserID(r.Context(), domain.UserTypeTelegram, tgUserID)
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
-
-	// Group subscriptions by source name, collecting conditions for the same source.
-	type group struct {
-		sourceName string
-		conditions []string
-	}
-	seen := make(map[string]int) // sourceName → index in groups
-	groups := make([]group, 0)
-	for _, s := range subs {
-		cond := string(s.ConditionType) + ":" + s.ConditionValue
-		if idx, ok := seen[s.SourceName]; ok {
-			groups[idx].conditions = append(groups[idx].conditions, cond)
-		} else {
-			seen[s.SourceName] = len(groups)
-			groups = append(groups, group{sourceName: s.SourceName, conditions: []string{cond}})
-		}
-	}
-
-	// Apply case-insensitive substring search before pagination.
-	var filtered []group
-	if q == "" {
-		filtered = groups
-	} else {
-		lq := strings.ToLower(q)
-		for _, g := range groups {
-			src, srcErr := h.meSourceRepo.ObtainRateSourceByName(r.Context(), g.sourceName)
-			if srcErr != nil || src == nil {
-				continue
-			}
-			pair := strings.ToLower(src.BaseCurrency + "/" + src.QuoteCurrency)
-			if strings.Contains(strings.ToLower(src.Title), lq) ||
-				strings.Contains(strings.ToLower(src.Name), lq) ||
-				strings.Contains(pair, lq) {
-				filtered = append(filtered, g)
-			}
-		}
-	}
-
-	total := int64(len(filtered))
-
-	// Paginate.
-	offset := (page - 1) * pageSize
-	if offset >= total {
-		offset = max(total, 0)
-	}
-	end := offset + pageSize
-	if end > total {
-		end = total
-	}
-	page_items := filtered[offset:end]
-
-	items := make([]api.MeSubscriptionRow, 0, len(page_items))
-	for _, g := range page_items {
-		src, srcErr := h.meSourceRepo.ObtainRateSourceByName(r.Context(), g.sourceName)
-		if srcErr != nil {
-			h.internalError(w, srcErr)
-			return
-		}
-		row := api.MeSubscriptionRow{
-			SourceName: g.sourceName,
-			Conditions: g.conditions,
-		}
-		if src != nil {
-			row.SourceTitle = src.Title
-			row.BaseCurrency = src.BaseCurrency
-			row.QuoteCurrency = src.QuoteCurrency
-		}
-		rates, ratesErr := h.meRateValueRepo.ObtainLastNRateValuesBySourceName(r.Context(), g.sourceName, 1)
-		if ratesErr != nil {
-			h.internalError(w, ratesErr)
-			return
-		}
-		if len(rates) > 0 {
-			row.LatestPrice = rates[0].Price
-			row.LatestAt = rates[0].Timestamp.UTC().Format(time.RFC3339)
-		}
-		items = append(items, row)
-	}
-
-	writeJSON(w, api.MeSubscriptionsResponse{
-		Items:    items,
-		Page:     page,
-		PageSize: pageSize,
-		Total:    total,
-	})
-}
-
 // parsePageSize parses a "page_size" query parameter, clamped to [1, 50], default 10.
 func parsePageSize(raw string) (int64, error) {
 	if raw == "" {
@@ -714,16 +780,4 @@ func parsePageSize(raw string) (int64, error) {
 		n = meSubscriptionsMaxSize
 	}
 	return n, nil
-}
-
-type meSubscriptionRepository interface {
-	ObtainRateUserSubscriptionsByUserID(ctx context.Context, userType domain.UserType, userID string) ([]domain.RateUserSubscription, error)
-}
-
-type meSourceRepository interface {
-	ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error)
-}
-
-type meRateValueRepository interface {
-	ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error)
 }

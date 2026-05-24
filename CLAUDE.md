@@ -2,10 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **Template note.** This is a project-agnostic starter. Replace the `<...>` placeholders
-> and the example sections below with the real values for your project. Anything inside
-> a `<...>` is a marker that must be filled in or removed before the file is considered
-> complete.
+## Language
+
+The same rule that governs plan files governs every persisted text artifact in this
+repo (plans, commit messages, PR descriptions, code comments, docs):
+
+- **Prose is English.** Write all persisted prose in English regardless of the prompt
+  language. This includes the user's own conclusions, decisions, and reasoning — when
+  capturing what the user concluded or decided (even a direct quote of something they
+  said in Russian), record it in English, not verbatim in the original language.
+- **Literal data tokens stay verbatim — never translate them.** Strings that exist to
+  be matched, parsed, or linked against something external (e.g. currency/column
+  labels like `Покупка`/`Сату` scraped from bank pages, identifiers, config keys,
+  fixture values, regex literals) must be preserved byte-for-byte even when non-English.
+  Translating them silently breaks logic and linkage. The English-only rule is about
+  prose, not data. When unsure whether something is prose or data, ask before changing it.
 
 ## Build & Run Commands
 
@@ -41,22 +52,29 @@ CGO_ENABLED=0 go test -race -coverprofile=cover.out ./... && go tool cover -html
 
 ## Architecture Overview
 
-<One-paragraph description of what this service does and its main flow.>
+A self-hosted FX-rate monitor. The `collector` binary scrapes each configured rate
+source on every invocation (plain HTTP, or a chromedp-driven headless browser for
+JS-rendered pages), extracts the numeric rate via per-source rules, and stores it in
+SQLite. The `notifier` binary runs a check-agent that evaluates user subscription
+conditions (delta / interval / daily / cron) against the latest rates and enqueues
+notifications, and a dispatch-agent that drains the pool and sends them over Telegram.
+The `web` binary serves a REST API plus an embedded dashboard (HTML and a WASM build)
+and routes Telegram callbacks. `migrator` applies schema migrations; `doctor` provides
+operator tooling (LLM rule generation and source auditing).
 
 ### Layer Responsibilities
 
-Replace the rows below with the real layout of your project. The example below uses a
-common layered Go layout — keep, edit, or remove rows as needed.
-
 | Layer | Location | Role |
 |-------|----------|------|
-| Entry point | `cmd/<binary>/` | Composition root, server bootstrap |
-| Application | `internal/application/service/` | Business logic orchestration |
+| Entry point | `cmd/<binary>/` | Composition root per binary (collector, notifier, web, migrator, doctor, wasm) |
+| Application | `internal/application/` | Business logic: collection, notification, rulegen, sourceaudit, REST/Telegram services |
 | Domain | `internal/domain/` | Value objects / models, no logic |
+| DTO | `internal/dto/` | JSON wire contract shared by the server (gateway) and the WASM client |
 | Gateway | `internal/gateway/` | Routers, controllers, middleware |
 | Repository | `internal/repository/` | Persistence queries |
-| Infrastructure | `internal/infrastructure/` | External clients (DB, third-party APIs) |
+| Infrastructure | `internal/infrastructure/` | External clients (SQLite, Telegram, AI providers) |
 | Tools | `internal/tools/` | Cross-cutting utilities |
+| Frontend | `cmd/wasm/` | GOOS=js GOARCH=wasm dashboard (apiclient, application, ui, dom) |
 
 ### Key Patterns
 
@@ -81,7 +99,7 @@ common layered Go layout — keep, edit, or remove rows as needed.
 - `GET /api/events/pending` — all currently pending notification events
 - `GET /api/notifications` — last N notification pool records
 - `GET /api/notifications/failed` — all failed notification pool records
-- `GET /api/me/subscriptions` — caller's own subscriptions enriched with latest rate values; authenticated via Telegram WebApp initData HMAC (`X-Telegram-Init-Data` header or `?initData=` query string fallback)
+- `GET /api/me/subscriptions` — caller's own subscriptions enriched with latest rate values; authenticated via Telegram WebApp initData HMAC (`X-Telegram-Init-Data` header only; the signed payload must not be passed via query string because it would leak into access logs and Referer headers)
 - `GET /app/subscriptions.html` — Telegram Mini App HTML page (served by embedded static file server; no dedicated route needed)
 
 > Rule (re-)generation and seed auditing are operator-only tools, invoked
@@ -97,6 +115,25 @@ common layered Go layout — keep, edit, or remove rows as needed.
 
 Engine: SQLite, accessed via the pure-Go `modernc.org/sqlite` driver (no CGO).
 
+Three PRAGMAs are applied on connection open:
+- `foreign_keys=ON` and `busy_timeout=5000` are passed as `?_pragma=`
+  query parameters on the DSN (see `connectionOptions` in
+  `sqlclient.go`). The `modernc.org/sqlite` driver re-applies them in
+  its `Open` hook on every new connection the `database/sql` pool
+  opens, which is the only way to keep these per-connection settings
+  consistent across `SetMaxOpenConns(N>1)`.
+- `journal_mode=WAL` is persisted in the database file header and is
+  set once via `db.Exec` inside `NewSQLiteClientEx`.
+
+`busy_timeout` (5 s) is the driver-level retry window for concurrent
+writers; it must stay strictly less than the Go-level `Timeout` so the
+context deadline always fires after the driver retry expires.
+
+Foreign keys point from `rate_values`, `rate_user_subscriptions`, and
+`rate_user_events` to `rate_sources(name)` with `ON DELETE CASCADE` —
+deleting a source destroys all dependent rows. See the warning on
+`RemoveRateSource` before wiring it to any endpoint.
+
 Schema lives at the project root: `./migrations/*.sql`. The sibling Go file
 `./migrations/embed.go` (`package migrations`) exposes those files as
 `var MigrationsFS embed.FS` so they can be consumed without disk I/O at runtime.
@@ -111,27 +148,13 @@ startup. They call `sqlitedb.RequireMigratedSchema(ctx, db)` immediately after
 opening the DB; a missing or empty `__schema_migrations` table causes
 `log.Fatalf("schema not initialised: run cmd/migrator before starting the service")`.
 
-Filename convention: `<YYYYMM>.<NNN>.<table>.<description>.sql` (e.g.
+Migration files live at `./migrations/*.sql`. Filename convention:
+`<YYYYMM>.<NNN>.<table>.<description>.sql` (e.g.
 `202605.001.rate_sources.table_initiate.sql`). The `<NNN>` segment is a
-**global** zero-padded counter across all tables — it encodes the apply order
-explicitly, so a new migration always lands after every earlier one regardless
-of which table it touches. Files are applied in lexicographic order. Once
-applied to any production database the filename is **immutable** — renaming
+**global** zero-padded counter across all tables — files are applied in
+lexicographic order, which the naming makes the execution order. Once
+applied to any production database the filename is **immutable**: renaming
 triggers a duplicate apply.
-
-| Migration | Table |
-|-----------|-------|
-| `202605.001.rate_sources.table_initiate.sql` | `rate_sources` |
-| `202605.002.rate_values.table_initiate.sql` | `rate_values` |
-| `202605.003.rate_user_subscriptions.table_initiate.sql` | `rate_user_subscriptions` |
-| `202605.004.rate_user_events.table_initiate.sql` | `rate_user_events` |
-| `202605.005.rate_user_events.add_source_name.sql` | `rate_user_events` (alter) |
-| `202605.006.execution_history.table_initiate.sql` | `execution_history` |
-| `202605.007.rate_sources.seed_initial.sql` | `rate_sources` (seed) |
-| `202605.008.rate_user_subscriptions.seed_admin_user.sql` | `rate_user_subscriptions` (seed) |
-| `202605.009.rate_sources.add_rule_metadata.sql` | `rate_sources` (alter) |
-| `202605.010.rate_sources.add_fetcher_kind.sql` | `rate_sources` (alter) |
-| `202605.011.rate_sources.rename_headless_to_chromedp.sql` | `rate_sources` (data) |
 
 Repository files in `internal/repository/` reference table and column names
 exclusively through `const` declarations (e.g. `rateSourceTableName`,
@@ -163,32 +186,46 @@ step, not a startup-time step.
 
 ### Key Dependencies
 
-List third-party libraries the project depends on and the Go version. Example shape:
+- `modernc.org/sqlite` — pure-Go SQLite driver (no CGO)
+- `github.com/OvyFlash/telegram-bot-api` — Telegram Bot API client
+- `github.com/chromedp/chromedp` — headless-Chrome driver for JS-rendered rate sources
+- `github.com/openai/openai-go/v3` — OpenAI client used by `doctor rulegen`
+- `github.com/robfig/cron/v3` — cron-expression parsing for subscription conditions
+- `github.com/prorochestvo/dsninjector` — DSN parsing for config injection
+- `github.com/prorochestvo/loginjector` — daily-rotated file logger
+- `github.com/patrickmn/go-cache` — in-memory cache
+- `github.com/shirou/gopsutil/v4` — host/process stats for diagnostics
+- `github.com/twinj/uuid` — UUID generation
+- `gonum.org/v1/gonum` — numerics for the rate forecaster
+- `github.com/stretchr/testify` — test assertions
+- Go version: `1.26`
 
-- `<module path>` — purpose
-- ...
-- Go version: `<x.y.z>`
+### Frontend
 
-### Frontend (if any)
-
-Describe any embedded or served frontend assets and their location.
+The dashboard ships as static assets under `cmd/web/static/`, embedded into the `web`
+binary via `//go:embed static`. The WASM bundle is built from `cmd/wasm`
+(`GOOS=js GOARCH=wasm`) to `cmd/web/static/app.wasm` and shares the `internal/dto` wire
+types with the server. `make build` produces the bundle as part of the standard build.
 
 ### Deployment
 
-Describe how the service is deployed (systemd unit, Docker, k8s, etc.).
+The binaries run as systemd services; reference units live in `configs/` and `deploy/`.
+The CI workflows in `.github/workflows/{stage,prime}.yml` run `cmd/migrator` over SSH
+against the target host (with the service's `EnvironmentFile` sourced) before swapping
+the service binary and restarting the unit. Schema reconciliation is a deploy-time step,
+not a startup-time step — the service units do not invoke the migrator via `ExecStartPre`.
 
 ## Error Handling
 
-Define the project's error-handling contract here. The example below describes a
-common pattern of separating user-facing errors from internal failures — keep, adapt,
-or replace it.
+The project separates user-facing errors from internal failures.
 
-### `PublicError` — user-facing errors (example pattern)
+### `PublicError` — user-facing errors
 
-A dedicated error type (commonly `internal.PublicError` or similar) is the mechanism for
-surfacing safe, human-readable messages to end users. Any error message that is **safe
-to show** to a user is wrapped with `internal.NewPublicError(...)` at the point where
-the error is created (typically in the service layer).
+`internal.PublicError` is the mechanism for surfacing safe, human-readable messages to
+end users. Any error message that is **safe to show** to a user is wrapped with
+`internal.NewPublicError(...)` at the point where the error is created (typically in the
+service layer). `internal/errors.go` also defines `TraceError`, `StackTraceError`,
+`HttpCodeError`, and the `ErrNotFound` sentinel.
 
 **Rule**: if a function can fail in a way that meaningfully communicates something to
 the user, return a public error. For all other failures (DB down, unexpected nil, etc.)
@@ -197,10 +234,10 @@ return a plain error — the controller will send a generic fallback.
 #### Creating a public error (service layer)
 
 ```go
-import "<module>/internal"
+import "github.com/seilbekskindirov/monitor/internal"
 
 // User should know about this
-return internal.NewPublicError("Invalid input. <specific guidance>")
+return internal.NewPublicError("Invalid input. Source name must not be empty.")
 
 // Internal failure — user gets generic message
 return fmt.Errorf("db query failed: %w", err)
@@ -230,13 +267,9 @@ Every controller test that exercises an error branch **must** assert:
 
 ## Constraints
 
-Replace this section with the real constraints of your project. The list below is a
-reasonable default for a CGO-free Go service — keep what applies, drop what doesn't,
-add what's missing.
-
-- **Forbidden imports**: list any modules that must never appear in `go.mod` (e.g.
-  CGO-dependent SQLite drivers, code generators the team has rejected). Enforce via
-  `make lint`.
+- **Forbidden imports**: CGO-dependent SQLite drivers (e.g. `github.com/mattn/go-sqlite3`)
+  must never appear in `go.mod` — persistence is pure-Go via `modernc.org/sqlite`.
+  Enforced via `make lint`.
 - **Testing**: Use `github.com/stretchr/testify`; run tests with `-race`; parallel
   subtests preferred where there's no shared mutable state.
 - **One `Test*` per method, scenarios as subtests**: each tested method/function gets
@@ -294,9 +327,6 @@ add what's missing.
   fixtures, or intermediate files: use `./tmp/` (e.g. `./tmp/probe_*`) rather than
   the repo root. Runtime / cyclic logs go to `./logs/`. Only these three directories
   are gitignored at the root.
-- **UI conventions**: Document any project-specific rules about emojis, copy, or
-  formatting in user-facing surfaces.
-
 ## Planning Workflow
 
 All non-trivial work is tracked as a Markdown plan file before implementation begins.

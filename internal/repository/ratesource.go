@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/seilbekskindirov/monitor/internal"
@@ -28,37 +29,28 @@ type RateSourceRepository struct {
 func (r *RateSourceRepository) Name() string { return rateSourceTableName }
 
 // CheckUP verifies that the repository can read from the rate_sources table.
+// Runs `SELECT 1 FROM rate_sources LIMIT 1`, which exits after the first row
+// (or returns sql.ErrNoRows on an empty table — also fine, the table exists).
+// The previous `SELECT COUNT(*)` semantics did a full table scan and made
+// /healthz expensive enough to be a DoS surface under tight monitoring loops.
 func (r *RateSourceRepository) CheckUP(ctx context.Context) error {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return err
+		return errors.Join(err, internal.NewStackTraceError())
 	}
 	defer printRollbackError(tx)
 
-	count, err := rateSourceCount(tx, ctx, ";")
-	if err != nil {
-		err = errors.Join(err, internal.NewTraceError())
-		return err
+	var probe int
+	err = tx.QueryRowContext(ctx, "SELECT 1 FROM "+rateSourceTableName+" LIMIT 1;").Scan(&probe)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return errors.Join(err, internal.NewTraceError())
 	}
-
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return err
-	}
-
-	if count < 0 {
-		err = errors.New("unexpected result")
-		err = errors.Join(err, internal.NewStackTraceError())
-		return err
-	}
-
 	return nil
 }
 
 // ObtainRateSourceByName returns the rate source with the given name, or nil if no row matches.
 func (r *RateSourceRepository) ObtainRateSourceByName(ctx context.Context, name string) (*domain.RateSource, error) {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
@@ -71,18 +63,50 @@ func (r *RateSourceRepository) ObtainRateSourceByName(ctx context.Context, name 
 		return nil, err
 	}
 
-	if err = tx.Rollback(); err != nil {
+	return rows, nil
+}
+
+// ObtainRateSourcesByNames returns the rate sources whose name is in names,
+// keyed by source name. Sources that don't exist are absent from the map.
+// Used by handlers that need to enrich a list of subscriptions or events with
+// source metadata in a single round-trip instead of one per item.
+//
+// Empty input is a fast no-op (no query is issued).
+func (r *RateSourceRepository) ObtainRateSourcesByNames(ctx context.Context, names []string) (map[string]domain.RateSource, error) {
+	if len(names) == 0 {
+		return map[string]domain.RateSource{}, nil
+	}
+
+	tx, err := r.db.ReadOnlyTransaction(ctx)
+	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
 	}
+	defer printRollbackError(tx)
 
-	return rows, nil
+	placeholders := strings.Repeat("?,", len(names)-1) + "?"
+	args := make([]any, 0, len(names))
+	for _, n := range names {
+		args = append(args, n)
+	}
+
+	rows, err := rateSourceQueryContext(tx, ctx, "WHERE "+rateSourceNameFieldName+" IN ("+placeholders+");", args...)
+	if err != nil {
+		err = errors.Join(err, internal.NewTraceError())
+		return nil, err
+	}
+
+	result := make(map[string]domain.RateSource, len(names))
+	for _, s := range rows {
+		result[s.Name] = s
+	}
+	return result, nil
 }
 
 // ObtainAllRateSources returns all rate sources ordered by name descending.
 // Always returns a non-nil slice on success.
 func (r *RateSourceRepository) ObtainAllRateSources(ctx context.Context) ([]domain.RateSource, error) {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
@@ -92,11 +116,6 @@ func (r *RateSourceRepository) ObtainAllRateSources(ctx context.Context) ([]doma
 	rows, err := rateSourceQueryContext(tx, ctx, "ORDER BY "+rateSourceNameFieldName+" DESC;")
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	}
-
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
 	}
 
@@ -249,6 +268,12 @@ func (r *RateSourceRepository) RetainRateSource(ctx context.Context, record *dom
 }
 
 // RemoveRateSource deletes the given rate source record from the rate_sources table.
+//
+// WARNING: rate_values, rate_user_subscriptions, and rate_user_events have
+// ON DELETE CASCADE foreign keys pointing to rate_sources(name). Deleting a
+// source silently destroys all historical rates, user subscriptions, and event
+// history for that source. Do not wire this to any HTTP or operator endpoint
+// without an explicit confirmation step.
 func (r *RateSourceRepository) RemoveRateSource(ctx context.Context, record *domain.RateSource) error {
 	if record == nil {
 		err := errors.New("rate source is nil")

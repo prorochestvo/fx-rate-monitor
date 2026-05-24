@@ -105,6 +105,11 @@ type RateExtractor struct {
 	failedURLsMu        sync.Mutex
 }
 
+// rateValueRepository is the narrow persistence interface required by RateExtractor.
+type rateValueRepository interface {
+	RetainRateValue(ctx context.Context, rate *domain.RateValue) error
+}
+
 // Name returns the identifier used in scheduler and log output.
 func (extractor *RateExtractor) Name() string {
 	return "rate_extractor"
@@ -125,87 +130,6 @@ func (extractor *RateExtractor) Run(ctx context.Context, source *domain.RateSour
 	}
 
 	return applyRulesAndStore(ctx, source, payload, extractor.RateValueRepository)
-}
-
-// applyRulesAndStore executes the extraction rule pipeline on payload and
-// persists the resulting rate value via repo. It is the shared rule-application
-// core used by both the plain HTTP extractor and the chromedp extractor.
-func applyRulesAndStore(ctx context.Context, source *domain.RateSource, payload []byte, repo rateValueRepository) error {
-	var err error
-
-	for i, rule := range source.Rules {
-		switch rule.Method {
-		case domain.MethodParseFloat:
-			var f float64
-			p := bytes.ReplaceAll(payload, []byte(" "), []byte(""))
-			p = bytes.ReplaceAll(p, []byte(","), []byte("."))
-			f, err = strconv.ParseFloat(string(p), 10)
-			if err != nil {
-				err = fmt.Errorf("could not parse rate value %s: %s", string(payload), err.Error())
-				err = errors.Join(err, internal.NewTraceError())
-				return err
-			}
-			payload = []byte(fmt.Sprintf("%.3f", f))
-		case domain.MethodRegex:
-			payload, err = ApplyRegex(rule.Pattern, payload)
-			if err != nil {
-				err = errors.Join(err, fmt.Errorf("rule %d: apply regex pattern %q: %w", i, rule.Pattern, err))
-				err = errors.Join(err, internal.NewTraceError())
-				return err
-			}
-		case domain.MethodJSONPath:
-			payload, err = ApplyJSONPath(rule.Pattern, payload)
-			if err != nil {
-				err = errors.Join(err, fmt.Errorf("rule %d: apply json_path %q: %w", i, rule.Pattern, err))
-				err = errors.Join(err, internal.NewTraceError())
-				return err
-			}
-		case domain.MethodStoreToRate:
-		default:
-			err = fmt.Errorf("unsupported extraction method: %s", rule.Method)
-			err = errors.Join(err, internal.NewTraceError())
-			return err
-		}
-		payload = bytes.TrimSpace(payload)
-	}
-
-	payload = bytes.ReplaceAll(payload, []byte(","), []byte("."))
-	payload = bytes.ReplaceAll(payload, []byte(" "), []byte(""))
-
-	value, err := strconv.ParseFloat(string(payload), 64)
-	if err != nil {
-		err = fmt.Errorf("parse extracted value %q: %s", payload, err.Error())
-		err = errors.Join(err, internal.NewTraceError())
-		return err
-	}
-
-	if math.IsNaN(value) || math.IsInf(value, 0) {
-		err = fmt.Errorf("extracted value is NaN or Inf for source %s", source.Name)
-		return errors.Join(err, internal.NewTraceError())
-	}
-
-	if value <= MinPlausibleRateValue || value > MaxPlausibleRateValue {
-		err = fmt.Errorf("invalid rate value: %s", string(payload))
-		err = fmt.Errorf("parse extracted value %q: %s", payload, err.Error())
-		return errors.Join(err, internal.NewTraceError())
-	}
-
-	rateValue := &domain.RateValue{
-		SourceName:    source.Name,
-		BaseCurrency:  source.BaseCurrency,
-		QuoteCurrency: source.QuoteCurrency,
-		Price:         value,
-		Timestamp:     time.Now().UTC(),
-	}
-
-	err = repo.RetainRateValue(ctx, rateValue)
-	if err != nil {
-		err = errors.Join(fmt.Errorf("could not keep the %f rate value of %s", value, source.Name), err)
-		err = errors.Join(err, internal.NewTraceError())
-		return err
-	}
-
-	return nil
 }
 
 // loadFailedURL returns the cached error for url and true if url was previously
@@ -290,7 +214,83 @@ func (extractor *RateExtractor) fetchHtmlPage(ctx context.Context, rawURL string
 	return body, nil
 }
 
-// rateValueRepository is the narrow persistence interface required by RateExtractor.
-type rateValueRepository interface {
-	RetainRateValue(ctx context.Context, rate *domain.RateValue) error
+// applyRulesAndStore executes the extraction rule pipeline on payload and
+// persists the resulting rate value via repo. It is the shared rule-application
+// core used by both the plain HTTP extractor and the chromedp extractor.
+func applyRulesAndStore(ctx context.Context, source *domain.RateSource, payload []byte, repo rateValueRepository) error {
+	var err error
+
+	for i, rule := range source.Rules {
+		switch rule.Method {
+		case domain.MethodParseFloat:
+			var f float64
+			p := bytes.ReplaceAll(payload, []byte(" "), []byte(""))
+			p = bytes.ReplaceAll(p, []byte(","), []byte("."))
+			f, err = strconv.ParseFloat(string(p), 10)
+			if err != nil {
+				err = fmt.Errorf("could not parse rate value %s: %s", string(payload), err.Error())
+				err = errors.Join(err, internal.NewTraceError())
+				return err
+			}
+			payload = []byte(fmt.Sprintf("%.3f", f))
+		case domain.MethodRegex:
+			payload, err = ApplyRegex(rule.Pattern, payload)
+			if err != nil {
+				err = errors.Join(err, fmt.Errorf("rule %d: apply regex pattern %q: %w", i, rule.Pattern, err))
+				err = errors.Join(err, internal.NewTraceError())
+				return err
+			}
+		case domain.MethodJSONPath:
+			payload, err = ApplyJSONPath(rule.Pattern, payload)
+			if err != nil {
+				err = errors.Join(err, fmt.Errorf("rule %d: apply json_path %q: %w", i, rule.Pattern, err))
+				err = errors.Join(err, internal.NewTraceError())
+				return err
+			}
+		case domain.MethodStoreToRate:
+		default:
+			err = fmt.Errorf("unsupported extraction method: %s", rule.Method)
+			err = errors.Join(err, internal.NewTraceError())
+			return err
+		}
+		payload = bytes.TrimSpace(payload)
+	}
+
+	payload = bytes.ReplaceAll(payload, []byte(","), []byte("."))
+	payload = bytes.ReplaceAll(payload, []byte(" "), []byte(""))
+
+	value, err := strconv.ParseFloat(string(payload), 64)
+	if err != nil {
+		err = fmt.Errorf("parse extracted value %q: %s", payload, err.Error())
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		err = fmt.Errorf("extracted value is NaN or Inf for source %s", source.Name)
+		return errors.Join(err, internal.NewTraceError())
+	}
+
+	if value <= MinPlausibleRateValue || value > MaxPlausibleRateValue {
+		err = fmt.Errorf("invalid rate value: %s", string(payload))
+		err = fmt.Errorf("parse extracted value %q: %s", payload, err.Error())
+		return errors.Join(err, internal.NewTraceError())
+	}
+
+	rateValue := &domain.RateValue{
+		SourceName:    source.Name,
+		BaseCurrency:  source.BaseCurrency,
+		QuoteCurrency: source.QuoteCurrency,
+		Price:         value,
+		Timestamp:     time.Now().UTC(),
+	}
+
+	err = repo.RetainRateValue(ctx, rateValue)
+	if err != nil {
+		err = errors.Join(fmt.Errorf("could not keep the %f rate value of %s", value, source.Name), err)
+		err = errors.Join(err, internal.NewTraceError())
+		return err
+	}
+
+	return nil
 }

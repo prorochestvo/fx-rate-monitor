@@ -160,14 +160,6 @@ func (tbot *TelegramBotClient) SendDocument(ctx context.Context, chatID Telegram
 	return tbot.emit(ctx, d)
 }
 
-// emit dispatches a Chattable message via the bot API and discards the returned message.
-func (tbot *TelegramBotClient) emit(_ context.Context, m tgbotapi.Chattable) error {
-	if _, err := tbot.bot.Send(m); err != nil {
-		return errors.Join(err, internal.NewTraceError())
-	}
-	return nil
-}
-
 // SendHTMLMessageWithKeyboard sends an HTML-formatted message with an inline keyboard to chatID.
 func (tbot *TelegramBotClient) SendHTMLMessageWithKeyboard(_ context.Context, chatID TelegramChatID, text string, keyboard tgbotapi.InlineKeyboardMarkup) error {
 	m := tgbotapi.NewMessage(int64(chatID), text)
@@ -250,6 +242,14 @@ func (tbot *TelegramBotClient) Listen(ctx context.Context, handler UpdateHandler
 			handler(ctx, update)
 		}
 	}
+}
+
+// emit dispatches a Chattable message via the bot API and discards the returned message.
+func (tbot *TelegramBotClient) emit(_ context.Context, m tgbotapi.Chattable) error {
+	if _, err := tbot.bot.Send(m); err != nil {
+		return errors.Join(err, internal.NewTraceError())
+	}
+	return nil
 }
 
 const regexpTelegramToken = `^\d{9,}:[a-zA-Z0-9_-]{35,}$`

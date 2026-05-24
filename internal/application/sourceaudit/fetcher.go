@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+var _ Fetcher = (*httpFetcher)(nil)
+
 // DefaultUserAgent is the User-Agent header sent by the audit tool, matching the
 // production extractor value.
 const DefaultUserAgent = "FXRateMonitor/1.0 (+https://github.com/seilbekskindirov/monitor)"
@@ -24,22 +26,20 @@ type Fetcher interface {
 	Fetch(ctx context.Context, url string) (*FetchResult, error)
 }
 
-// httpFetcher is the production Fetcher implementation.
-// It is not tested directly against the network; coverage comes from integration
-// via cmd/doctor audit.
-type httpFetcher struct {
-	client  *http.Client
-	timeout time.Duration
-}
-
-var _ Fetcher = (*httpFetcher)(nil)
-
 // NewHTTPFetcher constructs an httpFetcher with the given per-request timeout.
 func NewHTTPFetcher(timeout time.Duration) Fetcher {
 	return &httpFetcher{
 		client:  &http.Client{Timeout: timeout},
 		timeout: timeout,
 	}
+}
+
+// httpFetcher is the production Fetcher implementation.
+// It is not tested directly against the network; coverage comes from integration
+// via cmd/doctor audit.
+type httpFetcher struct {
+	client  *http.Client
+	timeout time.Duration
 }
 
 func (f *httpFetcher) Fetch(ctx context.Context, url string) (*FetchResult, error) {

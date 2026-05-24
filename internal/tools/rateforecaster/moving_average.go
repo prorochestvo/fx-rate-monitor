@@ -6,14 +6,17 @@ import (
 	"github.com/seilbekskindirov/monitor/internal/domain"
 )
 
-// MovingAverageForecaster predicts the next rate as the arithmetic mean
-// of the most recent N historical prices.
-type MovingAverageForecaster struct{}
+// Ensure interface is satisfied at compile time.
+var _ Forecaster = (*MovingAverageForecaster)(nil)
 
 // NewMovingAverageForecaster returns a new MovingAverageForecaster.
 func NewMovingAverageForecaster() *MovingAverageForecaster {
 	return &MovingAverageForecaster{}
 }
+
+// MovingAverageForecaster predicts the next rate as the arithmetic mean
+// of the most recent N historical prices.
+type MovingAverageForecaster struct{}
 
 // Forecast returns the arithmetic mean of all provided rate prices.
 // rates must be ordered newest-first. Returns ErrInsufficientData when len(rates) < 3.
@@ -33,6 +36,3 @@ func (f *MovingAverageForecaster) Forecast(_ context.Context, rates []*domain.Ra
 		DataPoints:     len(rates),
 	}, nil
 }
-
-// Ensure interface is satisfied at compile time.
-var _ Forecaster = (*MovingAverageForecaster)(nil)

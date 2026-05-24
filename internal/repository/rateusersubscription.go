@@ -29,7 +29,7 @@ func (r *RateUserSubscriptionRepository) Name() string { return rateUserSubscrip
 
 // CheckUP verifies that the repository can read from the rate_user_subscriptions table.
 func (r *RateUserSubscriptionRepository) CheckUP(ctx context.Context) error {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
@@ -39,11 +39,6 @@ func (r *RateUserSubscriptionRepository) CheckUP(ctx context.Context) error {
 	count, err := rateUserSubscriptionCount(tx, ctx, ";")
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
-		return err
-	}
-
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}
 
@@ -59,7 +54,7 @@ func (r *RateUserSubscriptionRepository) CheckUP(ctx context.Context) error {
 // ObtainRateUserSubscriptionsByUserID returns all subscriptions for the given user type and ID.
 // Always returns a non-nil slice on success.
 func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsByUserID(ctx context.Context, userType domain.UserType, userID string) ([]domain.RateUserSubscription, error) {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
@@ -71,18 +66,13 @@ func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsByUserID(ctx
 		return nil, err
 	}
 
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return nil, err
-	}
-
 	return rows, nil
 }
 
 // ObtainRateUserSubscriptionsBySource returns all subscriptions for the given source name.
 // Always returns a non-nil slice on success.
 func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySource(ctx context.Context, sourceName string) ([]domain.RateUserSubscription, error) {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
@@ -92,11 +82,6 @@ func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySource(ctx
 	rows, err := rateUserSubscriptionQueryContext(tx, ctx, "WHERE "+rateUserSubscriptionSourceNameFieldName+" = ?;", sourceName)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
-		return nil, err
-	}
-
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
 	}
 
@@ -223,7 +208,7 @@ func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySourcePage
 		" ORDER BY " + rateUserSubscriptionUpdatedAtFieldName + " DESC" +
 		" LIMIT ? OFFSET ?;"
 
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewStackTraceError())
 	}
@@ -256,31 +241,61 @@ func (r *RateUserSubscriptionRepository) ObtainRateUserSubscriptionsBySourcePage
 		items = append(items, item)
 	}
 
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return nil, err
-	}
-
 	return items, nil
 }
 
 // ObtainSubscriptionSummaryBySource returns one row per (source_name, user_type) pair
 // with aggregated subscription and event counts. user_id is never returned.
+//
+// Events are pre-aggregated per (source_name, user_type, user_id) in a subquery
+// before joining to subscriptions. Without this, a user with multiple
+// subscriptions to the same source (e.g. one delta + one daily) would have
+// every event counted once per subscription row, inflating success/failed
+// SUMs by the per-user subscription factor.
+//
+// All column and table identifiers are referenced via package consts so a
+// rename in either rate_user_subscriptions or rate_user_events surfaces at
+// compile time. The query is built with fmt.Sprintf rather than const
+// concatenation because two repositories' consts are involved.
 func (r *RateUserSubscriptionRepository) ObtainSubscriptionSummaryBySource(ctx context.Context, sourceName string) ([]domain.RateUserSubscriptionSummary, error) {
-	const query = "SELECT" + `
-    s.source_name,
-    s.user_type,
-    COUNT(DISTINCT s.user_id)                                AS subscription_count,
-    MAX(e.sent_at)                                           AS last_sent_at,
-    SUM(CASE WHEN e.status='sent'   THEN 1 ELSE 0 END)      AS success_count,
-    SUM(CASE WHEN e.status='failed' THEN 1 ELSE 0 END)      AS failed_count
-FROM rate_user_subscriptions s
-LEFT JOIN rate_user_events e
-    ON e.source_name = s.source_name AND e.user_type = s.user_type
-WHERE s.source_name = ?
-GROUP BY s.source_name, s.user_type;`
+	// Subscriptions are deduplicated to one row per (source, user_type, user_id)
+	// BEFORE joining to the per-user event aggregates; otherwise a user with
+	// multiple subscriptions on the same source (e.g. delta + daily) would
+	// multiply that user's event counts by their subscription count.
+	query := fmt.Sprintf(
+		`SELECT
+    s.%[2]s,
+    s.%[3]s,
+    COUNT(s.%[4]s)                                             AS subscription_count,
+    MAX(e.ec_last_sent_at)                                     AS last_sent_at,
+    COALESCE(SUM(e.ec_sent), 0)                                AS success_count,
+    COALESCE(SUM(e.ec_failed), 0)                              AS failed_count
+FROM (
+    SELECT DISTINCT %[2]s, %[3]s, %[4]s FROM %[1]s WHERE %[2]s = ?
+) s
+LEFT JOIN (
+    SELECT %[6]s, %[7]s, %[8]s,
+           SUM(CASE WHEN %[9]s='sent'   THEN 1 ELSE 0 END) AS ec_sent,
+           SUM(CASE WHEN %[9]s='failed' THEN 1 ELSE 0 END) AS ec_failed,
+           MAX(%[10]s)                                     AS ec_last_sent_at
+    FROM %[5]s
+    GROUP BY %[6]s, %[7]s, %[8]s
+) e
+    ON e.%[6]s = s.%[2]s AND e.%[7]s = s.%[3]s AND e.%[8]s = s.%[4]s
+GROUP BY s.%[2]s, s.%[3]s;`,
+		rateUserSubscriptionTableName,           //  1
+		rateUserSubscriptionSourceNameFieldName, //  2
+		rateUserSubscriptionUserTypeFieldName,   //  3
+		rateUserSubscriptionUserIdFieldName,     //  4
+		rateUserEventTableName,                  //  5
+		rateUserEventSourceNameFieldName,        //  6
+		rateUserEventUserTypeFieldName,          //  7
+		rateUserEventUserIdFieldName,            //  8
+		rateUserEventStatusFieldName,            //  9
+		rateUserEventSentAtFieldName,            // 10
+	)
 
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewStackTraceError())
 	}
@@ -315,11 +330,6 @@ GROUP BY s.source_name, s.user_type;`
 			}
 		}
 		result = append(result, s)
-	}
-
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return nil, err
 	}
 
 	return result, nil

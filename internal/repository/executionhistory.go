@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/seilbekskindirov/monitor/internal"
@@ -28,7 +29,7 @@ func (r *ExecutionHistoryRepository) Name() string { return executionHistoryTabl
 
 // CheckUP verifies that the repository can read from the execution_history table.
 func (r *ExecutionHistoryRepository) CheckUP(ctx context.Context) error {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return err
@@ -38,11 +39,6 @@ func (r *ExecutionHistoryRepository) CheckUP(ctx context.Context) error {
 	count, err := executionHistoryCount(tx, ctx, ";")
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
-		return err
-	}
-
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
 		return err
 	}
 
@@ -59,7 +55,7 @@ func (r *ExecutionHistoryRepository) CheckUP(ctx context.Context) error {
 // for the given source, ordered newest-first. When successOnly is true, only successful
 // (success=1) rows are returned. Always returns a non-nil slice on success.
 func (r *ExecutionHistoryRepository) ObtainLastNExecutionHistoryBySourceName(ctx context.Context, sourceName string, limit int64, successOnly bool) ([]domain.ExecutionHistory, error) {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		err = errors.Join(err, internal.NewStackTraceError())
 		return nil, err
@@ -77,17 +73,81 @@ func (r *ExecutionHistoryRepository) ObtainLastNExecutionHistoryBySourceName(ctx
 		return nil, err
 	}
 
-	if err = tx.Rollback(); err != nil {
-		err = errors.Join(err, internal.NewStackTraceError())
-		return nil, err
+	return rows, nil
+}
+
+// ObtainLatestExecutionHistoryBySources returns the most recent execution_history
+// row per source for every name in sourceNames, keyed by source_name. Sources
+// without any rows are absent from the result. Used by ListSources to replace
+// an N+1 of one ObtainLastNExecutionHistoryBySourceName transaction per source
+// with a single bulk read.
+//
+// Empty input is a fast no-op (no query is issued).
+func (r *ExecutionHistoryRepository) ObtainLatestExecutionHistoryBySources(ctx context.Context, sourceNames []string) (map[string]domain.ExecutionHistory, error) {
+	if len(sourceNames) == 0 {
+		return map[string]domain.ExecutionHistory{}, nil
 	}
 
-	return rows, nil
+	tx, err := r.db.ReadOnlyTransaction(ctx)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewStackTraceError())
+	}
+	defer printRollbackError(tx)
+
+	// ROW_NUMBER() OVER (PARTITION BY source_name ORDER BY timestamp DESC, id DESC)
+	// rides idx_execution_history_lookup_latest (source_name, timestamp DESC).
+	// id DESC is the deterministic tie-break when two rows share the second-
+	// resolution timestamp.
+	placeholders := strings.Repeat("?,", len(sourceNames)-1) + "?"
+	query := "SELECT " + executionHistoryIdFieldName + ", " +
+		executionHistorySourceNameFieldName + ", " +
+		executionHistorySuccessFieldName + ", " +
+		executionHistoryErrorFieldName + ", " +
+		executionHistoryTimestampFieldName + " FROM (\n" +
+		"  SELECT " +
+		executionHistoryIdFieldName + ", " +
+		executionHistorySourceNameFieldName + ", " +
+		executionHistorySuccessFieldName + ", " +
+		executionHistoryErrorFieldName + ", " +
+		executionHistoryTimestampFieldName + ",\n" +
+		"  ROW_NUMBER() OVER (PARTITION BY " + executionHistorySourceNameFieldName +
+		" ORDER BY " + executionHistoryTimestampFieldName + " DESC, " + executionHistoryIdFieldName + " DESC) AS rn\n" +
+		"  FROM " + executionHistoryTableName +
+		"  WHERE " + executionHistorySourceNameFieldName + " IN (" + placeholders + ")\n" +
+		") AS ranked WHERE ranked.rn = 1;"
+
+	args := make([]any, 0, len(sourceNames))
+	for _, n := range sourceNames {
+		args = append(args, n)
+	}
+
+	dbRows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, errors.Join(err, fmt.Errorf("SQL: %s", query), internal.NewTraceError())
+	}
+	defer func() { err = errors.Join(err, dbRows.Close()) }()
+
+	result := make(map[string]domain.ExecutionHistory, len(sourceNames))
+	for dbRows.Next() {
+		var item domain.ExecutionHistory
+		var timestamp int64
+		if scanErr := dbRows.Scan(
+			&item.ID, &item.SourceName, &item.Success, &item.Error, &timestamp,
+		); scanErr != nil {
+			return nil, errors.Join(scanErr, internal.NewTraceError())
+		}
+		item.Timestamp = time.Unix(timestamp, 0).UTC()
+		result[item.SourceName] = item
+	}
+	if err = dbRows.Err(); err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
+	}
+	return result, nil
 }
 
 // ObtainExecutionHistoryErrorCount returns the total number of failed execution history records.
 func (r *ExecutionHistoryRepository) ObtainExecutionHistoryErrorCount(ctx context.Context) (int64, error) {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		return 0, errors.Join(err, internal.NewStackTraceError())
 	}
@@ -98,14 +158,13 @@ func (r *ExecutionHistoryRepository) ObtainExecutionHistoryErrorCount(ctx contex
 		return 0, errors.Join(err, internal.NewTraceError())
 	}
 
-	printRollbackError(tx)
 	return count, nil
 }
 
 // ObtainLastNExecutionHistoryErrors returns the most recent failed execution history records,
 // ordered newest-first, with LIMIT/OFFSET pagination.
 func (r *ExecutionHistoryRepository) ObtainLastNExecutionHistoryErrors(ctx context.Context, offset, limit int64) ([]domain.ExecutionHistory, error) {
-	tx, err := r.db.Transaction(ctx)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewStackTraceError())
 	}
@@ -135,7 +194,6 @@ func (r *ExecutionHistoryRepository) ObtainLastNExecutionHistoryErrors(ctx conte
 		items = append(items, item)
 	}
 
-	printRollbackError(tx)
 	if items == nil {
 		items = []domain.ExecutionHistory{}
 	}

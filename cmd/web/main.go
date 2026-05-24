@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -52,8 +53,8 @@ var (
 )
 
 const (
-	envDsnSqliteDB    = "SQLITEDB_DSN"
 	envDsnTelegramBOT = "TELEGRAMBOT_DSN"
+	envDsnSqliteDB    = "SQLITEDB_DSN"
 )
 
 func main() {
@@ -66,15 +67,11 @@ func main() {
 
 	l, err := internal.NewLogger(LogsDir, "web", LogVerbosity)
 	if err != nil {
-		log.Fatalf("logger init: %v", err)
+		log.Fatalf("logger: %v", err)
 	}
+	log.Println("logger: initiated")
 
 	// init settings
-	dsnSQLiteDB, err := dsninjector.Unmarshal(envDsnSqliteDB)
-	if err != nil {
-		log.Fatalf("settings: %s, %s", envDsnSqliteDB, err.Error())
-		return
-	}
 	dsnTelegramBOT, err := dsninjector.Unmarshal(envDsnTelegramBOT)
 	if err != nil {
 		log.Fatalf("settings: %s, %s", envDsnTelegramBOT, err.Error())
@@ -91,12 +88,21 @@ func main() {
 	// Telegram WebApp buttons reject non-HTTPS, IP literals, and localhost,
 	// so the DSN's host must resolve to a publicly reachable HTTPS host.
 	webAppURL := "https://" + strings.TrimPrefix(strings.TrimPrefix(dsnAPI.Addr(), "https://"), "http://") + "/app/subscriptions.html"
+	dsnDB, err := dsninjector.Unmarshal(envDsnSqliteDB)
+	if err != nil {
+		log.Fatalf("settings: %s, %s", envDsnSqliteDB, err.Error())
+		return
+	}
 	log.Println("settings: initiated")
 
 	// init dependencies
-	db, err := sqlitedb.NewSQLiteClient(dsnSQLiteDB, l.WriterAs(internal.LogLevelInfo))
+	db, err := sqlitedb.NewSQLiteClient(dsnDB, l.WriterAs(internal.LogLevelInfo))
 	if err != nil {
-		log.Fatalf("dependencies: sqlite %s connection is failed, %s", dsnSQLiteDB.Database(), err.Error())
+		log.Fatalf("dependencies: %s", err.Error())
+		return
+	}
+	if err = sqlitedb.RequireMigratedSchema(context.Background(), db); err != nil {
+		log.Fatalf("dependencies: schema check: %s", err.Error())
 		return
 	}
 	defer func(c io.Closer) {
@@ -104,9 +110,6 @@ func main() {
 			log.Printf("close sqlite client: %v", e)
 		}
 	}(db)
-	if err = sqlitedb.RequireMigratedSchema(context.Background(), db); err != nil {
-		log.Fatalf("schema check: %s", err.Error())
-	}
 	tbot, err := integration.NewTBotClient(dsnTelegramBOT, l.WriterAs(internal.LogLevelInfo))
 	if err != nil {
 		log.Fatalf("dependencies: telegram bot connection is failed, %s", err.Error())
@@ -120,43 +123,47 @@ func main() {
 	log.Println("dependencies: initiated")
 
 	// init repositories
-	rRateSource, err := repository.NewRateSourceRepository(db)
+	sourceRepo, err := repository.NewRateSourceRepository(db)
 	if err != nil {
-		log.Fatalf("rate source repo: %s", err)
+		log.Fatalf("repositories: %s", err.Error())
 	}
-	rExecutionHistory, err := repository.NewExecutionHistoryRepository(db)
+	historyRepo, err := repository.NewExecutionHistoryRepository(db)
 	if err != nil {
-		log.Fatalf("execution history repo: %s", err)
+		log.Fatalf("repositories: %s", err.Error())
 	}
-	rRateValue, err := repository.NewRateValueRepository(db)
+	rateValueRepo, err := repository.NewRateValueRepository(db)
 	if err != nil {
-		log.Fatalf("rate value repo: %s", err)
+		log.Fatalf("repositories: %s", err.Error())
 	}
-	rRateUserSubscription, err := repository.NewRateUserSubscriptionRepository(db)
+	subscriptionRepo, err := repository.NewRateUserSubscriptionRepository(db)
 	if err != nil {
-		log.Fatalf("repositories: user subscription build is failed, %s", err.Error())
-		return
+		log.Fatalf("repositories: %s", err.Error())
 	}
-	rRateUserEvent, err := repository.NewRateUserEventRepository(db)
+	eventRepo, err := repository.NewRateUserEventRepository(db)
 	if err != nil {
-		log.Fatalf("repositories: notification pool build is failed, %s", err.Error())
-		return
+		log.Fatalf("repositories: %s", err.Error())
 	}
 	log.Println("repositories: initiated")
 
 	restAPI, err := service.NewRateRestAPI(
-		rExecutionHistory,
-		rRateSource,
-		rRateValue,
-		rRateUserSubscription,
-		rRateUserEvent,
+		historyRepo,
+		sourceRepo,
+		rateValueRepo,
+		subscriptionRepo,
+		eventRepo,
 	)
 	if err != nil {
 		log.Fatalf("services: rest api is failed, %s", err.Error())
 		return
 	}
 	botToken := tbot.BotToken()
-	mux, err := gateway.NewGateway(restAPI, botToken, rRateUserSubscription, rRateSource, rRateValue)
+	if botToken == "" {
+		// Misconfiguration: without a bot token the Mini App initData HMAC
+		// cannot be verified, so every /api/me/* call returns 401. Fail at
+		// startup instead of silently rejecting every authenticated request.
+		log.Fatalf("services: bot token is empty — check TELEGRAMBOT_DSN")
+	}
+	mux, err := gateway.NewGateway(restAPI, botToken, subscriptionRepo, sourceRepo, rateValueRepo)
 	if err != nil {
 		log.Fatalf("services: mux api is failed, %s", err.Error())
 		return
@@ -172,17 +179,26 @@ func main() {
 		fsys = http.FS(sub)
 	}
 	mux.Handle("/", http.FileServer(fsys))
-	tbotAPI, err := service.NewTelegramApi(tbot, rRateUserSubscription, rRateSource, webAppURL)
+	tbotAPI, err := service.NewTelegramApi(tbot, subscriptionRepo, sourceRepo, webAppURL)
 	if err != nil {
 		log.Fatalf("services: telegram api is failed, %s", err.Error())
 		return
 	}
 	log.Println("services: initiated")
 
-	// run telegram server
-	tbotAPI.Run(context.Background())
+	// One signal context drives both the Telegram update loop and the HTTP
+	// server's shutdown wait. Sibling binaries (collector, notifier) use the
+	// same pattern.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	// run http server
+	// run telegram server (bound to ctx so SIGTERM cancels the bot poll loop)
+	tbotAPI.Run(ctx)
+
+	// run http server. Bind the listener before logging "listening" so the
+	// readiness signal fires only after the kernel has bound the port; a
+	// monitoring probe that grepped for the marker line previously raced
+	// the goroutine and could connect to a not-yet-bound port.
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", HttpPort),
 		Handler:      mux,
@@ -190,25 +206,28 @@ func main() {
 		WriteTimeout: HttpTimeOut,
 		IdleTimeout:  HttpTimeOut >> 1,
 	}
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		log.Fatalf("http server: bind %s: %s", srv.Addr, err)
+	}
+	// srv.Serve closes listener on clean exit; this guards the panic / fatal
+	// window between bind and Serve. Double-close on the happy path is a
+	// no-op-with-error and the error is intentionally discarded.
+	defer func() { _ = listener.Close() }()
+	log.Printf("http server: listening on %d port", HttpPort)
 	go func() {
-		log.Printf("http server: listening on %d port", HttpPort)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("http server: %s", err)
 		}
 	}()
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
-	time.Sleep(10 * time.Millisecond)
-
 	log.Println("initialization completed")
 
-	<-quit
+	<-ctx.Done()
 	log.Println("http server: shutting down")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("http server: forced shutdown failed, %s", err)
 	}
 }

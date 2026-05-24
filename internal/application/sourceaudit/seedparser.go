@@ -30,6 +30,27 @@ type SeededSource struct {
 	Origin   string
 }
 
+// ParseSeedFiles reads all files in fsys matching glob (lexicographic order) and
+// returns the parsed SeededSource records in the order they appear.
+func ParseSeedFiles(fsys fs.FS, glob string) ([]SeededSource, error) {
+	matches, err := fs.Glob(fsys, glob)
+	if err != nil {
+		return nil, fmt.Errorf("glob %q: %w", glob, err)
+	}
+
+	sort.Strings(matches)
+
+	var out []SeededSource
+	for _, path := range matches {
+		records, err := parseSeedFile(fsys, path)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, records...)
+	}
+	return out, nil
+}
+
 // insertForm classifies a SQL line as one of three recognized shapes.
 type insertForm int
 
@@ -79,27 +100,6 @@ func recogniseInsert(line string) (form insertForm, columnsPayload, valuesPayloa
 		return positional, "", m[1]
 	}
 	return noMatch, "", ""
-}
-
-// ParseSeedFiles reads all files in fsys matching glob (lexicographic order) and
-// returns the parsed SeededSource records in the order they appear.
-func ParseSeedFiles(fsys fs.FS, glob string) ([]SeededSource, error) {
-	matches, err := fs.Glob(fsys, glob)
-	if err != nil {
-		return nil, fmt.Errorf("glob %q: %w", glob, err)
-	}
-
-	sort.Strings(matches)
-
-	var out []SeededSource
-	for _, path := range matches {
-		records, err := parseSeedFile(fsys, path)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, records...)
-	}
-	return out, nil
 }
 
 func parseSeedFile(fsys fs.FS, path string) ([]SeededSource, error) {
