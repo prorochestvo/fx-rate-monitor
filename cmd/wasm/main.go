@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"sync"
 	"syscall/js"
@@ -493,8 +494,8 @@ func callWebAppIfDefined() {
 
 // runRenderMeSubscriptions is the entry point for the Telegram Mini App screen.
 // It reads initData once at mount, calls WebApp.ready/expand, renders the
-// search bar + skeleton, loads the first page of subscriptions, and binds all
-// event handlers. Must be called from a goroutine.
+// skeleton, loads the first page of subscriptions, fans out chart fetches for
+// the loaded items, and binds all event handlers. Must be called from a goroutine.
 func runRenderMeSubscriptions(client *apiclient.Client) {
 	callWebAppIfDefined()
 
@@ -507,11 +508,23 @@ func runRenderMeSubscriptions(client *apiclient.Client) {
 	app.Set("innerHTML", "<p>Loading…</p>")
 
 	scr := mountScreen()
-	page := application.NewMeSubscriptionsPage(client, initData, 20)
+	page := application.NewMeSubscriptionsPage(client, initData, 10)
 
-	// Render the skeleton (search bar + loading placeholder) immediately so
-	// the user sees a responsive UI before the first network round-trip.
+	// Render the skeleton immediately so the user sees a responsive UI.
 	app.Set("innerHTML", ui.RenderMeSubscriptions(page.State()))
+
+	redrawAll := func() {
+		app.Set("innerHTML", ui.RenderMeSubscriptions(page.State()))
+	}
+
+	redrawChart := func() {
+		chartDiv := doc.Call("getElementById", "me-overlay-chart")
+		if chartDiv.IsNull() || chartDiv.IsUndefined() {
+			// The screen has been replaced by another screen; drop the write.
+			return
+		}
+		chartDiv.Set("innerHTML", ui.RenderOverlayChartSlot(page.State()))
+	}
 
 	redrawList := func() {
 		listDiv := doc.Call("getElementById", "me-subs-list")
@@ -525,14 +538,37 @@ func runRenderMeSubscriptions(client *apiclient.Client) {
 		}
 	}
 
+	// fanOutChartFetches launches one goroutine per visible subscription.
+	// Each goroutine calls LoadChart with the generation captured at fanout
+	// time; SetPeriod / NextPage / PrevPage / a subsequent fanOutChartFetches
+	// all bump the generation, causing in-flight goroutines from prior fanouts
+	// to drop their results on the floor (LoadChart's stale-gen guard).
+	fanOutChartFetches := func() {
+		gen := page.BeginChartLoad(len(page.State().Items))
+		redrawChart() // render the loading skeleton immediately
+		for _, item := range page.State().Items {
+			name := item.SourceName
+			go func() {
+				if err := page.LoadChart(ctx, name, gen); err != nil {
+					if !errors.Is(err, application.ErrStaleGeneration) {
+						js.Global().Get("console").Call("warn",
+							"chart fetch failed for "+name+":", err.Error())
+					}
+				}
+				redrawChart()
+			}()
+		}
+	}
+
 	// Load the first page synchronously in this goroutine. Errors are stored
 	// on the page state and rendered by redrawList.
 	if err := page.LoadInitial(ctx); err != nil {
 		js.Global().Get("console").Call("warn", "me-subs LoadInitial:", err.Error())
 	}
 	redrawList()
+	fanOutChartFetches()
 
-	bindMeSubsHandlers(doc, page, scr, redrawList)
+	bindMeSubsHandlers(doc, page, scr, ctx, redrawAll, redrawList, redrawChart, fanOutChartFetches)
 }
 
 // bindMeSubsHandlers wires all event handlers for the Mini App screen.
@@ -541,9 +577,22 @@ func runRenderMeSubscriptions(client *apiclient.Client) {
 // returned channel to know when the debounced fetch has settled. A new goroutine
 // is started for each search so the JS event loop is never blocked.
 //
+// Period toggle: delegated click on #me-period-toggle reads data-period and
+// calls SetPeriod; on success redraws the whole page and re-fans-out chart fetches.
+//
+// List toggle: click on #me-list-toggle calls ToggleListVisible and imperatively
+// toggles the hidden attribute on #me-subs-section to preserve search input focus.
+//
 // Pagination: a delegated click handler on the #app div reads data-section and
-// data-page to dispatch NextPage/PrevPage.
-func bindMeSubsHandlers(doc js.Value, page *application.MeSubscriptionsPage, scr *screen, redrawList func()) {
+// data-page to dispatch NextPage/PrevPage, then re-fans-out chart fetches.
+func bindMeSubsHandlers(
+	doc js.Value,
+	page *application.MeSubscriptionsPage,
+	scr *screen,
+	ctx context.Context,
+	redrawAll, redrawList, redrawChart func(),
+	fanOutChartFetches func(),
+) {
 	searchEl := doc.Call("getElementById", "me-search")
 	if !searchEl.IsNull() && !searchEl.IsUndefined() {
 		scr.addRelease(dom.On(searchEl, "input", func(ev js.Value) {
@@ -554,7 +603,63 @@ func bindMeSubsHandlers(doc js.Value, page *application.MeSubscriptionsPage, scr
 					js.Global().Get("console").Call("warn", "me-subs search:", err.Error())
 				}
 				redrawList()
+				// Search changes the visible list but not the chart (Trade-off 3).
 			}()
+		}))
+	}
+
+	// Period toggle: dedicated listener on #me-period-toggle, NOT via the
+	// delegated pagination handler, to avoid the pagination handler firing on
+	// period buttons.
+	periodToggle := doc.Call("getElementById", "me-period-toggle")
+	if !periodToggle.IsNull() && !periodToggle.IsUndefined() {
+		scr.addRelease(dom.On(periodToggle, "click", func(ev js.Value) {
+			target := ev.Get("target")
+			if target.IsNull() || target.IsUndefined() {
+				return
+			}
+			dataset := target.Get("dataset")
+			if dataset.IsNull() || dataset.IsUndefined() {
+				return
+			}
+			periodAttr := dataset.Get("period")
+			if periodAttr.IsUndefined() {
+				return
+			}
+			period := periodAttr.String()
+			if err := page.SetPeriod(ctx, period); err != nil {
+				// PublicError means the button carried an unexpected data-period value.
+				js.Global().Get("console").Call("warn", "me-subs SetPeriod:", err.Error())
+				return
+			}
+			// Redraw the full screen so the period toggle's "active" state updates,
+			// then fan out chart fetches for the new period.
+			redrawAll()
+			fanOutChartFetches()
+		}))
+	}
+
+	// List toggle: imperative attribute toggle to preserve search input focus.
+	listToggleEl := doc.Call("getElementById", "me-list-toggle")
+	if !listToggleEl.IsNull() && !listToggleEl.IsUndefined() {
+		scr.addRelease(dom.On(listToggleEl, "click", func(_ js.Value) {
+			visible := page.ToggleListVisible()
+			section := doc.Call("getElementById", "me-subs-section")
+			if !section.IsNull() && !section.IsUndefined() {
+				if visible {
+					section.Call("removeAttribute", "hidden")
+				} else {
+					section.Set("hidden", true)
+				}
+			}
+			toggleBtn := doc.Call("getElementById", "me-list-toggle")
+			if !toggleBtn.IsNull() && !toggleBtn.IsUndefined() {
+				if visible {
+					toggleBtn.Set("innerHTML", "Hide subscriptions")
+				} else {
+					toggleBtn.Set("innerHTML", "Show subscriptions")
+				}
+			}
 		}))
 	}
 
@@ -581,7 +686,6 @@ func bindMeSubsHandlers(doc js.Value, page *application.MeSubscriptionsPage, scr
 			if err != nil || pageNum < 1 {
 				return
 			}
-			ctx := context.Background()
 			currentPage := page.State().Page
 			go func() {
 				if pageNum > currentPage {
@@ -594,6 +698,7 @@ func bindMeSubsHandlers(doc js.Value, page *application.MeSubscriptionsPage, scr
 					}
 				}
 				redrawList()
+				fanOutChartFetches()
 			}()
 		}))
 	}

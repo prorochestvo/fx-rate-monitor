@@ -13,37 +13,37 @@ import (
 // Both the empty-initData path and the 401-response path render this message.
 const authFailureMsg = "This page must be opened from the bot&#39;s button. Please reopen via the bot."
 
+// defaultOverlayOpts is the viewBox used for the overlay chart in the Mini App.
+var defaultOverlayOpts = OverlayOptions{Width: 320, Height: 180}
+
 // RenderMeSubscriptions returns the full HTML for the Mini App subscriptions
-// screen. The search bar is always rendered; the content area below it depends
-// on the state:
-//   - AuthFailure → auth-failure message (no pagination)
-//   - LastError non-nil → generic error message (no pagination)
-//   - Items empty, no error → "No subscriptions found." empty-state
-//   - Items non-empty → card list + pagination when applicable
+// screen. Default top-to-bottom layout:
+//  1. Period toggle bar (week / month / year).
+//  2. Overlay chart slot (skeleton, empty-state, error, or rendered chart).
+//  3. "Show/Hide subscriptions" toggle button.
+//  4. Subscription list section — hidden when state.ListVisible is false.
 //
-// The pagination wrapper div (id="me-subs-pagination") is always present in
-// the output so that subsequent in-place updates via getElementById can find
-// it. Its inner content is empty when auth-failed or errored.
+// AuthFailure short-circuits the whole screen to just the auth-failure message.
 //
-// Every user-influenced field (source_title, pair, conditions) is passed
-// through dom.Escape before interpolation.
+// Every user-influenced field is passed through dom.Escape before interpolation.
 func RenderMeSubscriptions(state application.MeSubscriptionsState) string {
-	var b strings.Builder
-	b.WriteString(renderSearchBar(state.Query))
-	b.WriteString(`<div id="me-subs-list">`)
-	b.WriteString(renderMeSubsContent(state))
-	b.WriteString(`</div>`)
-	b.WriteString(`<div id="me-subs-pagination">`)
-	if !state.AuthFailure && state.LastError == nil {
-		b.WriteString(renderMeSubsPagination(state))
+	if state.AuthFailure {
+		return fmt.Sprintf(`<p class="error-msg">%s</p>`, authFailureMsg)
 	}
+
+	var b strings.Builder
+	b.WriteString(renderPeriodToggle(state.Period))
+	b.WriteString(`<div id="me-overlay-chart">`)
+	b.WriteString(renderOverlayChartSlot(state))
 	b.WriteString(`</div>`)
+	b.WriteString(renderListToggleButton(state.ListVisible))
+	b.WriteString(renderListSection(state))
 	return b.String()
 }
 
-// RenderMeSubsList returns only the inner content HTML so the DOM can be
-// updated in-place without re-rendering the search bar (avoids losing input
-// focus) or the pagination (which lives outside the list div).
+// RenderMeSubsList returns only the inner content HTML for the list section so
+// the DOM can be updated in-place without re-rendering the chart or period toggle
+// (avoids losing input focus).
 func RenderMeSubsList(state application.MeSubscriptionsState) string {
 	return renderMeSubsContent(state)
 }
@@ -56,6 +56,111 @@ func RenderMeSubsPagination(state application.MeSubscriptionsState) string {
 		return ""
 	}
 	return renderMeSubsPagination(state)
+}
+
+// renderPeriodToggle returns the period-toggle button bar. The active period
+// gets the "active" modifier class. Button labels are display-capitalized
+// English; the data-period attribute carries the lowercase value forwarded
+// to MeSubscriptionsPage.SetPeriod.
+func renderPeriodToggle(currentPeriod string) string {
+	type btn struct{ data, label string }
+	buttons := []btn{
+		{application.MeSubscriptionsPeriodWeek, "Week"},
+		{application.MeSubscriptionsPeriodMonth, "Month"},
+		{application.MeSubscriptionsPeriodYear, "Year"},
+	}
+	var b strings.Builder
+	b.WriteString(`<div class="period-toggle" id="me-period-toggle">`)
+	for _, x := range buttons {
+		cls := "period-btn"
+		if x.data == currentPeriod {
+			cls = "period-btn active"
+		}
+		fmt.Fprintf(&b, `<button class="%s" data-period="%s">%s</button>`,
+			cls, x.data, x.label)
+	}
+	b.WriteString(`</div>`)
+	return b.String()
+}
+
+// RenderOverlayChartSlot returns the content for the #me-overlay-chart div.
+// Exported so main.go can update the chart slot in-place without re-rendering
+// the whole page (which would blow away search input focus).
+func RenderOverlayChartSlot(state application.MeSubscriptionsState) string {
+	return renderOverlayChartSlot(state)
+}
+
+// renderOverlayChartSlot returns the content for the #me-overlay-chart div.
+func renderOverlayChartSlot(state application.MeSubscriptionsState) string {
+	ch := state.Chart
+
+	// All fetches errored and nothing resolved successfully → chart unavailable.
+	if len(ch.Errors) > 0 && len(ch.Series) == 0 && !ch.Loading {
+		return `<p class="overlay-chart-error">Chart unavailable</p>`
+	}
+
+	// No subscriptions at all — nothing to chart.
+	if len(state.Items) == 0 && !ch.Loading {
+		return `<p class="overlay-chart-empty">No subscriptions to chart. Subscribe to a source first.</p>`
+	}
+
+	// Loading with no series yet → skeleton.
+	if ch.Loading && len(ch.Series) == 0 {
+		return `<div class="overlay-chart-skeleton"></div>`
+	}
+
+	// At least one series resolved (possibly with some errors too) → render chart.
+	uiSeries := toUISeries(ch.Series)
+	return RenderOverlayChart(uiSeries, defaultOverlayOpts)
+}
+
+// toUISeries converts application SeriesData to ui.Series for rendering.
+// This mapping exists to avoid an application → ui import cycle.
+func toUISeries(data []application.SeriesData) []Series {
+	out := make([]Series, len(data))
+	for i, d := range data {
+		out[i] = Series{
+			Name:   d.Name,
+			Color:  d.Color,
+			Points: d.Points,
+		}
+	}
+	return out
+}
+
+// renderListToggleButton returns the "Show/Hide subscriptions" toggle button.
+func renderListToggleButton(visible bool) string {
+	label := "Show subscriptions"
+	if visible {
+		label = "Hide subscriptions"
+	}
+	return fmt.Sprintf(
+		`<div class="list-toggle-wrap"><button class="list-toggle" id="me-list-toggle">%s</button></div>`,
+		label,
+	)
+}
+
+// renderListSection returns the subscription list section. The section carries
+// the HTML hidden attribute when ListVisible is false; removing the attribute
+// (not setting it to "false") reveals it.
+func renderListSection(state application.MeSubscriptionsState) string {
+	hidden := ""
+	if !state.ListVisible {
+		hidden = " hidden"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, `<div id="me-subs-section"%s>`, hidden)
+	b.WriteString(renderSearchBar(state.Query))
+	b.WriteString(`<div id="me-subs-list">`)
+	b.WriteString(renderMeSubsContent(state))
+	b.WriteString(`</div>`)
+	b.WriteString(`<div id="me-subs-pagination">`)
+	if !state.AuthFailure && state.LastError == nil {
+		b.WriteString(renderMeSubsPagination(state))
+	}
+	b.WriteString(`</div>`)
+	b.WriteString(`</div>`)
+	return b.String()
 }
 
 func renderSearchBar(currentQuery string) string {

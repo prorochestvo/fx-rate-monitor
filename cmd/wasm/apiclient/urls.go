@@ -63,3 +63,16 @@ func meSubscriptionsURL(page, pageSize int, q string) string {
 func meSubscriptionsHeaders(initData string) map[string]string {
 	return map[string]string{"X-Telegram-Init-Data": initData}
 }
+
+// chartURL builds /api/sources/{name}/rates/chart. period is left out of the
+// query string when empty so the server applies its default (week).
+func chartURL(name, period string) string {
+	base := "/api/sources/" + url.PathEscape(name) + "/rates/chart"
+	if period == "" {
+		// Empty period: server defaults to week; no ?period= avoids a redundant param.
+		return base
+	}
+	v := url.Values{}
+	v.Set("period", period)
+	return base + "?" + v.Encode()
+}

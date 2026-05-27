@@ -17,6 +17,8 @@ func meSubsState(items []dto.MeSubscriptionRow, total int64, page, pageSize int)
 		Total:    total,
 		Page:     page,
 		PageSize: pageSize,
+		Period:   application.MeSubscriptionsPeriodWeek,
+		Chart:    application.OverlayChartState{Errors: map[string]error{}},
 	}
 }
 
@@ -30,6 +32,16 @@ func singleItem() dto.MeSubscriptionRow {
 		LatestPrice:   1.0812,
 		LatestAt:      "2026-01-01T12:00:00Z",
 	}
+}
+
+func stateWithSeries(items []dto.MeSubscriptionRow, series []application.SeriesData) application.MeSubscriptionsState {
+	st := meSubsState(items, int64(len(items)), 1, 10)
+	st.Chart = application.OverlayChartState{
+		Loaded: true,
+		Series: series,
+		Errors: map[string]error{},
+	}
+	return st
 }
 
 func TestRenderMeSubscriptions(t *testing.T) {
@@ -57,14 +69,6 @@ func TestRenderMeSubscriptions(t *testing.T) {
 		t.Run("empty state", func(t *testing.T) {
 			t.Parallel()
 			state := meSubsState(nil, 0, 1, 10)
-			html := ui.RenderMeSubscriptions(state)
-			assert.Contains(t, html, `id="me-subs-pagination"`)
-		})
-
-		t.Run("auth failure", func(t *testing.T) {
-			t.Parallel()
-			state := meSubsState(nil, 0, 1, 10)
-			state.AuthFailure = true
 			html := ui.RenderMeSubscriptions(state)
 			assert.Contains(t, html, `id="me-subs-pagination"`)
 		})
@@ -119,7 +123,6 @@ func TestRenderMeSubscriptions(t *testing.T) {
 		// page 2 → prev button navigates to page 1
 		assert.Contains(t, html, `data-page="1"`)
 		// page 2, count 2 (< pageSize 10) → no next button; len(items)==2 < limit=10
-		// Actually 2 items < 10 limit so no next. Let's assert that.
 		assert.NotContains(t, html, `data-page="3"`)
 	})
 
@@ -139,7 +142,7 @@ func TestRenderMeSubscriptions(t *testing.T) {
 		assert.Contains(t, html, `<button disabled>`)
 	})
 
-	t.Run("401 auth failure shows error message and hides pagination", func(t *testing.T) {
+	t.Run("401 auth failure shows error message and hides chart and toggle", func(t *testing.T) {
 		t.Parallel()
 		state := meSubsState(nil, 0, 1, 10)
 		state.AuthFailure = true
@@ -149,6 +152,9 @@ func TestRenderMeSubscriptions(t *testing.T) {
 		assert.Contains(t, html, `class="error-msg"`)
 		assert.NotContains(t, html, `class="pagination"`)
 		assert.NotContains(t, html, "No subscriptions yet.")
+		// Auth failure must hide chart and period toggle per Task 4.
+		assert.NotContains(t, html, `id="me-period-toggle"`)
+		assert.NotContains(t, html, `id="me-overlay-chart"`)
 	})
 
 	t.Run("generic error shows error message and hides pagination", func(t *testing.T) {
@@ -226,5 +232,129 @@ func TestRenderMeSubscriptions(t *testing.T) {
 		html := ui.RenderMeSubscriptions(state)
 		assert.NotContains(t, html, "<script>")
 		assert.Contains(t, html, "&lt;script&gt;")
+	})
+
+	t.Run("period toggle renders three buttons with current period active", func(t *testing.T) {
+		t.Parallel()
+		state := meSubsState(nil, 0, 1, 10)
+		state.Period = application.MeSubscriptionsPeriodMonth
+		html := ui.RenderMeSubscriptions(state)
+
+		assert.Contains(t, html, `id="me-period-toggle"`)
+		assert.Contains(t, html, `data-period="week"`)
+		assert.Contains(t, html, `data-period="month"`)
+		assert.Contains(t, html, `data-period="year"`)
+		// Month button must have "active" class.
+		assert.Contains(t, html, `class="period-btn active" data-period="month"`)
+		// Week and year must not be active.
+		assert.NotContains(t, html, `class="period-btn active" data-period="week"`)
+		assert.NotContains(t, html, `class="period-btn active" data-period="year"`)
+	})
+
+	t.Run("list section is hidden by default", func(t *testing.T) {
+		t.Parallel()
+		state := meSubsState(nil, 0, 1, 10)
+		state.ListVisible = false
+		html := ui.RenderMeSubscriptions(state)
+		assert.Contains(t, html, `id="me-subs-section" hidden`)
+	})
+
+	t.Run("list section is visible when ListVisible=true", func(t *testing.T) {
+		t.Parallel()
+		state := meSubsState(nil, 0, 1, 10)
+		state.ListVisible = true
+		html := ui.RenderMeSubscriptions(state)
+		assert.Contains(t, html, `id="me-subs-section"`)
+		assert.NotContains(t, html, `id="me-subs-section" hidden`)
+	})
+
+	t.Run("list toggle button shows Show subscriptions when collapsed", func(t *testing.T) {
+		t.Parallel()
+		state := meSubsState(nil, 0, 1, 10)
+		state.ListVisible = false
+		html := ui.RenderMeSubscriptions(state)
+		assert.Contains(t, html, `id="me-list-toggle"`)
+		assert.Contains(t, html, "Show subscriptions")
+		assert.NotContains(t, html, "Hide subscriptions")
+	})
+
+	t.Run("list toggle button shows Hide subscriptions when expanded", func(t *testing.T) {
+		t.Parallel()
+		state := meSubsState(nil, 0, 1, 10)
+		state.ListVisible = true
+		html := ui.RenderMeSubscriptions(state)
+		assert.Contains(t, html, "Hide subscriptions")
+		assert.NotContains(t, html, "Show subscriptions")
+	})
+
+	t.Run("chart slot renders skeleton when Loading and no series", func(t *testing.T) {
+		t.Parallel()
+		state := meSubsState([]dto.MeSubscriptionRow{singleItem()}, 1, 1, 10)
+		state.Chart = application.OverlayChartState{
+			Loading: true,
+			Errors:  map[string]error{},
+		}
+		html := ui.RenderMeSubscriptions(state)
+		assert.Contains(t, html, `class="overlay-chart-skeleton"`)
+		assert.NotContains(t, html, `<polyline`)
+	})
+
+	t.Run("chart slot renders empty state when no subscriptions", func(t *testing.T) {
+		t.Parallel()
+		state := meSubsState(nil, 0, 1, 10)
+		html := ui.RenderMeSubscriptions(state)
+		assert.Contains(t, html, "No subscriptions to chart")
+	})
+
+	t.Run("chart slot renders chart-unavailable when all series errored", func(t *testing.T) {
+		t.Parallel()
+		state := meSubsState([]dto.MeSubscriptionRow{singleItem()}, 1, 1, 10)
+		state.Chart = application.OverlayChartState{
+			Loading: false,
+			Errors:  map[string]error{"usd-eur": errors.New("timeout")},
+		}
+		html := ui.RenderMeSubscriptions(state)
+		assert.Contains(t, html, `class="overlay-chart-error"`)
+		assert.Contains(t, html, "Chart unavailable")
+	})
+
+	t.Run("chart slot renders overlay chart when Loaded with one series", func(t *testing.T) {
+		t.Parallel()
+		series := []application.SeriesData{
+			{Name: "USD/EUR", Color: "#e53935", Points: []dto.ChartPointResponse{
+				{Label: "2026-01-01", Price: 1.0},
+				{Label: "2026-01-02", Price: 1.1},
+			}},
+		}
+		state := stateWithSeries([]dto.MeSubscriptionRow{singleItem()}, series)
+		html := ui.RenderMeSubscriptions(state)
+		assert.Contains(t, html, `<polyline`)
+		assert.Contains(t, html, `class="overlay-chart"`)
+	})
+
+	t.Run("chart slot renders overlay chart with partial errors", func(t *testing.T) {
+		t.Parallel()
+		series := []application.SeriesData{
+			{Name: "USD/EUR", Color: "#e53935", Points: []dto.ChartPointResponse{
+				{Label: "2026-01-01", Price: 1.0},
+				{Label: "2026-01-02", Price: 1.1},
+			}},
+		}
+		state := stateWithSeries([]dto.MeSubscriptionRow{singleItem()}, series)
+		state.Chart.Errors = map[string]error{"gbp-usd": errors.New("timeout")}
+		html := ui.RenderMeSubscriptions(state)
+		// Partial render: one series succeeded so chart is rendered, not error state.
+		assert.Contains(t, html, `<polyline`)
+		assert.NotContains(t, html, "Chart unavailable")
+	})
+
+	t.Run("auth failure hides chart and toggle", func(t *testing.T) {
+		t.Parallel()
+		state := meSubsState(nil, 0, 1, 10)
+		state.AuthFailure = true
+		html := ui.RenderMeSubscriptions(state)
+		assert.NotContains(t, html, `id="me-period-toggle"`)
+		assert.NotContains(t, html, `id="me-overlay-chart"`)
+		assert.NotContains(t, html, `id="me-list-toggle"`)
 	})
 }

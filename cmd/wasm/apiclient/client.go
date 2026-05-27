@@ -134,3 +134,18 @@ func (c *Client) MeSubscriptions(ctx context.Context, initData string, page, pag
 	}
 	return out, nil
 }
+
+// RatesChart fetches aggregated chart data for one source over the given period.
+// period must be one of "week", "month", "year", or "" to let the server default.
+// The endpoint is public — no headers required.
+func (c *Client) RatesChart(ctx context.Context, name, period string) ([]dto.ChartPointResponse, error) {
+	raw, err := c.fetcher.FetchJSON(ctx, "GET", chartURL(name, period), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	var out []dto.ChartPointResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("decode chart points: %w", err)
+	}
+	return out, nil
+}

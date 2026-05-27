@@ -168,6 +168,50 @@ func TestMeSubscriptionsURL(t *testing.T) {
 	})
 }
 
+func TestRatesChartURL(t *testing.T) {
+	t.Parallel()
+
+	t.Run("week period produces period query param", func(t *testing.T) {
+		t.Parallel()
+		path, q := parseQuery(t, chartURL("usd-eur", "week"))
+		assert.Equal(t, "/api/sources/usd-eur/rates/chart", path)
+		assert.Equal(t, "week", q.Get("period"))
+	})
+
+	t.Run("month period produces period query param", func(t *testing.T) {
+		t.Parallel()
+		path, q := parseQuery(t, chartURL("usd-eur", "month"))
+		assert.Equal(t, "/api/sources/usd-eur/rates/chart", path)
+		assert.Equal(t, "month", q.Get("period"))
+	})
+
+	t.Run("year period produces period query param", func(t *testing.T) {
+		t.Parallel()
+		path, q := parseQuery(t, chartURL("usd-eur", "year"))
+		assert.Equal(t, "/api/sources/usd-eur/rates/chart", path)
+		assert.Equal(t, "year", q.Get("period"))
+	})
+
+	t.Run("empty period omits query string entirely", func(t *testing.T) {
+		t.Parallel()
+		raw := chartURL("usd-eur", "")
+		assert.Equal(t, "/api/sources/usd-eur/rates/chart", raw)
+		assert.NotContains(t, raw, "?", "no query string when period is empty")
+	})
+
+	t.Run("name with space is path-escaped", func(t *testing.T) {
+		t.Parallel()
+		raw := chartURL("usd eur", "week")
+		assert.Contains(t, raw, "/api/sources/usd%20eur/rates/chart")
+	})
+
+	t.Run("name with slash is path-escaped", func(t *testing.T) {
+		t.Parallel()
+		raw := chartURL("a/b", "week")
+		assert.Contains(t, raw, "/api/sources/a%2Fb/rates/chart")
+	})
+}
+
 func TestMeSubscriptionsHeaders(t *testing.T) {
 	t.Parallel()
 
