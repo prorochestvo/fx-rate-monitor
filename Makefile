@@ -90,6 +90,7 @@ build: format
 	go vet ./...
 	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" ./cmd/web/static/wasm_exec.js
 	CGO_ENABLED=0 GOOS=js GOARCH=wasm go build -o ./cmd/web/static/app.wasm ./cmd/wasm/main.go
+	gzip -kfn -9 ./cmd/web/static/app.wasm
 	CGO_ENABLED=0 go build -o ./build/collector  -ldflags ${BUILD_OPTIONS} ./cmd/collector/main.go
 	CGO_ENABLED=0 go build -o ./build/notifier   -ldflags ${BUILD_OPTIONS} ./cmd/notifier/main.go
 	CGO_ENABLED=0 go build -o ./build/migrator   -ldflags ${BUILD_OPTIONS} ./cmd/migrator
@@ -121,6 +122,14 @@ test-wasm:
 	CGO_ENABLED=0 GOOS=js GOARCH=wasm go test \
 		-exec "$$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
 		./cmd/wasm/dom/... ./cmd/wasm/apiclient/...
+
+## lint: go vet + forbidden-import guard (no CGO-dependent SQLite driver in go.mod)
+lint:
+	CGO_ENABLED=0 go vet ./...
+	@if grep -qE 'github.com/mattn/go-sqlite3' go.mod; then \
+		echo "lint failure: forbidden CGO-dependent SQLite driver in go.mod (use modernc.org/sqlite)"; \
+		exit 1; \
+	fi
 
 ## audit: probe seeded rate sources; default audits all sources; override with ARGS="--source halyk_usd" (exits non-zero on any MISS)
 ARGS ?= --all
@@ -163,5 +172,11 @@ backup-db:
 	mkdir -p ./tmp
 	rm -f ./tmp/prime_monitor.sqlite
 	rm -f ./tmp/stage_monitor.sqlite
-	scp be-happy.kz:/opt/monitor/prime_monitor.sqlite ./tmp/prime_monitor.sqlite
-	scp be-happy.kz:/opt/monitor/stage_monitor.sqlite ./tmp/stage_monitor.sqlite
+	@for env in prime stage; do \
+		remote=/opt/monitor/$${env}_monitor.sqlite; \
+		if ssh be-happy.kz "test -f $$remote"; then \
+			scp be-happy.kz:$$remote ./tmp/$${env}_monitor.sqlite; \
+		else \
+			echo "skip: $$remote not present on remote"; \
+		fi; \
+	done

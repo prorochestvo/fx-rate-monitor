@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path"
 	"syscall"
+	_ "time/tzdata" // embedded IANA tzdata so time.LoadLocation works without system tzdata package
 
 	"github.com/prorochestvo/dsninjector"
 	"github.com/seilbekskindirov/monitor/internal"
@@ -94,6 +95,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("repositories: %s", err.Error())
 	}
+	profileRepo, err := repository.NewRateUserProfileRepository(db)
+	if err != nil {
+		log.Fatalf("repositories: %s", err.Error())
+	}
 	log.Println("repositories: initiated")
 
 	// SIGTERM and SIGINT cancel ctx mid-run so an in-flight tick aborts the
@@ -107,6 +112,7 @@ func main() {
 		rateValueRepo,
 		subscriptionRepo,
 		eventRepo,
+		profileRepo,
 		l.WriterAs(internal.LogLevelWarning),
 	)
 	if err != nil {

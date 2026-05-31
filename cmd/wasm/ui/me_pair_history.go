@@ -1,0 +1,145 @@
+package ui
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/seilbekskindirov/monitor/cmd/wasm/application"
+	"github.com/seilbekskindirov/monitor/cmd/wasm/dom"
+	"github.com/seilbekskindirov/monitor/internal/domain/ratepair"
+	"github.com/seilbekskindirov/monitor/internal/dto"
+)
+
+// historyGenericErrorMsg is shown when a history fetch fails with a non-auth error.
+const historyGenericErrorMsg = "Could not load history. Try again."
+
+// RenderPairHistory returns the HTML fragment for the history view rendered
+// inside the modal card. It assumes state.OpenPair is non-nil and
+// state.HistoryOpen is true; the caller is responsible for those guards.
+//
+// Layout:
+//   - Back button (id="me-pair-history-back") returning to the detail view.
+//   - Either: loading skeleton (HistoryLoading), error block
+//     (HistoryError != nil), empty-state ("No history yet"), or the
+//     entries list.
+//   - Pagination row at the bottom (prev / page indicator / next).
+//
+// Each history entry renders as:
+//
+//	<div class="me-pair-history-entry">
+//	  <div class="me-pair-history-head"><time>...</time> · <span>SourceTitle</span></div>
+//	  <div class="me-pair-history-bid">BID 487.21 <span class="delta">+0.12%</span></div>
+//	  <div class="me-pair-history-ask">ASK 489.05 <span class="delta">-0.05%</span></div>
+//	</div>
+//
+// Rows are separated by a bottom border on .me-pair-history-entry. A row
+// whose Bid is nil omits the BID line; same for Ask.
+func RenderPairHistory(state application.MeSubscriptionsState) string {
+	var b strings.Builder
+
+	b.WriteString(`<button class="me-pair-history-back" id="me-pair-history-back" type="button">&#8592; Back</button>`)
+
+	switch {
+	case state.HistoryLoading:
+		b.WriteString(`<div class="me-pair-history-loading">Loading…</div>`)
+	case state.HistoryError != nil:
+		msg := historyGenericErrorMsg
+		if strings.Contains(state.HistoryError.Error(), application.AuthFailureSentinel) {
+			msg = authFailureMsg
+		}
+		fmt.Fprintf(&b, `<div class="me-pair-history-error">%s</div>`, msg)
+	case len(state.HistoryItems) == 0:
+		b.WriteString(`<div class="me-pair-history-empty">No history yet.</div>`)
+	default:
+		b.WriteString(`<div class="me-pair-history-list">`)
+		for _, row := range state.HistoryItems {
+			b.WriteString(renderHistoryEntry(row))
+		}
+		b.WriteString(`</div>`)
+	}
+
+	b.WriteString(renderHistoryPagination(state))
+	return b.String()
+}
+
+// renderHistoryEntry returns the HTML fragment for one history row.
+func renderHistoryEntry(row dto.MeHistoryRow) string {
+	var b strings.Builder
+	b.WriteString(`<div class="me-pair-history-entry">`)
+	fmt.Fprintf(&b,
+		`<div class="me-pair-history-head"><time>%s</time> · <span>%s</span></div>`,
+		dom.Escape(fmtDate(row.Timestamp.Format("2006-01-02T15:04:05Z07:00"))),
+		dom.Escape(row.SourceTitle),
+	)
+	if row.Bid != nil {
+		fmt.Fprintf(&b,
+			`<div class="me-pair-history-bid">BID %s %s</div>`,
+			dom.Escape(strconv.FormatFloat(*row.Bid, 'f', -1, 64)),
+			renderHistoryDelta(row.BidDeltaPct),
+		)
+	}
+	if row.Ask != nil {
+		fmt.Fprintf(&b,
+			`<div class="me-pair-history-ask">ASK %s %s</div>`,
+			dom.Escape(strconv.FormatFloat(*row.Ask, 'f', -1, 64)),
+			renderHistoryDelta(row.AskDeltaPct),
+		)
+	}
+	b.WriteString(`</div>`)
+	return b.String()
+}
+
+// renderHistoryDelta returns a <span class="delta"> element for a delta
+// percent pointer. Nil delta renders an em-dash with neutral (hint) color.
+// Positive delta uses ColorDeltaUp; negative uses ColorDeltaDown.
+func renderHistoryDelta(delta *float64) string {
+	if delta == nil {
+		return `<span class="delta" style="color:var(--tg-theme-hint-color,#888)">&#8212;</span>`
+	}
+	color := ratepair.ColorDeltaUp
+	if *delta < 0 {
+		color = ratepair.ColorDeltaDown
+	}
+	sign := "+"
+	if *delta < 0 {
+		sign = ""
+	}
+	return fmt.Sprintf(
+		`<span class="delta" style="color:%s">%s%.2f%%</span>`,
+		dom.Escape(color),
+		sign,
+		*delta,
+	)
+}
+
+// renderHistoryPagination returns the pagination row for the history view.
+// Prev is disabled when HistoryPage <= 1. Next is disabled when
+// HistoryPage * HistoryLimit >= HistoryTotal.
+func renderHistoryPagination(state application.MeSubscriptionsState) string {
+	limit := state.HistoryLimit
+	if limit <= 0 {
+		limit = application.MeHistoryDefaultLimit
+	}
+
+	atFirst := state.HistoryPage <= 1
+	atLast := int64(state.HistoryPage*limit) >= state.HistoryTotal
+
+	var prevBtn, nextBtn string
+	if atFirst {
+		prevBtn = `<button class="me-pair-history-prev" id="me-pair-history-prev" type="button" disabled>&#8592; Prev</button>`
+	} else {
+		prevBtn = `<button class="me-pair-history-prev" id="me-pair-history-prev" type="button">&#8592; Prev</button>`
+	}
+	if atLast {
+		nextBtn = `<button class="me-pair-history-next" id="me-pair-history-next" type="button" disabled>Next &#8594;</button>`
+	} else {
+		nextBtn = `<button class="me-pair-history-next" id="me-pair-history-next" type="button">Next &#8594;</button>`
+	}
+
+	pageLabel := fmt.Sprintf(`<span class="me-pair-history-page">%d</span>`, state.HistoryPage)
+	return fmt.Sprintf(
+		`<div class="me-pair-history-pagination">%s%s%s</div>`,
+		prevBtn, pageLabel, nextBtn,
+	)
+}

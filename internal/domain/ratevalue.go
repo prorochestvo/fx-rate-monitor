@@ -2,6 +2,17 @@ package domain
 
 import "time"
 
+// SourcePairKey identifies a unique (source, base, quote, kind) tuple used to
+// bulk-load time-series data for a user's subscriptions. Kind is the rate
+// direction emitted by the source, derived from domain.RateSourceKind; it is
+// not stored in rate_values directly (the column lives in rate_sources).
+type SourcePairKey struct {
+	SourceName    string
+	BaseCurrency  string
+	QuoteCurrency string
+	Kind          RateSourceKind
+}
+
 // RateValue represents a single exchange rate data point.
 type RateValue struct {
 	ID            string
@@ -20,22 +31,4 @@ type ForecastResult struct {
 	Method string
 	// DataPoints is the number of historical values used to produce the forecast.
 	DataPoints int
-}
-
-// ChartPeriod specifies the time window for aggregated rate chart data.
-type ChartPeriod string
-
-const (
-	// ChartPeriodWeek aggregates rate data over the past 7 days, grouped by day.
-	ChartPeriodWeek ChartPeriod = "week"
-	// ChartPeriodMonth aggregates rate data over the past 30 days, grouped by day.
-	ChartPeriodMonth ChartPeriod = "month"
-	// ChartPeriodYear aggregates rate data over the past 12 months, grouped by month.
-	ChartPeriodYear ChartPeriod = "year"
-)
-
-// ChartPoint is one aggregated data point on a rate chart.
-type ChartPoint struct {
-	Label string  // "2026-04-03" (week/month) or "2026-04" (year)
-	Price float64 // AVG(price) for the bucket
 }

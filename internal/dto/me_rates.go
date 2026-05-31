@@ -1,0 +1,79 @@
+package dto
+
+import "time"
+
+// MeHistoryResponse is the JSON envelope returned by GET /api/me/rates/history.
+// Items is sorted newest first.
+type MeHistoryResponse struct {
+	// Pair is the canonical pair label (e.g. "USD/KZT") the results are scoped to.
+	Pair string `json:"pair"`
+	// Page is the 1-based page index returned.
+	Page int `json:"page"`
+	// Limit is the page size used for this response.
+	Limit int `json:"limit"`
+	// Total is the unpaginated count of matching rows.
+	Total int64 `json:"total"`
+	// Items contains the history rows for this page, newest first.
+	Items []MeHistoryRow `json:"items"`
+}
+
+// MeHistoryRow is one rate-collection event for the requested pair.
+// Bid and Ask are pointers so a one-direction source emits exactly the
+// direction it owns. BidDeltaPct / AskDeltaPct are nil for the first
+// observation in their (source, direction) chain within the window.
+type MeHistoryRow struct {
+	// SourceName is the internal name of the source that produced this row.
+	SourceName string `json:"source_name"`
+	// SourceTitle is the human-readable title of the source.
+	SourceTitle string `json:"source_title"`
+	// Timestamp is when the collector scraped this value.
+	Timestamp time.Time `json:"timestamp"`
+	// Bid is the BID price; nil when the source only tracks ASK.
+	Bid *float64 `json:"bid,omitempty"`
+	// Ask is the ASK price; nil when the source only tracks BID.
+	Ask *float64 `json:"ask,omitempty"`
+	// BidDeltaPct is the percent change from the previous BID observation in
+	// this (source, direction) chain within the page. Nil for the first row.
+	BidDeltaPct *float64 `json:"bid_delta_pct,omitempty"`
+	// AskDeltaPct is the percent change from the previous ASK observation in
+	// this (source, direction) chain within the page. Nil for the first row.
+	AskDeltaPct *float64 `json:"ask_delta_pct,omitempty"`
+}
+
+// MeChartResponse is the JSON envelope returned by GET /api/me/rates/chart.
+// Window is a human-readable label for the chart's time range (e.g. "7 days").
+type MeChartResponse struct {
+	Window string           `json:"window"`
+	Pairs  []MeChartPairRow `json:"pairs"`
+}
+
+// MeChartPairRow holds the sparkline data for one canonical currency pair.
+// Pair is the display label derived from the BID-natural direction (e.g.
+// "USD/KZT"). Series contains 1 or 2 entries: BID and/or ASK. SpreadPct is
+// the relative spread (ASK-BID)/BID*100, present only when both directions
+// exist and both have a non-zero Latest.
+type MeChartPairRow struct {
+	Pair      string          `json:"pair"`
+	Category  string          `json:"category"`
+	SpreadPct *float64        `json:"spread_pct,omitempty"`
+	Series    []MeChartSeries `json:"series"`
+}
+
+// MeChartSeries holds the sparkline data for one direction (BID or ASK) within
+// a pair row. Color is the role-based hex: ratepair.ColorBid for BID,
+// ratepair.ColorAsk for ASK. Sparse is true when fewer than two data points
+// were found in the 7-day window.
+type MeChartSeries struct {
+	Kind     string         `json:"kind"`
+	Color    string         `json:"color"`
+	Latest   float64        `json:"latest"`
+	DeltaPct float64        `json:"delta_pct"`
+	Sparse   bool           `json:"sparse"`
+	Points   []MeChartPoint `json:"points,omitempty"`
+}
+
+// MeChartPoint is one downsampled point in a sparkline series.
+type MeChartPoint struct {
+	Timestamp time.Time `json:"timestamp"`
+	Value     float64   `json:"value"`
+}

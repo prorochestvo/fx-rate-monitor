@@ -79,9 +79,16 @@ func TestRateRepository_TransactionErrors(t *testing.T) {
 		err := newBrokenRepo(t).RemoveRateValue(t.Context(), &domain.RateValue{ID: "x"})
 		require.Error(t, err)
 	})
-	t.Run("ObtainRateValueChartBySourceName propagates transaction error", func(t *testing.T) {
+	t.Run("ObtainValuesForPairsSince propagates transaction error", func(t *testing.T) {
 		t.Parallel()
-		_, err := newBrokenRepo(t).ObtainRateValueChartBySourceName(t.Context(), "src", domain.ChartPeriodWeek)
+		pairs := []domain.SourcePairKey{{SourceName: "src", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
+		_, err := newBrokenRepo(t).ObtainValuesForPairsSince(t.Context(), pairs, time.Now())
+		require.Error(t, err)
+	})
+	t.Run("ObtainHistoryForPairsPaged propagates transaction error", func(t *testing.T) {
+		t.Parallel()
+		pairs := []domain.SourcePairKey{{SourceName: "src", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
+		_, _, err := newBrokenRepo(t).ObtainHistoryForPairsPaged(t.Context(), pairs, 10, 0)
 		require.Error(t, err)
 	})
 }
@@ -328,116 +335,329 @@ func TestRateValueRepository_ObtainLatestRateValuesBySourceNames(t *testing.T) {
 	})
 }
 
-func TestRateValueRepository_ObtainRateValueChartBySourceName(t *testing.T) {
+func TestRateValueRepository_ObtainValuesForPairsSince(t *testing.T) {
 	t.Parallel()
 
-	seedRates := func(t *testing.T, r *RateValueRepository, sourceName string, prices []float64, timestamps []time.Time) {
+	// seedWithTimestamp inserts a RateValue and then overwrites its timestamp
+	// via a direct SQL UPDATE so tests can control the timestamp precisely.
+	// RetainRateValue always sets Timestamp = now, so we need the override.
+	seedWithTimestamp := func(t *testing.T, r *RateValueRepository, rv domain.RateValue, ts time.Time) domain.RateValue {
 		t.Helper()
-		for i, price := range prices {
-			rv := &domain.RateValue{
-				SourceName:    sourceName,
+		rv.ID = "" // let repo generate the ID
+		require.NoError(t, r.RetainRateValue(t.Context(), &rv))
+		tx, err := r.db.Transaction(t.Context())
+		require.NoError(t, err)
+		_, err = tx.ExecContext(t.Context(),
+			"UPDATE "+rateValueTableName+" SET "+rateValueTimestampFieldName+" = ? WHERE "+rateValueIdFieldName+" = ?",
+			ts.UTC().Format(time.RFC3339), rv.ID,
+		)
+		require.NoError(t, err)
+		require.NoError(t, tx.Commit())
+		rv.Timestamp = ts.UTC().Truncate(time.Second)
+		return rv
+	}
+
+	t.Run("empty pairs returns empty slice without querying DB", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateValueRepository(stubSQLiteDB(t))
+		require.NoError(t, err)
+
+		result, err := r.ObtainValuesForPairsSince(t.Context(), nil, time.Now())
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Empty(t, result)
+	})
+
+	t.Run("single pair single match returns that row", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateValueRepository(stubSQLiteDB(t, "src-single"))
+		require.NoError(t, err)
+
+		base := time.Now().UTC().Add(-time.Hour)
+		seedWithTimestamp(t, r, domain.RateValue{
+			SourceName:    "src-single",
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			Price:         100,
+		}, base)
+
+		pairs := []domain.SourcePairKey{
+			{SourceName: "src-single", BaseCurrency: "USD", QuoteCurrency: "KZT", Kind: "BID"},
+		}
+		result, err := r.ObtainValuesForPairsSince(t.Context(), pairs, base.Add(-time.Minute))
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		require.Equal(t, 100.0, result[0].Price)
+	})
+
+	t.Run("single pair multiple matches returned in ascending timestamp order", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateValueRepository(stubSQLiteDB(t, "src-multi"))
+		require.NoError(t, err)
+
+		base := time.Now().UTC().Truncate(time.Second)
+		for i, price := range []float64{10, 20, 30} {
+			seedWithTimestamp(t, r, domain.RateValue{
+				SourceName:    "src-multi",
 				BaseCurrency:  "USD",
 				QuoteCurrency: "KZT",
 				Price:         price,
-			}
-			require.NoError(t, r.RetainRateValue(t.Context(), rv))
-			// overwrite timestamp via direct SQL — RetainRateValue sets it to now
-			sqliteDB := r.db
-			tx, err := sqliteDB.Transaction(t.Context())
-			require.NoError(t, err)
-			_, err = tx.ExecContext(t.Context(),
-				"UPDATE "+rateValueTableName+" SET "+rateValueTimestampFieldName+" = ? WHERE "+rateValueIdFieldName+" = ?",
-				timestamps[i].Format(time.RFC3339), rv.ID,
-			)
-			require.NoError(t, err)
-			require.NoError(t, tx.Commit())
+			}, base.Add(time.Duration(i)*time.Minute))
 		}
+
+		pairs := []domain.SourcePairKey{{SourceName: "src-multi", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
+		result, err := r.ObtainValuesForPairsSince(t.Context(), pairs, base.Add(-time.Second))
+		require.NoError(t, err)
+		require.Len(t, result, 3)
+		require.Equal(t, 10.0, result[0].Price)
+		require.Equal(t, 20.0, result[1].Price)
+		require.Equal(t, 30.0, result[2].Price)
+	})
+
+	t.Run("multiple pairs interleaved correctly by timestamp", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateValueRepository(stubSQLiteDB(t, "src-pair-a", "src-pair-b"))
+		require.NoError(t, err)
+
+		base := time.Now().UTC().Truncate(time.Second)
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "src-pair-a", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 1}, base)
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "src-pair-b", BaseCurrency: "EUR", QuoteCurrency: "KZT", Price: 2}, base.Add(time.Minute))
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "src-pair-a", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 3}, base.Add(2*time.Minute))
+
+		pairs := []domain.SourcePairKey{
+			{SourceName: "src-pair-a", BaseCurrency: "USD", QuoteCurrency: "KZT"},
+			{SourceName: "src-pair-b", BaseCurrency: "EUR", QuoteCurrency: "KZT"},
+		}
+		result, err := r.ObtainValuesForPairsSince(t.Context(), pairs, base.Add(-time.Second))
+		require.NoError(t, err)
+		require.Len(t, result, 3)
+		// ascending timestamp order
+		require.Equal(t, 1.0, result[0].Price)
+		require.Equal(t, 2.0, result[1].Price)
+		require.Equal(t, 3.0, result[2].Price)
+	})
+
+	t.Run("since filter excludes older rows", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateValueRepository(stubSQLiteDB(t, "src-since"))
+		require.NoError(t, err)
+
+		base := time.Now().UTC().Truncate(time.Second)
+		cutoff := base.Add(-time.Hour)
+		// One row before cutoff (excluded), one after (included).
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "src-since", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 1}, base.Add(-2*time.Hour))
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "src-since", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 2}, base)
+
+		pairs := []domain.SourcePairKey{{SourceName: "src-since", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
+		result, err := r.ObtainValuesForPairsSince(t.Context(), pairs, cutoff)
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		require.Equal(t, 2.0, result[0].Price)
+	})
+
+	t.Run("rows for unrelated source are not returned", func(t *testing.T) {
+		t.Parallel()
+
+		r, err := NewRateValueRepository(stubSQLiteDB(t, "src-wanted", "src-other"))
+		require.NoError(t, err)
+
+		base := time.Now().UTC().Truncate(time.Second)
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "src-wanted", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 1}, base)
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "src-other", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 99}, base)
+
+		pairs := []domain.SourcePairKey{{SourceName: "src-wanted", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
+		result, err := r.ObtainValuesForPairsSince(t.Context(), pairs, base.Add(-time.Second))
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		require.Equal(t, 1.0, result[0].Price)
+	})
+
+	t.Run("rows for deleted source are excluded via FK cascade", func(t *testing.T) {
+		t.Parallel()
+
+		db := stubSQLiteDB(t, "src-cascade")
+		r, err := NewRateValueRepository(db)
+		require.NoError(t, err)
+
+		base := time.Now().UTC().Truncate(time.Second)
+		seedWithTimestamp(t, r, domain.RateValue{
+			SourceName:    "src-cascade",
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			Price:         42,
+		}, base)
+
+		// Confirm the row is present before deletion.
+		pairs := []domain.SourcePairKey{{SourceName: "src-cascade", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
+		before, err := r.ObtainValuesForPairsSince(t.Context(), pairs, base.Add(-time.Second))
+		require.NoError(t, err)
+		require.Len(t, before, 1)
+
+		// Delete the source; ON DELETE CASCADE must remove the rate_value row.
+		srcRepo, err := NewRateSourceRepository(db)
+		require.NoError(t, err)
+		require.NoError(t, srcRepo.RemoveRateSource(t.Context(), &domain.RateSource{Name: "src-cascade"}))
+
+		// The rate_value row must be gone.
+		after, err := r.ObtainValuesForPairsSince(t.Context(), pairs, base.Add(-time.Second))
+		require.NoError(t, err)
+		require.Empty(t, after, "ON DELETE CASCADE must remove rate_value rows when their source is deleted")
+	})
+}
+
+func TestRateValueRepository_ObtainHistoryForPairsPaged(t *testing.T) {
+	t.Parallel()
+
+	// seedWithTimestamp inserts a RateValue and overwrites its timestamp via a
+	// direct SQL UPDATE so tests can control the timestamp precisely.
+	seedWithTimestamp := func(t *testing.T, r *RateValueRepository, rv domain.RateValue, ts time.Time) domain.RateValue {
+		t.Helper()
+		rv.ID = ""
+		require.NoError(t, r.RetainRateValue(t.Context(), &rv))
+		tx, err := r.db.Transaction(t.Context())
+		require.NoError(t, err)
+		_, err = tx.ExecContext(t.Context(),
+			"UPDATE "+rateValueTableName+" SET "+rateValueTimestampFieldName+" = ? WHERE "+rateValueIdFieldName+" = ?",
+			ts.UTC().Format(time.RFC3339), rv.ID,
+		)
+		require.NoError(t, err)
+		require.NoError(t, tx.Commit())
+		rv.Timestamp = ts.UTC().Truncate(time.Second)
+		return rv
 	}
 
-	t.Run("week period returns daily buckets within last 7 days", func(t *testing.T) {
+	t.Run("empty pairs returns empty slice and zero total", func(t *testing.T) {
 		t.Parallel()
-
-		r, err := NewRateValueRepository(stubSQLiteDB(t, "chart-src"))
-		require.NoError(t, err)
-
-		now := time.Now().UTC()
-		prices := []float64{450.0, 451.0, 452.0}
-		ts := []time.Time{
-			now.AddDate(0, 0, -3),
-			now.AddDate(0, 0, -2),
-			now.AddDate(0, 0, -1),
-		}
-		seedRates(t, r, "chart-src", prices, ts)
-
-		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "chart-src", domain.ChartPeriodWeek)
-		require.NoError(t, err)
-		require.NotEmpty(t, points)
-		require.LessOrEqual(t, len(points), 7)
-		// labels must be in YYYY-MM-DD format
-		require.Regexp(t, `^\d{4}-\d{2}-\d{2}$`, points[0].Label)
-	})
-
-	t.Run("year period returns monthly buckets in YYYY-MM format", func(t *testing.T) {
-		t.Parallel()
-
-		r, err := NewRateValueRepository(stubSQLiteDB(t, "chart-year-src"))
-		require.NoError(t, err)
-
-		now := time.Now().UTC()
-		prices := []float64{460.0, 462.0}
-		ts := []time.Time{
-			now.AddDate(0, -2, 0),
-			now.AddDate(0, -1, 0),
-		}
-		seedRates(t, r, "chart-year-src", prices, ts)
-
-		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "chart-year-src", domain.ChartPeriodYear)
-		require.NoError(t, err)
-		require.NotEmpty(t, points)
-		require.LessOrEqual(t, len(points), 12)
-		require.Regexp(t, `^\d{4}-\d{2}$`, points[0].Label)
-	})
-
-	t.Run("month period returns daily buckets within last 30 days", func(t *testing.T) {
-		t.Parallel()
-
-		r, err := NewRateValueRepository(stubSQLiteDB(t, "chart-month-src"))
-		require.NoError(t, err)
-
-		now := time.Now().UTC()
-		prices := []float64{455.0, 457.0, 459.0}
-		ts := []time.Time{
-			now.AddDate(0, 0, -20),
-			now.AddDate(0, 0, -10),
-			now.AddDate(0, 0, -2),
-		}
-		seedRates(t, r, "chart-month-src", prices, ts)
-
-		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "chart-month-src", domain.ChartPeriodMonth)
-		require.NoError(t, err)
-		require.NotEmpty(t, points)
-		require.LessOrEqual(t, len(points), 30)
-		// labels must be in YYYY-MM-DD format (same as week period)
-		require.Regexp(t, `^\d{4}-\d{2}-\d{2}$`, points[0].Label)
-	})
-	t.Run("unknown period returns error", func(t *testing.T) {
-		t.Parallel()
-
 		r, err := NewRateValueRepository(stubSQLiteDB(t))
 		require.NoError(t, err)
 
-		_, err = r.ObtainRateValueChartBySourceName(t.Context(), "any", domain.ChartPeriod("bogus"))
-		require.Error(t, err)
+		rows, total, err := r.ObtainHistoryForPairsPaged(t.Context(), nil, 20, 0)
+		require.NoError(t, err)
+		require.Empty(t, rows)
+		require.EqualValues(t, 0, total)
 	})
 
-	t.Run("no data returns empty slice without error", func(t *testing.T) {
+	t.Run("single source single direction returns rows newest first", func(t *testing.T) {
 		t.Parallel()
-
-		r, err := NewRateValueRepository(stubSQLiteDB(t))
+		r, err := NewRateValueRepository(stubSQLiteDB(t, "hist-single"))
 		require.NoError(t, err)
 
-		points, err := r.ObtainRateValueChartBySourceName(t.Context(), "empty-source", domain.ChartPeriodWeek)
+		base := time.Now().UTC().Truncate(time.Second)
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-single", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 100}, base.Add(-2*time.Minute))
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-single", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 200}, base.Add(-time.Minute))
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-single", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 300}, base)
+
+		pairs := []domain.SourcePairKey{{SourceName: "hist-single", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
+		rows, total, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 20, 0)
 		require.NoError(t, err)
-		require.Empty(t, points)
+		require.EqualValues(t, 3, total)
+		require.Len(t, rows, 3)
+		// Newest first.
+		require.Equal(t, 300.0, rows[0].Price)
+		require.Equal(t, 200.0, rows[1].Price)
+		require.Equal(t, 100.0, rows[2].Price)
+	})
+
+	t.Run("two sources two directions returns interleaved rows ordered by timestamp", func(t *testing.T) {
+		t.Parallel()
+		r, err := NewRateValueRepository(stubSQLiteDB(t, "hist-src-a", "hist-src-b"))
+		require.NoError(t, err)
+
+		base := time.Now().UTC().Truncate(time.Second)
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-src-a", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 1}, base.Add(-2*time.Minute))
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-src-b", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 2}, base.Add(-time.Minute))
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-src-a", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 3}, base)
+
+		pairs := []domain.SourcePairKey{
+			{SourceName: "hist-src-a", BaseCurrency: "USD", QuoteCurrency: "KZT"},
+			{SourceName: "hist-src-b", BaseCurrency: "USD", QuoteCurrency: "KZT"},
+		}
+		rows, total, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 20, 0)
+		require.NoError(t, err)
+		require.EqualValues(t, 3, total)
+		require.Len(t, rows, 3)
+		// Newest first.
+		require.Equal(t, 3.0, rows[0].Price)
+		require.Equal(t, 2.0, rows[1].Price)
+		require.Equal(t, 1.0, rows[2].Price)
+	})
+
+	t.Run("limit caps returned rows", func(t *testing.T) {
+		t.Parallel()
+		r, err := NewRateValueRepository(stubSQLiteDB(t, "hist-limit"))
+		require.NoError(t, err)
+
+		base := time.Now().UTC().Truncate(time.Second)
+		for i := range 5 {
+			seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-limit", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: float64(i + 1)}, base.Add(time.Duration(i)*time.Second))
+		}
+
+		pairs := []domain.SourcePairKey{{SourceName: "hist-limit", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
+		rows, total, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 2, 0)
+		require.NoError(t, err)
+		require.EqualValues(t, 5, total)
+		require.Len(t, rows, 2)
+	})
+
+	t.Run("offset skips earlier rows", func(t *testing.T) {
+		t.Parallel()
+		r, err := NewRateValueRepository(stubSQLiteDB(t, "hist-offset"))
+		require.NoError(t, err)
+
+		base := time.Now().UTC().Truncate(time.Second)
+		for i := range 5 {
+			seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-offset", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: float64(i + 1)}, base.Add(time.Duration(i)*time.Second))
+		}
+
+		pairs := []domain.SourcePairKey{{SourceName: "hist-offset", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
+		// Newest row is price=5; offset=2 skips the two newest, so first returned is price=3.
+		rows, total, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 10, 2)
+		require.NoError(t, err)
+		require.EqualValues(t, 5, total)
+		require.Len(t, rows, 3)
+		require.Equal(t, 3.0, rows[0].Price)
+	})
+
+	t.Run("total reflects un-paginated row count", func(t *testing.T) {
+		t.Parallel()
+		r, err := NewRateValueRepository(stubSQLiteDB(t, "hist-total"))
+		require.NoError(t, err)
+
+		base := time.Now().UTC().Truncate(time.Second)
+		for i := range 10 {
+			seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-total", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: float64(i)}, base.Add(time.Duration(i)*time.Second))
+		}
+
+		pairs := []domain.SourcePairKey{{SourceName: "hist-total", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
+		_, total, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 3, 0)
+		require.NoError(t, err)
+		require.EqualValues(t, 10, total)
+	})
+
+	t.Run("ids tie-break when timestamps are equal", func(t *testing.T) {
+		t.Parallel()
+		r, err := NewRateValueRepository(stubSQLiteDB(t, "hist-tie"))
+		require.NoError(t, err)
+
+		// Both rows share the same timestamp (second resolution); ID DESC breaks the tie.
+		sameTS := time.Now().UTC().Truncate(time.Second)
+		rv1 := seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-tie", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 10}, sameTS)
+		rv2 := seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-tie", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 20}, sameTS)
+
+		pairs := []domain.SourcePairKey{{SourceName: "hist-tie", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
+		rows, total, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 20, 0)
+		require.NoError(t, err)
+		require.EqualValues(t, 2, total)
+		require.Len(t, rows, 2)
+		// ID DESC: rv2 was inserted after rv1, so its ID is lexicographically larger;
+		// it must come first.
+		require.True(t, rv2.ID > rv1.ID, "pre-condition: rv2.ID must be greater for this test to be meaningful")
+		require.Equal(t, rv2.ID, rows[0].ID)
+		require.Equal(t, rv1.ID, rows[1].ID)
 	})
 }

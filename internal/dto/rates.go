@@ -8,9 +8,3 @@ type RateResponse struct {
 	Price         float64 `json:"price"`
 	Timestamp     string  `json:"timestamp"`
 }
-
-// ChartPointResponse is the JSON shape of one aggregated rate data point.
-type ChartPointResponse struct {
-	Label string  `json:"label"`
-	Price float64 `json:"price"`
-}

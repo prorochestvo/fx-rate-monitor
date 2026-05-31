@@ -64,15 +64,19 @@ func meSubscriptionsHeaders(initData string) map[string]string {
 	return map[string]string{"X-Telegram-Init-Data": initData}
 }
 
-// chartURL builds /api/sources/{name}/rates/chart. period is left out of the
-// query string when empty so the server applies its default (week).
-func chartURL(name, period string) string {
-	base := "/api/sources/" + url.PathEscape(name) + "/rates/chart"
-	if period == "" {
-		// Empty period: server defaults to week; no ?period= avoids a redundant param.
-		return base
-	}
+func meProfileURL() string { return "/api/me/profile" }
+
+// meRatesChartURL returns the endpoint for the authenticated sparkline-list chart.
+// No query parameters — the 7-day window is fixed server-side.
+func meRatesChartURL() string { return "/api/me/rates/chart" }
+
+// meRatesHistoryURL returns the paginated per-pair history endpoint URL.
+// pair should be upper-case canonical (e.g. "USD/KZT"); url.Values.Encode
+// percent-encodes the slash.
+func meRatesHistoryURL(pair string, page, limit int) string {
 	v := url.Values{}
-	v.Set("period", period)
-	return base + "?" + v.Encode()
+	v.Set("pair", pair)
+	v.Set("page", strconv.Itoa(page))
+	v.Set("limit", strconv.Itoa(limit))
+	return "/api/me/rates/history?" + v.Encode()
 }

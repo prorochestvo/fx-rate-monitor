@@ -7,10 +7,10 @@ package main
 
 import (
 	"context"
-	"errors"
 	"strconv"
 	"sync"
 	"syscall/js"
+	"time"
 
 	"github.com/seilbekskindirov/monitor/cmd/wasm/apiclient"
 	"github.com/seilbekskindirov/monitor/cmd/wasm/application"
@@ -436,6 +436,49 @@ func bindErrorsSections(doc js.Value, page *application.ErrorsPage, scr *screen)
 	bindErrorSection("event-errors-section")
 }
 
+// uploadUserProfile reads the browser's resolved IANA timezone and BCP-47
+// locale from Intl.DateTimeFormat() and POSTs both to /api/me/profile.
+// Fire-and-forget — the caller wraps this in `go` and discards the result.
+// The notifier falls back to UTC when no profile is configured, so a failed
+// upload is a soft regression, not a blocking error.
+//
+// The whole flow lives in the WASM client because the Telegram Bot API does
+// not reliably expose either timezone or locale. By project policy this
+// upload never sends username / display name — see the no-PII memory.
+func uploadUserProfile(ctx context.Context, client *apiclient.Client, initData string) {
+	if initData == "" {
+		return // initData is required by the server-side HMAC verifier.
+	}
+	intl := js.Global().Get("Intl")
+	if intl.IsNull() || intl.IsUndefined() {
+		return
+	}
+	dtf := intl.Get("DateTimeFormat")
+	if dtf.IsNull() || dtf.IsUndefined() {
+		return
+	}
+	opts := dtf.New().Call("resolvedOptions")
+	if opts.IsNull() || opts.IsUndefined() {
+		return
+	}
+
+	var tz, locale string
+	if v := opts.Get("timeZone"); !v.IsNull() && !v.IsUndefined() {
+		tz = v.String()
+	}
+	if v := opts.Get("locale"); !v.IsNull() && !v.IsUndefined() {
+		locale = v.String()
+	}
+	if tz == "" {
+		// Timezone is the load-bearing field — without it the notifier has
+		// nothing to localise. Skip the call rather than persisting an empty row.
+		return
+	}
+	if err := client.UpdateMeProfile(ctx, initData, tz, locale); err != nil {
+		js.Global().Get("console").Call("warn", "me-profile upload:", err.Error())
+	}
+}
+
 // readInitData reads window.Telegram.WebApp.initData when the page is opened
 // inside Telegram. Falls back to the ?initData= page-URL query parameter so a
 // developer can drive the Mini App from a normal browser tab during local
@@ -494,214 +537,279 @@ func callWebAppIfDefined() {
 
 // runRenderMeSubscriptions is the entry point for the Telegram Mini App screen.
 // It reads initData once at mount, calls WebApp.ready/expand, renders the
-// skeleton, loads the first page of subscriptions, fans out chart fetches for
-// the loaded items, and binds all event handlers. Must be called from a goroutine.
+// skeleton, loads the first page of subscriptions in this goroutine, then
+// launches a background goroutine for the sparkline chart. Must be called from
+// a goroutine — never from the main goroutine.
 func runRenderMeSubscriptions(client *apiclient.Client) {
 	callWebAppIfDefined()
 
 	initData := readInitData()
 
-	ctx := context.Background()
+	// screenCtx is cancelled when the screen is unmounted, which cancels any
+	// in-flight sparkline chart fetch so the goroutine exits cleanly instead
+	// of writing stale data back to a screen the user has already left.
+	screenCtx, cancelScreen := context.WithCancel(context.Background())
 	doc := js.Global().Get("document")
 	app := doc.Call("getElementById", "app")
 
-	app.Set("innerHTML", "<p>Loading…</p>")
-
+	// The inline .app-loader markup from subscriptions.html remains visible
+	// until this line replaces #app innerHTML. No intermediate "Loading…"
+	// text is written first — that would briefly destroy the loader between
+	// the two writes and flash an ugly text frame on the user.
 	scr := mountScreen()
-	page := application.NewMeSubscriptionsPage(client, initData, 10)
+	scr.addRelease(cancelScreen)
+	// MeSubscriptionsBatchSize lets the modal join all of the user's pairs
+	// against in-memory items; the list itself is no longer rendered.
+	page := application.NewMeSubscriptionsPage(client, initData, application.MeSubscriptionsBatchSize)
+
+	// alive tracks whether this screen is still the active one. It is set to
+	// false in a release closure so that a stale chart-fetch goroutine that
+	// completes after the user navigated away does not write into the new
+	// screen's DOM. WASM is single-threaded, so a plain bool is sufficient.
+	alive := true
+	scr.addRelease(func() { alive = false })
+
+	// lockBodyScroll locks or unlocks document.body overflow. On iOS Telegram
+	// WebView the body continues scrolling under a position:fixed modal without
+	// this guard.
+	lockBodyScroll := func(lock bool) {
+		body := doc.Call("querySelector", "body")
+		if body.IsNull() || body.IsUndefined() {
+			return
+		}
+		style := body.Get("style")
+		if lock {
+			style.Set("overflow", "hidden")
+		} else {
+			style.Set("overflow", "")
+		}
+	}
+	// Ensure the body is unlocked when the screen is torn down, covering the
+	// case where the user navigates away with a modal still open.
+	scr.addRelease(func() { lockBodyScroll(false) })
 
 	// Render the skeleton immediately so the user sees a responsive UI.
 	app.Set("innerHTML", ui.RenderMeSubscriptions(page.State()))
 
-	redrawAll := func() {
-		app.Set("innerHTML", ui.RenderMeSubscriptions(page.State()))
-	}
-
 	redrawChart := func() {
-		chartDiv := doc.Call("getElementById", "me-overlay-chart")
+		if !alive {
+			return
+		}
+		chartDiv := doc.Call("getElementById", "me-sparkline-chart")
 		if chartDiv.IsNull() || chartDiv.IsUndefined() {
 			// The screen has been replaced by another screen; drop the write.
 			return
 		}
-		chartDiv.Set("innerHTML", ui.RenderOverlayChartSlot(page.State()))
+		chartDiv.Set("innerHTML", ui.RenderSparklineSlot(page.State()))
 	}
 
-	redrawList := func() {
-		listDiv := doc.Call("getElementById", "me-subs-list")
-		if listDiv.IsNull() || listDiv.IsUndefined() {
-			return
-		}
-		listDiv.Set("innerHTML", ui.RenderMeSubsList(page.State()))
-		paginationDiv := doc.Call("getElementById", "me-subs-pagination")
-		if !paginationDiv.IsNull() && !paginationDiv.IsUndefined() {
-			paginationDiv.Set("innerHTML", ui.RenderMeSubsPagination(page.State()))
-		}
+	// loadSparklineChart fetches /api/me/rates/chart in a single goroutine.
+	// It derives its timeout from screenCtx so navigation cancels the fetch
+	// instead of letting the goroutine run until the 15s deadline fires.
+	loadSparklineChart := func() {
+		go func() {
+			fetchCtx, fetchCancel := context.WithTimeout(screenCtx, 15*time.Second)
+			defer fetchCancel()
+			if err := page.LoadSparklineChart(fetchCtx); err != nil {
+				js.Global().Get("console").Call("warn", "sparkline chart fetch:", err.Error())
+			}
+			redrawChart()
+		}()
 	}
 
-	// fanOutChartFetches launches one goroutine per visible subscription.
-	// Each goroutine calls LoadChart with the generation captured at fanout
-	// time; SetPeriod / NextPage / PrevPage / a subsequent fanOutChartFetches
-	// all bump the generation, causing in-flight goroutines from prior fanouts
-	// to drop their results on the floor (LoadChart's stale-gen guard).
-	fanOutChartFetches := func() {
-		gen := page.BeginChartLoad(len(page.State().Items))
-		redrawChart() // render the loading skeleton immediately
-		for _, item := range page.State().Items {
-			name := item.SourceName
-			go func() {
-				if err := page.LoadChart(ctx, name, gen); err != nil {
-					if !errors.Is(err, application.ErrStaleGeneration) {
-						js.Global().Get("console").Call("warn",
-							"chart fetch failed for "+name+":", err.Error())
-					}
-				}
-				redrawChart()
-			}()
-		}
-	}
+	// Fire-and-forget profile upload (timezone + BCP-47 locale) so the server
+	// can localise notification timestamps and, later, message text. Errors are
+	// console.warn only — the page must not block on this since notifications
+	// still work in UTC when the upload fails.
+	go uploadUserProfile(screenCtx, client, initData)
 
-	// Load the first page synchronously in this goroutine. Errors are stored
-	// on the page state and rendered by redrawList.
-	if err := page.LoadInitial(ctx); err != nil {
+	// Load the first page of subscriptions. Items are used by the modal's
+	// condition-badges join; they are not rendered as a list.
+	if err := page.LoadInitial(screenCtx); err != nil {
 		js.Global().Get("console").Call("warn", "me-subs LoadInitial:", err.Error())
 	}
-	redrawList()
-	fanOutChartFetches()
+	loadSparklineChart()
 
-	bindMeSubsHandlers(doc, page, scr, ctx, redrawAll, redrawList, redrawChart, fanOutChartFetches)
+	bindMeSubsHandlers(screenCtx, doc, page, scr, &alive, lockBodyScroll)
 }
 
-// bindMeSubsHandlers wires all event handlers for the Mini App screen.
+// bindMeSubsHandlers wires all event handlers for the Mini App subscriptions screen.
 //
-// Search: oninput on #me-search dispatches through OnSearch and listens on the
-// returned channel to know when the debounced fetch has settled. A new goroutine
-// is started for each search so the JS event loop is never blocked.
+// Row click / keydown: a delegated handler on #me-sparkline-chart walks up to
+// the nearest .sparkline-row via Element.closest, reads its data-pair attribute,
+// and calls OpenPairModal followed by a modal slot redraw. Enter and Space on a
+// focused row open the modal via the same path so keyboard users are covered.
 //
-// Period toggle: delegated click on #me-period-toggle reads data-period and
-// calls SetPeriod; on success redraws the whole page and re-fans-out chart fetches.
+// Modal close: a delegated click handler on #me-pair-modal-slot checks the target
+// ID; clicks on #me-pair-modal-close or #me-pair-modal-backdrop call ClosePairModal
+// and redraw. Content-area clicks are ignored.
 //
-// List toggle: click on #me-list-toggle calls ToggleListVisible and imperatively
-// toggles the hidden attribute on #me-subs-section to preserve search input focus.
+// History navigation: clicks on #me-pair-modal-history, #me-pair-history-back,
+// #me-pair-history-prev, and #me-pair-history-next are handled inside the same
+// delegated listener on #me-pair-modal-slot.
 //
-// Pagination: a delegated click handler on the #app div reads data-section and
-// data-page to dispatch NextPage/PrevPage, then re-fans-out chart fetches.
+// Escape: a document-level keydown listener closes the history view first (one press),
+// then closes the modal (second press) when both are open.
+//
+// ctx is the screen-lifetime context (screenCtx from runRenderMeSubscriptions); it is
+// used when spawning goroutines for history fetches so they are cancelled on unmount.
+//
+// alive is a pointer into runRenderMeSubscriptions's alive bool; when false the
+// screen has been unmounted and DOM writes are skipped. lockBodyScroll is called
+// with true/false to prevent iOS scroll bleed under the modal overlay.
 func bindMeSubsHandlers(
+	ctx context.Context,
 	doc js.Value,
 	page *application.MeSubscriptionsPage,
 	scr *screen,
-	ctx context.Context,
-	redrawAll, redrawList, redrawChart func(),
-	fanOutChartFetches func(),
+	alive *bool,
+	lockBodyScroll func(bool),
 ) {
-	searchEl := doc.Call("getElementById", "me-search")
-	if !searchEl.IsNull() && !searchEl.IsUndefined() {
-		scr.addRelease(dom.On(searchEl, "input", func(ev js.Value) {
-			q := ev.Get("target").Get("value").String()
-			done := page.OnSearch(q)
-			go func() {
-				if err := <-done; err != nil {
-					js.Global().Get("console").Call("warn", "me-subs search:", err.Error())
-				}
-				redrawList()
-				// Search changes the visible list but not the chart (Trade-off 3).
-			}()
-		}))
+	redrawModal := func() {
+		if !*alive {
+			return
+		}
+		slot := doc.Call("getElementById", "me-pair-modal-slot")
+		if slot.IsNull() || slot.IsUndefined() {
+			return
+		}
+		slot.Set("innerHTML", ui.RenderPairModal(page.State()))
 	}
 
-	// Period toggle: dedicated listener on #me-period-toggle, NOT via the
-	// delegated pagination handler, to avoid the pagination handler firing on
-	// period buttons.
-	periodToggle := doc.Call("getElementById", "me-period-toggle")
-	if !periodToggle.IsNull() && !periodToggle.IsUndefined() {
-		scr.addRelease(dom.On(periodToggle, "click", func(ev js.Value) {
+	openModal := func(pair string) {
+		page.OpenPairModal(pair)
+		lockBodyScroll(true)
+		redrawModal()
+	}
+
+	closeModal := func() {
+		page.ClosePairModal()
+		lockBodyScroll(false)
+		redrawModal()
+	}
+
+	// Delegated click handler on the chart container: opens modal for the
+	// nearest .sparkline-row ancestor of the click target.
+	chartDiv := doc.Call("getElementById", "me-sparkline-chart")
+	if !chartDiv.IsNull() && !chartDiv.IsUndefined() {
+		scr.addRelease(dom.On(chartDiv, "click", func(ev js.Value) {
 			target := ev.Get("target")
 			if target.IsNull() || target.IsUndefined() {
 				return
 			}
-			dataset := target.Get("dataset")
+			row := target.Call("closest", ".sparkline-row")
+			if row.IsNull() || row.IsUndefined() {
+				return
+			}
+			dataset := row.Get("dataset")
 			if dataset.IsNull() || dataset.IsUndefined() {
 				return
 			}
-			periodAttr := dataset.Get("period")
-			if periodAttr.IsUndefined() {
+			pairAttr := dataset.Get("pair")
+			if pairAttr.IsUndefined() {
 				return
 			}
-			period := periodAttr.String()
-			if err := page.SetPeriod(ctx, period); err != nil {
-				// PublicError means the button carried an unexpected data-period value.
-				js.Global().Get("console").Call("warn", "me-subs SetPeriod:", err.Error())
+			openModal(pairAttr.String())
+		}))
+
+		// Keyboard handler: Enter or Space on a focused .sparkline-row opens the modal.
+		scr.addRelease(dom.On(chartDiv, "keydown", func(ev js.Value) {
+			key := ev.Get("key").String()
+			if key != "Enter" && key != " " {
 				return
 			}
-			// Redraw the full screen so the period toggle's "active" state updates,
-			// then fan out chart fetches for the new period.
-			redrawAll()
-			fanOutChartFetches()
-		}))
-	}
-
-	// List toggle: imperative attribute toggle to preserve search input focus.
-	listToggleEl := doc.Call("getElementById", "me-list-toggle")
-	if !listToggleEl.IsNull() && !listToggleEl.IsUndefined() {
-		scr.addRelease(dom.On(listToggleEl, "click", func(_ js.Value) {
-			visible := page.ToggleListVisible()
-			section := doc.Call("getElementById", "me-subs-section")
-			if !section.IsNull() && !section.IsUndefined() {
-				if visible {
-					section.Call("removeAttribute", "hidden")
-				} else {
-					section.Set("hidden", true)
-				}
-			}
-			toggleBtn := doc.Call("getElementById", "me-list-toggle")
-			if !toggleBtn.IsNull() && !toggleBtn.IsUndefined() {
-				if visible {
-					toggleBtn.Set("innerHTML", "Hide subscriptions")
-				} else {
-					toggleBtn.Set("innerHTML", "Show subscriptions")
-				}
-			}
-		}))
-	}
-
-	appEl := doc.Call("getElementById", "app")
-	if !appEl.IsNull() && !appEl.IsUndefined() {
-		scr.addRelease(dom.On(appEl, "click", func(ev js.Value) {
 			target := ev.Get("target")
 			if target.IsNull() || target.IsUndefined() {
 				return
 			}
-			dataset := target.Get("dataset")
+			row := target.Call("closest", ".sparkline-row")
+			if row.IsNull() || row.IsUndefined() {
+				return
+			}
+			dataset := row.Get("dataset")
 			if dataset.IsNull() || dataset.IsUndefined() {
 				return
 			}
-			sectionAttr := dataset.Get("section")
-			pageAttr := dataset.Get("page")
-			if sectionAttr.IsUndefined() || pageAttr.IsUndefined() {
+			pairAttr := dataset.Get("pair")
+			if pairAttr.IsUndefined() {
 				return
 			}
-			if sectionAttr.String() != "me-subs" {
-				return
-			}
-			pageNum, err := strconv.Atoi(pageAttr.String())
-			if err != nil || pageNum < 1 {
-				return
-			}
-			currentPage := page.State().Page
-			go func() {
-				if pageNum > currentPage {
-					if err := page.NextPage(ctx); err != nil {
-						js.Global().Get("console").Call("error", "me-subs NextPage:", err.Error())
-					}
-				} else {
-					if err := page.PrevPage(ctx); err != nil {
-						js.Global().Get("console").Call("error", "me-subs PrevPage:", err.Error())
-					}
-				}
-				redrawList()
-				fanOutChartFetches()
-			}()
+			openModal(pairAttr.String())
 		}))
 	}
+
+	// Delegated click handler on the modal slot: close on backdrop or close-button;
+	// navigate history via the history action buttons.
+	modalSlot := doc.Call("getElementById", "me-pair-modal-slot")
+	if !modalSlot.IsNull() && !modalSlot.IsUndefined() {
+		scr.addRelease(dom.On(modalSlot, "click", func(ev js.Value) {
+			target := ev.Get("target")
+			if target.IsNull() || target.IsUndefined() {
+				return
+			}
+			id := target.Get("id").String()
+			switch id {
+			case "me-pair-modal-close", "me-pair-modal-backdrop":
+				closeModal()
+			case "me-pair-modal-history":
+				// Open the history view: fetch page 1 in a goroutine and redraw.
+				go func() {
+					fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+					defer cancel()
+					if err := page.OpenHistory(fetchCtx); err != nil {
+						js.Global().Get("console").Call("warn", "history fetch:", err.Error())
+					}
+					redrawModal()
+				}()
+			case "me-pair-history-back":
+				page.CloseHistory()
+				redrawModal()
+			case "me-pair-history-prev":
+				go func() {
+					fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+					defer cancel()
+					if err := page.HistoryPrevPage(fetchCtx); err != nil {
+						js.Global().Get("console").Call("warn", "history prev:", err.Error())
+					}
+					redrawModal()
+				}()
+			case "me-pair-history-next":
+				go func() {
+					fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+					defer cancel()
+					if err := page.HistoryNextPage(fetchCtx); err != nil {
+						js.Global().Get("console").Call("warn", "history next:", err.Error())
+					}
+					redrawModal()
+				}()
+				// Clicks inside .me-pair-modal-card are ignored — content-area
+				// interaction must not close the overlay.
+			}
+		}))
+	}
+
+	// Document-level Escape handler: one press closes the history view when open;
+	// a second press (or a single press when history is not open) closes the modal.
+	// Registered via dom.On and released via scr.addRelease so it is cleaned
+	// up on screen unmount even when navigating away with a modal open.
+	// NOTE: if a future feature adds another document-level keydown listener
+	// (e.g. a global search shortcut), the dispatch order becomes load-bearing;
+	// consider an event-bus pattern at that point.
+	scr.addRelease(dom.On(doc, "keydown", func(ev js.Value) {
+		if ev.Get("key").String() != "Escape" {
+			return
+		}
+		st := page.State()
+		if st.OpenPair == nil {
+			return
+		}
+		if st.HistoryOpen {
+			page.CloseHistory()
+			redrawModal()
+			return
+		}
+		closeModal()
+	}))
 }
 
 // bindPaginatedSection attaches a delegated click handler to the named section

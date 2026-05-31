@@ -135,17 +135,48 @@ func (c *Client) MeSubscriptions(ctx context.Context, initData string, page, pag
 	return out, nil
 }
 
-// RatesChart fetches aggregated chart data for one source over the given period.
-// period must be one of "week", "month", "year", or "" to let the server default.
-// The endpoint is public — no headers required.
-func (c *Client) RatesChart(ctx context.Context, name, period string) ([]dto.ChartPointResponse, error) {
-	raw, err := c.fetcher.FetchJSON(ctx, "GET", chartURL(name, period), nil, nil)
+// UpdateMeProfile sends the caller's IANA timezone and BCP-47 locale to the
+// server. Fire-and-forget from the Mini App mount path: the server validates
+// and persists, the client ignores everything but a non-nil error. initData
+// carries the WebApp HMAC header same as MeSubscriptions.
+//
+// Locale may be empty when the browser does not expose Intl; the server
+// stores it verbatim either way. By project policy this call never carries
+// username / display name — see the no-PII memory.
+func (c *Client) UpdateMeProfile(ctx context.Context, initData, timezone, locale string) error {
+	return c.fetcher.FetchNoContent(ctx, "POST", meProfileURL(),
+		dto.MeProfileRequest{Timezone: timezone, Locale: locale},
+		meSubscriptionsHeaders(initData))
+}
+
+// MeRatesChart fetches the sparkline-list chart data for the calling user's
+// subscribed currency pairs over the last 7 days. initData is the Telegram
+// WebApp initData string; it is forwarded via the X-Telegram-Init-Data header
+// (never as a query parameter — see the privacy notes in routes.go).
+func (c *Client) MeRatesChart(ctx context.Context, initData string) (dto.MeChartResponse, error) {
+	raw, err := c.fetcher.FetchJSON(ctx, "GET", meRatesChartURL(), nil, meSubscriptionsHeaders(initData))
 	if err != nil {
-		return nil, err
+		return dto.MeChartResponse{}, err
 	}
-	var out []dto.ChartPointResponse
+	var out dto.MeChartResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("decode chart points: %w", err)
+		return dto.MeChartResponse{}, fmt.Errorf("decode me rates chart: %w", err)
+	}
+	return out, nil
+}
+
+// MeRatesHistory fetches one page of per-pair rate-collection events for the
+// calling user. initData is the Telegram WebApp initData string; pair is a
+// canonical "BASE/QUOTE" label; page is 1-based; limit is bounded server-side
+// at 100. Returns the parsed JSON envelope.
+func (c *Client) MeRatesHistory(ctx context.Context, initData, pair string, page, limit int) (dto.MeHistoryResponse, error) {
+	raw, err := c.fetcher.FetchJSON(ctx, "GET", meRatesHistoryURL(pair, page, limit), nil, meSubscriptionsHeaders(initData))
+	if err != nil {
+		return dto.MeHistoryResponse{}, err
+	}
+	var out dto.MeHistoryResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return dto.MeHistoryResponse{}, fmt.Errorf("decode me rates history: %w", err)
 	}
 	return out, nil
 }

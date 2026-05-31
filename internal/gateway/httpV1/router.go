@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 
+	appchart "github.com/seilbekskindirov/monitor/internal/application/chart"
 	"github.com/seilbekskindirov/monitor/internal/application/service"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	v1 "github.com/seilbekskindirov/monitor/internal/gateway/httpV1/handlers"
@@ -19,22 +20,25 @@ func NewRouter(
 	subRepo meSubscriptionRepo,
 	sourceRepo meSourceRepo,
 	rateValueRepo meRateValueRepo,
+	profileRepo meProfileRepo,
+	chartSvc *appchart.Service,
 ) (*http.ServeMux, error) {
-	h, err := v1.NewHandler(srvRateRestApi, botToken, subRepo, sourceRepo, rateValueRepo)
+	h, err := v1.NewHandler(srvRateRestApi, botToken, subRepo, sourceRepo, rateValueRepo, profileRepo, chartSvc)
 	if err != nil {
 		return nil, err
 	}
 
-	// MeSubscriptions is registered before the /api/sources/... block.
-	// /me and /sources are distinct prefixes, so no ambiguity.
+	// MeSubscriptions, MeRatesChart, and MeRatesHistory are registered before the
+	// /api/sources/... block. /me and /sources are distinct prefixes, so no
+	// ambiguity.
 	mux.HandleFunc("GET "+routes.MeSubscriptions, h.ListMeSubscriptions)
+	mux.HandleFunc("GET "+routes.MeRatesChart, h.GetMeRatesChart)
+	mux.HandleFunc("GET "+routes.MeRatesHistory, h.GetMeRatesHistory)
+	mux.HandleFunc("POST "+routes.MeProfile, h.UpsertMeProfile)
 
 	mux.HandleFunc("GET "+routes.Sources, h.ListSources)
 	mux.HandleFunc("PATCH "+routes.SourceToggleActive, h.ToggleSourceActive)
 
-	// SourceRatesChart must come before SourceRates: the chart path is more specific
-	// and Go's ServeMux selects the longest-matching literal prefix first.
-	mux.HandleFunc("GET "+routes.SourceRatesChart, h.GetRatesChart)
 	mux.HandleFunc("GET "+routes.SourceRates, h.ListRates)
 	mux.HandleFunc("GET "+routes.SourceHistory, h.ListHistory)
 	mux.HandleFunc("GET "+routes.SourceEventsFailed, h.ListSourceFailedEvents)
@@ -73,4 +77,9 @@ type meSourceRepo interface {
 type meRateValueRepo interface {
 	ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error)
 	ObtainLatestRateValuesBySourceNames(ctx context.Context, names []string) (map[string]domain.RateValue, error)
+}
+
+// meProfileRepo is a thin interface for user-profile upserts (timezone).
+type meProfileRepo interface {
+	UpsertRateUserProfile(ctx context.Context, record *domain.RateUserProfile) error
 }

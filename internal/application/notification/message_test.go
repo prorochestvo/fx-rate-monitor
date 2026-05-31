@@ -19,7 +19,7 @@ func TestBuildAlertMessage(t *testing.T) {
 	t.Run("no alerts — empty slice", func(t *testing.T) {
 		t.Parallel()
 
-		msgs, err := buildAlertMessage(fixedNow)
+		msgs, err := buildAlertMessage(fixedNow, nil)
 		require.NoError(t, err)
 		require.Empty(t, msgs)
 	})
@@ -27,7 +27,7 @@ func TestBuildAlertMessage(t *testing.T) {
 	t.Run("BID pair rendered as base/quote", func(t *testing.T) {
 		t.Parallel()
 
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  470.46,
@@ -42,7 +42,7 @@ func TestBuildAlertMessage(t *testing.T) {
 	t.Run("ASK pair inverted to quote/base", func(t *testing.T) {
 		t.Parallel()
 
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  470.46,
@@ -57,7 +57,7 @@ func TestBuildAlertMessage(t *testing.T) {
 	t.Run("delta zero — blank delta cell, no 0.00 and no arrow", func(t *testing.T) {
 		t.Parallel()
 
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  470.46,
@@ -74,7 +74,7 @@ func TestBuildAlertMessage(t *testing.T) {
 		t.Parallel()
 
 		const price = 470.46
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  price,
@@ -82,8 +82,9 @@ func TestBuildAlertMessage(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.Len(t, msgs, 1)
-		// The price itself appears, but no "+470.46" or arrow.
-		require.NotContains(t, msgs[0], "+")
+		// Body must not contain a signed delta value like "+470.46". The
+		// "+00" offset in the timestamp line is allowed and unrelated.
+		require.NotContains(t, msgs[0], "+470")
 		require.NotContains(t, msgs[0], arrowUp)
 		require.NotContains(t, msgs[0], arrowDown)
 	})
@@ -91,7 +92,7 @@ func TestBuildAlertMessage(t *testing.T) {
 	t.Run("positive delta — ASCII + and up arrow", func(t *testing.T) {
 		t.Parallel()
 
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  100,
@@ -107,7 +108,7 @@ func TestBuildAlertMessage(t *testing.T) {
 	t.Run("negative delta — U+2212 minus and down arrow", func(t *testing.T) {
 		t.Parallel()
 
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  100,
@@ -123,7 +124,7 @@ func TestBuildAlertMessage(t *testing.T) {
 	t.Run("thousands grouping survives inside pre block", func(t *testing.T) {
 		t.Parallel()
 
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "GOLD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  68382.56,
@@ -143,7 +144,7 @@ func TestBuildAlertMessage(t *testing.T) {
 
 		// Two rows with very different pair and value widths; one has a suppressed
 		// delta (first-fire). Assert the exact block to catch alignment regressions.
-		msgs, err := buildAlertMessage(fixedNow,
+		msgs, err := buildAlertMessage(fixedNow, nil,
 			alert{
 				BaseCurrency:  "USD",
 				QuoteCurrency: "KZT",
@@ -174,10 +175,10 @@ func TestBuildAlertMessage(t *testing.T) {
 		require.Contains(t, msgs[0], expectedBlock)
 	})
 
-	t.Run("header format — line 1 and line 2 with fixed now", func(t *testing.T) {
+	t.Run("header format — hashtag prefix and offset timestamp", func(t *testing.T) {
 		t.Parallel()
 
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  470.46,
@@ -188,14 +189,19 @@ func TestBuildAlertMessage(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.Len(t, msgs, 1)
-		require.True(t, strings.HasPrefix(msgs[0], "📊 FX rates\n"))
-		require.Contains(t, msgs[0], "🕒 Sat 23 May, 03:00 UTC")
+		// First line: "#DELTA FX rates" (no 📊, no badge row).
+		require.True(t, strings.HasPrefix(msgs[0], "#DELTA FX rates\n"),
+			"first line must be hashtag-prefixed; got: %s", msgs[0])
+		// Second line: numeric-offset timestamp, no 🕒 glyph.
+		require.Contains(t, msgs[0], "Sat 23 May, 03:00 +00")
+		require.NotContains(t, msgs[0], "🕒")
+		require.NotContains(t, msgs[0], "📊")
 	})
 
-	t.Run("badge delta-only", func(t *testing.T) {
+	t.Run("hashtag delta-only", func(t *testing.T) {
 		t.Parallel()
 
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  100,
@@ -206,14 +212,16 @@ func TestBuildAlertMessage(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.Len(t, msgs, 1)
-		require.Contains(t, msgs[0], badgeIconDelta+" 🕒")
-		require.NotContains(t, msgs[0], badgeIconSchedule)
+		require.True(t, strings.HasPrefix(msgs[0], hashtagDelta+" FX rates"))
+		require.NotContains(t, msgs[0], hashtagInterval)
+		require.NotContains(t, msgs[0], hashtagDaily)
+		require.NotContains(t, msgs[0], hashtagCron)
 	})
 
-	t.Run("badge schedule-only (interval)", func(t *testing.T) {
+	t.Run("hashtag schedule-only (interval)", func(t *testing.T) {
 		t.Parallel()
 
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  100,
@@ -224,14 +232,14 @@ func TestBuildAlertMessage(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.Len(t, msgs, 1)
-		require.Contains(t, msgs[0], badgeIconSchedule+" 🕒")
-		require.NotContains(t, msgs[0], badgeIconDelta)
+		require.True(t, strings.HasPrefix(msgs[0], hashtagInterval+" FX rates"))
+		require.NotContains(t, msgs[0], hashtagDelta)
 	})
 
-	t.Run("badge schedule-only (daily)", func(t *testing.T) {
+	t.Run("hashtag schedule-only (daily)", func(t *testing.T) {
 		t.Parallel()
 
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  100,
@@ -242,14 +250,14 @@ func TestBuildAlertMessage(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.Len(t, msgs, 1)
-		require.Contains(t, msgs[0], badgeIconSchedule+" 🕒")
-		require.NotContains(t, msgs[0], badgeIconDelta)
+		require.True(t, strings.HasPrefix(msgs[0], hashtagDaily+" FX rates"))
+		require.NotContains(t, msgs[0], hashtagDelta)
 	})
 
-	t.Run("badge schedule-only (cron)", func(t *testing.T) {
+	t.Run("hashtag schedule-only (cron)", func(t *testing.T) {
 		t.Parallel()
 
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  100,
@@ -260,14 +268,16 @@ func TestBuildAlertMessage(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.Len(t, msgs, 1)
-		require.Contains(t, msgs[0], badgeIconSchedule+" 🕒")
-		require.NotContains(t, msgs[0], badgeIconDelta)
+		require.True(t, strings.HasPrefix(msgs[0], hashtagCron+" FX rates"))
+		require.NotContains(t, msgs[0], hashtagDelta)
 	})
 
-	t.Run("badge mixed time-types collapse to one schedule glyph", func(t *testing.T) {
+	t.Run("hashtag mixed schedule types — alphabetical order", func(t *testing.T) {
 		t.Parallel()
 
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		// All three schedule types fire — each surfaces as its own tag.
+		// Order is canonical alphabetical within the schedule family.
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  100,
@@ -280,15 +290,15 @@ func TestBuildAlertMessage(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.Len(t, msgs, 1)
-		// Only one schedule glyph.
-		require.Equal(t, 1, strings.Count(msgs[0], badgeIconSchedule))
-		require.NotContains(t, msgs[0], badgeIconDelta)
+		require.True(t, strings.HasPrefix(msgs[0], hashtagCron+" "+hashtagDaily+" "+hashtagInterval+" FX rates"),
+			"schedule tags must appear in alphabetical order; got: %s", msgs[0])
+		require.NotContains(t, msgs[0], hashtagDelta)
 	})
 
-	t.Run("badge both delta and schedule", func(t *testing.T) {
+	t.Run("hashtag delta first, then schedule alphabetical", func(t *testing.T) {
 		t.Parallel()
 
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  100,
@@ -300,30 +310,52 @@ func TestBuildAlertMessage(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.Len(t, msgs, 1)
-		require.Contains(t, msgs[0], badgeIconDelta+" "+badgeIconSchedule+" 🕒")
+		require.True(t, strings.HasPrefix(msgs[0], hashtagDelta+" "+hashtagInterval+" FX rates"),
+			"#DELTA must precede #INTERVAL; got: %s", msgs[0])
 	})
 
-	t.Run("badge none — no leading glyph before clock", func(t *testing.T) {
+	t.Run("no triggers — plain 'FX rates' header", func(t *testing.T) {
 		t.Parallel()
 
-		// No triggers at all — badge is empty, clock directly follows newline.
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  470.46,
 		})
 		require.NoError(t, err)
 		require.Len(t, msgs, 1)
-		require.Contains(t, msgs[0], "\n🕒 ")
-		require.NotContains(t, msgs[0], badgeIconDelta)
-		require.NotContains(t, msgs[0], badgeIconSchedule)
+		require.True(t, strings.HasPrefix(msgs[0], "FX rates\n"),
+			"no triggers → no leading hashtag; got: %s", msgs[0])
+		require.NotContains(t, msgs[0], "#")
+	})
+
+	t.Run("timezone — Asia/Almaty renders +05 offset", func(t *testing.T) {
+		t.Parallel()
+
+		loc, err := time.LoadLocation("Asia/Almaty")
+		require.NoError(t, err)
+
+		msgs, err := buildAlertMessage(fixedNow, loc, alert{
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			CurrentPrice:  470.46,
+			Delta:         1.20,
+			Triggers: []alertTrigger{
+				{ConditionType: domain.ConditionTypeDelta, ConditionValue: "1"},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, msgs, 1)
+		// fixedNow = 03:00 UTC → 08:00 +05 in Asia/Almaty.
+		require.Contains(t, msgs[0], "Sat 23 May, 08:00 +05")
+		require.NotContains(t, msgs[0], "+00")
 	})
 
 	t.Run("each message part contains one balanced pre block", func(t *testing.T) {
 		t.Parallel()
 
 		// Verify the <pre>…</pre> structure for a single part.
-		msgs, err := buildAlertMessage(fixedNow, alert{
+		msgs, err := buildAlertMessage(fixedNow, nil, alert{
 			BaseCurrency:  "USD",
 			QuoteCurrency: "KZT",
 			CurrentPrice:  470.46,
@@ -363,7 +395,7 @@ func TestBuildAlertMessage(t *testing.T) {
 			}
 		}
 
-		msgs, err := buildAlertMessage(fixedNow, alerts...)
+		msgs, err := buildAlertMessage(fixedNow, nil, alerts...)
 		require.NoError(t, err)
 		require.Greater(t, len(msgs), 1, "expected at least 2 parts")
 
@@ -397,49 +429,49 @@ func TestBuildAlertMessage(t *testing.T) {
 	})
 }
 
-func TestReasonBadge(t *testing.T) {
+func TestReasonHashtags(t *testing.T) {
 	t.Parallel()
 
 	t.Run("delta-only", func(t *testing.T) {
 		t.Parallel()
 		alerts := []alert{{Triggers: []alertTrigger{{ConditionType: domain.ConditionTypeDelta}}}}
-		require.Equal(t, badgeIconDelta+" ", reasonBadge(alerts))
+		require.Equal(t, hashtagDelta, reasonHashtags(alerts))
 	})
 	t.Run("interval-only", func(t *testing.T) {
 		t.Parallel()
 		alerts := []alert{{Triggers: []alertTrigger{{ConditionType: domain.ConditionTypeInterval}}}}
-		require.Equal(t, badgeIconSchedule+" ", reasonBadge(alerts))
+		require.Equal(t, hashtagInterval, reasonHashtags(alerts))
 	})
 	t.Run("daily-only", func(t *testing.T) {
 		t.Parallel()
 		alerts := []alert{{Triggers: []alertTrigger{{ConditionType: domain.ConditionTypeDaily}}}}
-		require.Equal(t, badgeIconSchedule+" ", reasonBadge(alerts))
+		require.Equal(t, hashtagDaily, reasonHashtags(alerts))
 	})
 	t.Run("cron-only", func(t *testing.T) {
 		t.Parallel()
 		alerts := []alert{{Triggers: []alertTrigger{{ConditionType: domain.ConditionTypeCron}}}}
-		require.Equal(t, badgeIconSchedule+" ", reasonBadge(alerts))
+		require.Equal(t, hashtagCron, reasonHashtags(alerts))
 	})
-	t.Run("mixed time types collapse to one schedule glyph", func(t *testing.T) {
+	t.Run("mixed schedule types — each gets its own tag, alphabetical order", func(t *testing.T) {
 		t.Parallel()
 		alerts := []alert{{Triggers: []alertTrigger{
 			{ConditionType: domain.ConditionTypeInterval},
 			{ConditionType: domain.ConditionTypeDaily},
 			{ConditionType: domain.ConditionTypeCron},
 		}}}
-		require.Equal(t, badgeIconSchedule+" ", reasonBadge(alerts))
+		require.Equal(t, hashtagCron+" "+hashtagDaily+" "+hashtagInterval, reasonHashtags(alerts))
 	})
-	t.Run("delta and schedule both present", func(t *testing.T) {
+	t.Run("delta first, then schedule alphabetical", func(t *testing.T) {
 		t.Parallel()
 		alerts := []alert{{Triggers: []alertTrigger{
 			{ConditionType: domain.ConditionTypeDelta},
 			{ConditionType: domain.ConditionTypeInterval},
 		}}}
-		require.Equal(t, badgeIconDelta+" "+badgeIconSchedule+" ", reasonBadge(alerts))
+		require.Equal(t, hashtagDelta+" "+hashtagInterval, reasonHashtags(alerts))
 	})
 	t.Run("empty input", func(t *testing.T) {
 		t.Parallel()
-		require.Equal(t, "", reasonBadge(nil))
-		require.Equal(t, "", reasonBadge([]alert{{}}))
+		require.Equal(t, "", reasonHashtags(nil))
+		require.Equal(t, "", reasonHashtags([]alert{{}}))
 	})
 }

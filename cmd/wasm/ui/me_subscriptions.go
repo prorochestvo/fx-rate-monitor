@@ -1,27 +1,37 @@
+// Package ui provides HTML renderers for the WASM frontend. This file handles
+// the Mini App subscriptions screen: a sparkline-list chart slot followed by a
+// modal slot. The subscription list section, search bar, and toggle button have
+// been removed; per-pair detail is now surfaced through the modal overlay.
+//
+// The modal is text-only (no SVG). When state.HistoryOpen is true the modal
+// body swaps to the per-pair history view rendered by me_pair_history.go.
+//
+// Layout when AuthFailure is false:
+//  1. #me-sparkline-chart — sparkline-list chart (skeleton / empty / rendered).
+//  2. #me-pair-modal-slot — pair detail overlay (empty unless OpenPair is set).
+//
+// AuthFailure short-circuits to just the error message.
 package ui
 
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/seilbekskindirov/monitor/cmd/wasm/application"
 	"github.com/seilbekskindirov/monitor/cmd/wasm/dom"
 	"github.com/seilbekskindirov/monitor/internal/dto"
 )
 
-// authFailureMsg is the exact copy from subscriptions.html lines 85 and 121.
-// Both the empty-initData path and the 401-response path render this message.
+// authFailureMsg is the exact copy from subscriptions.html.
+// The empty-initData path and the 401-response path both render this message.
 const authFailureMsg = "This page must be opened from the bot&#39;s button. Please reopen via the bot."
-
-// defaultOverlayOpts is the viewBox used for the overlay chart in the Mini App.
-var defaultOverlayOpts = OverlayOptions{Width: 320, Height: 180}
 
 // RenderMeSubscriptions returns the full HTML for the Mini App subscriptions
 // screen. Default top-to-bottom layout:
-//  1. Period toggle bar (week / month / year).
-//  2. Overlay chart slot (skeleton, empty-state, error, or rendered chart).
-//  3. "Show/Hide subscriptions" toggle button.
-//  4. Subscription list section — hidden when state.ListVisible is false.
+//  1. Sparkline-list chart slot (skeleton, empty-state, or the rendered chart).
+//  2. Pair modal slot — always present so the WASM layer can update it
+//     in-place without rebuilding the page.
 //
 // AuthFailure short-circuits the whole screen to just the auth-failure message.
 //
@@ -32,209 +42,177 @@ func RenderMeSubscriptions(state application.MeSubscriptionsState) string {
 	}
 
 	var b strings.Builder
-	b.WriteString(renderPeriodToggle(state.Period))
-	b.WriteString(`<div id="me-overlay-chart">`)
-	b.WriteString(renderOverlayChartSlot(state))
+	b.WriteString(`<div id="me-sparkline-chart">`)
+	b.WriteString(renderSparklineSlot(state))
 	b.WriteString(`</div>`)
-	b.WriteString(renderListToggleButton(state.ListVisible))
-	b.WriteString(renderListSection(state))
+	b.WriteString(`<div id="me-pair-modal-slot">`)
+	b.WriteString(RenderPairModal(state))
+	b.WriteString(`</div>`)
 	return b.String()
 }
 
-// RenderMeSubsList returns only the inner content HTML for the list section so
-// the DOM can be updated in-place without re-rendering the chart or period toggle
-// (avoids losing input focus).
-func RenderMeSubsList(state application.MeSubscriptionsState) string {
-	return renderMeSubsContent(state)
+// RenderSparklineSlot returns the HTML content for the #me-sparkline-chart div.
+// Exported so main.go can update the chart slot in-place after the async fetch
+// completes without re-rendering the entire page.
+func RenderSparklineSlot(state application.MeSubscriptionsState) string {
+	return renderSparklineSlot(state)
 }
 
-// RenderMeSubsPagination returns only the pagination HTML. Returns empty string
-// when the state signals an auth-failure or a generic error, because pagination
-// must not be shown in either error case.
-func RenderMeSubsPagination(state application.MeSubscriptionsState) string {
-	if state.AuthFailure || state.LastError != nil {
+// RenderPairModal returns the HTML for the open-pair detail overlay or the
+// empty string when state.OpenPair is nil or the chart data is missing.
+// The output is a self-contained HTML fragment safe for innerHTML assignment
+// into #me-pair-modal-slot.
+//
+// When state.HistoryOpen is true, the modal body contains the history view
+// (RenderPairHistory) instead of the per-series detail sheet. The modal card
+// chrome (backdrop, header, close button) is always present regardless of
+// HistoryOpen.
+func RenderPairModal(state application.MeSubscriptionsState) string {
+	if state.OpenPair == nil {
 		return ""
 	}
-	return renderMeSubsPagination(state)
-}
+	row, ok := findChartRowByPair(state.Chart, *state.OpenPair)
+	if !ok {
+		return ""
+	}
 
-// renderPeriodToggle returns the period-toggle button bar. The active period
-// gets the "active" modifier class. Button labels are display-capitalized
-// English; the data-period attribute carries the lowercase value forwarded
-// to MeSubscriptionsPage.SetPeriod.
-func renderPeriodToggle(currentPeriod string) string {
-	type btn struct{ data, label string }
-	buttons := []btn{
-		{application.MeSubscriptionsPeriodWeek, "Week"},
-		{application.MeSubscriptionsPeriodMonth, "Month"},
-		{application.MeSubscriptionsPeriodYear, "Year"},
-	}
+	conditions := findConditionsForPair(state.Items, *state.OpenPair)
+
 	var b strings.Builder
-	b.WriteString(`<div class="period-toggle" id="me-period-toggle">`)
-	for _, x := range buttons {
-		cls := "period-btn"
-		if x.data == currentPeriod {
-			cls = "period-btn active"
-		}
-		fmt.Fprintf(&b, `<button class="%s" data-period="%s">%s</button>`,
-			cls, x.data, x.label)
-	}
+	fmt.Fprintf(&b,
+		`<div class="me-pair-modal" id="me-pair-modal" role="dialog" aria-modal="true" aria-labelledby="me-pair-modal-title" data-pair="%s">`,
+		dom.Escape(row.Pair),
+	)
+	b.WriteString(`<div class="me-pair-modal-backdrop" id="me-pair-modal-backdrop"></div>`)
+	b.WriteString(`<div class="me-pair-modal-card">`)
+	b.WriteString(`<div class="me-pair-modal-header">`)
+	fmt.Fprintf(&b, `<h2 class="me-pair-modal-title" id="me-pair-modal-title">%s</h2>`, dom.Escape(row.Pair))
+	b.WriteString(`<button class="me-pair-modal-close" id="me-pair-modal-close" type="button" aria-label="Close">&#10005;</button>`)
 	b.WriteString(`</div>`)
+
+	b.WriteString(`<div class="me-pair-modal-body">`)
+	if state.HistoryOpen {
+		b.WriteString(RenderPairHistory(state))
+	} else {
+		pt, hasGrab := latestPointAcrossSeries(row.Series)
+		var grabTime time.Time
+		if hasGrab {
+			grabTime = pt.Timestamp
+		}
+		b.WriteString(renderModalDetailBody(row, conditions, grabTime, hasGrab))
+	}
+	b.WriteString(`</div>`) // me-pair-modal-body
+	b.WriteString(`</div>`) // me-pair-modal-card
+	b.WriteString(`</div>`) // me-pair-modal
 	return b.String()
 }
 
-// RenderOverlayChartSlot returns the content for the #me-overlay-chart div.
-// Exported so main.go can update the chart slot in-place without re-rendering
-// the whole page (which would blow away search input focus).
-func RenderOverlayChartSlot(state application.MeSubscriptionsState) string {
-	return renderOverlayChartSlot(state)
+// renderModalDetailBody returns the text-only detail view rendered inside the
+// modal card when HistoryOpen is false. It contains per-series value lines,
+// an optional spread line, an optional last-grab line, condition badges, and
+// the History action button.
+func renderModalDetailBody(row dto.MeChartPairRow, conditions []string, lastGrab time.Time, hasGrab bool) string {
+	var b strings.Builder
+
+	// One text block per direction (no SVG — the SVG lives on the list row).
+	for _, sr := range row.Series {
+		b.WriteString(`<div class="me-pair-modal-series">`)
+		b.WriteString(renderValueLine([]dto.MeChartSeries{sr}))
+		b.WriteString(`</div>`)
+	}
+
+	// Spread line: present when the server provided SpreadPct for a two-series
+	// row. The len(row.Series) >= 2 guard mirrors renderCollapsedDelta so a
+	// single-series row with a stray SpreadPct never renders a lone spread line.
+	if row.SpreadPct != nil && len(row.Series) >= 2 {
+		fmt.Fprintf(&b,
+			`<div class="me-pair-modal-spread">Spread %s</div>`,
+			formatSpreadPct(*row.SpreadPct),
+		)
+	}
+
+	// Last-grab line: max timestamp across all series.
+	if hasGrab {
+		fmt.Fprintf(&b,
+			`<div class="me-pair-modal-time">Last grab: %s</div>`,
+			dom.Escape(fmtDate(lastGrab.Format(time.RFC3339))),
+		)
+	}
+
+	// Condition badges joined from state.Items by pair label.
+	if len(conditions) > 0 {
+		b.WriteString(`<div class="badges">`)
+		for _, c := range conditions {
+			fmt.Fprintf(&b, `<span class="badge">%s</span>`, dom.Escape(c))
+		}
+		b.WriteString(`</div>`)
+	}
+
+	// History action button at the bottom of the detail view.
+	b.WriteString(`<div class="me-pair-modal-actions">`)
+	b.WriteString(`<button class="me-pair-modal-history" id="me-pair-modal-history" type="button">History</button>`)
+	b.WriteString(`</div>`)
+
+	return b.String()
 }
 
-// renderOverlayChartSlot returns the content for the #me-overlay-chart div.
-func renderOverlayChartSlot(state application.MeSubscriptionsState) string {
-	ch := state.Chart
-
-	// All fetches errored and nothing resolved successfully → chart unavailable.
-	if len(ch.Errors) > 0 && len(ch.Series) == 0 && !ch.Loading {
-		return `<p class="overlay-chart-error">Chart unavailable</p>`
+// renderSparklineSlot returns the content for the #me-sparkline-chart div.
+func renderSparklineSlot(state application.MeSubscriptionsState) string {
+	if state.ChartError != nil {
+		return `<p class="sparkline-error">Chart unavailable</p>`
 	}
-
-	// No subscriptions at all — nothing to chart.
-	if len(state.Items) == 0 && !ch.Loading {
-		return `<p class="overlay-chart-empty">No subscriptions to chart. Subscribe to a source first.</p>`
+	if state.ChartLoading && state.Chart == nil {
+		return `<div class="sparkline-skeleton"></div>`
 	}
-
-	// Loading with no series yet → skeleton.
-	if ch.Loading && len(ch.Series) == 0 {
-		return `<div class="overlay-chart-skeleton"></div>`
+	if state.Chart == nil {
+		return `<div class="sparkline-empty">No chart data yet.</div>`
 	}
-
-	// At least one series resolved (possibly with some errors too) → render chart.
-	uiSeries := toUISeries(ch.Series)
-	return RenderOverlayChart(uiSeries, defaultOverlayOpts)
+	return RenderSparklineList(*state.Chart)
 }
 
-// toUISeries converts application SeriesData to ui.Series for rendering.
-// This mapping exists to avoid an application → ui import cycle.
-func toUISeries(data []application.SeriesData) []Series {
-	out := make([]Series, len(data))
-	for i, d := range data {
-		out[i] = Series{
-			Name:   d.Name,
-			Color:  d.Color,
-			Points: d.Points,
+// findChartRowByPair returns the MeChartPairRow whose Pair field equals pair.
+// Returns the zero value and false when chart is nil or no match is found.
+func findChartRowByPair(chart *dto.MeChartResponse, pair string) (dto.MeChartPairRow, bool) {
+	if chart == nil {
+		return dto.MeChartPairRow{}, false
+	}
+	for _, row := range chart.Pairs {
+		if row.Pair == pair {
+			return row, true
+		}
+	}
+	return dto.MeChartPairRow{}, false
+}
+
+// findConditionsForPair walks items, builds the canonical pair label
+// (BaseCurrency + "/" + QuoteCurrency), and returns all Conditions from rows
+// whose pair label matches pair. Rows whose pair label is empty are skipped.
+func findConditionsForPair(items []dto.MeSubscriptionRow, pair string) []string {
+	var out []string
+	for _, item := range items {
+		if item.BaseCurrency == "" || item.QuoteCurrency == "" {
+			continue
+		}
+		label := item.BaseCurrency + "/" + item.QuoteCurrency
+		if label == pair {
+			out = append(out, item.Conditions...)
 		}
 	}
 	return out
 }
 
-// renderListToggleButton returns the "Show/Hide subscriptions" toggle button.
-func renderListToggleButton(visible bool) string {
-	label := "Show subscriptions"
-	if visible {
-		label = "Hide subscriptions"
-	}
-	return fmt.Sprintf(
-		`<div class="list-toggle-wrap"><button class="list-toggle" id="me-list-toggle">%s</button></div>`,
-		label,
-	)
-}
-
-// renderListSection returns the subscription list section. The section carries
-// the HTML hidden attribute when ListVisible is false; removing the attribute
-// (not setting it to "false") reveals it.
-func renderListSection(state application.MeSubscriptionsState) string {
-	hidden := ""
-	if !state.ListVisible {
-		hidden = " hidden"
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, `<div id="me-subs-section"%s>`, hidden)
-	b.WriteString(renderSearchBar(state.Query))
-	b.WriteString(`<div id="me-subs-list">`)
-	b.WriteString(renderMeSubsContent(state))
-	b.WriteString(`</div>`)
-	b.WriteString(`<div id="me-subs-pagination">`)
-	if !state.AuthFailure && state.LastError == nil {
-		b.WriteString(renderMeSubsPagination(state))
-	}
-	b.WriteString(`</div>`)
-	b.WriteString(`</div>`)
-	return b.String()
-}
-
-func renderSearchBar(currentQuery string) string {
-	return fmt.Sprintf(
-		`<input class="search-bar" id="me-search" type="text" placeholder="Search subscriptions..." value="%s">`,
-		dom.Escape(currentQuery),
-	)
-}
-
-func renderMeSubsContent(state application.MeSubscriptionsState) string {
-	if state.AuthFailure {
-		return fmt.Sprintf(`<p class="error-msg">%s</p>`, authFailureMsg)
-	}
-	if state.LastError != nil {
-		return fmt.Sprintf(
-			`<p class="error-msg">Error loading subscriptions: %s</p>`,
-			dom.Escape(state.LastError.Error()),
-		)
-	}
-	if len(state.Items) == 0 {
-		return `<p class="status">No subscriptions found.</p>`
-	}
-	var b strings.Builder
-	for _, item := range state.Items {
-		b.WriteString(renderMeSubCard(item))
-	}
-	return b.String()
-}
-
-func renderMeSubCard(item dto.MeSubscriptionRow) string {
-	title := item.SourceTitle
-	if title == "" {
-		title = item.SourceName
-	}
-
-	var price string
-	if item.LatestPrice != 0 {
-		price = fmt.Sprintf("%.4f", item.LatestPrice)
-	} else {
-		price = "—"
-	}
-
-	ts := fmtDate(item.LatestAt)
-
-	var b strings.Builder
-	b.WriteString(`<div class="card">`)
-	b.WriteString(fmt.Sprintf(`<div class="card-title">%s</div>`, dom.Escape(title)))
-
-	if item.BaseCurrency != "" && item.QuoteCurrency != "" {
-		pair := item.BaseCurrency + "/" + item.QuoteCurrency
-		b.WriteString(fmt.Sprintf(`<div class="card-pair">%s</div>`, dom.Escape(pair)))
-	}
-
-	b.WriteString(fmt.Sprintf(`<div class="card-price">%s</div>`, dom.Escape(price)))
-	b.WriteString(fmt.Sprintf(`<div class="card-time">Last grab: %s</div>`, dom.Escape(ts)))
-
-	if len(item.Conditions) > 0 {
-		b.WriteString(`<div class="badges">`)
-		for _, c := range item.Conditions {
-			b.WriteString(fmt.Sprintf(`<span class="badge">%s</span>`, dom.Escape(c)))
+// latestPointAcrossSeries returns the MeChartPoint with the maximum Timestamp
+// across all non-empty series. Returns ok=false when every series has no points.
+func latestPointAcrossSeries(series []dto.MeChartSeries) (dto.MeChartPoint, bool) {
+	var latest dto.MeChartPoint
+	found := false
+	for _, sr := range series {
+		for _, pt := range sr.Points {
+			if !found || pt.Timestamp.After(latest.Timestamp) {
+				latest = pt
+				found = true
+			}
 		}
-		b.WriteString(`</div>`)
 	}
-
-	b.WriteString(`</div>`)
-	return b.String()
-}
-
-func renderMeSubsPagination(state application.MeSubscriptionsState) string {
-	ps := PaginationState{
-		Page:    state.Page,
-		Count:   len(state.Items),
-		Limit:   state.PageSize,
-		Section: "me-subs",
-	}
-	return RenderPagination(ps)
+	return latest, found
 }

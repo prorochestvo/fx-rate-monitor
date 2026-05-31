@@ -13,7 +13,8 @@ func TestPlausibleRangeFor(t *testing.T) {
 	t.Run("every seeded pair has an entry", func(t *testing.T) {
 		t.Parallel()
 		// All 13 base currencies seeded in
-		// migrations/202605.007.rate_sources.seed_initial.sql paired with KZT.
+		// migrations/202605.007.rate_sources.seed_initial.sql paired with KZT
+		// (see migrations/ for the current seed filename).
 		seededPairs := []struct {
 			base  string
 			quote string

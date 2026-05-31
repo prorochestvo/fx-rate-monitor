@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/seilbekskindirov/monitor/internal"
+	appchart "github.com/seilbekskindirov/monitor/internal/application/chart"
 	"github.com/seilbekskindirov/monitor/internal/application/service"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	"github.com/seilbekskindirov/monitor/internal/gateway/httpV1"
@@ -15,15 +16,18 @@ import (
 
 // NewGateway builds the v1 HTTP mux with all routes registered.
 // It returns the configured *http.ServeMux ready to be passed to http.ListenAndServe.
+// chartSvc is required for the GET /api/me/rates/chart endpoint.
 func NewGateway(
 	srvRateRestApi *service.RateRestApi,
 	botToken string,
 	subRepo meSubscriptionRepo,
 	sourceRepo meSourceRepo,
 	rateValueRepo meRateValueRepo,
+	profileRepo meProfileRepo,
+	chartSvc *appchart.Service,
 ) (*http.ServeMux, error) {
 	mux := http.NewServeMux()
-	mux, err := httpV1.NewRouter(mux, srvRateRestApi, botToken, subRepo, sourceRepo, rateValueRepo)
+	mux, err := httpV1.NewRouter(mux, srvRateRestApi, botToken, subRepo, sourceRepo, rateValueRepo, profileRepo, chartSvc)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return nil, err
@@ -46,4 +50,9 @@ type meSourceRepo interface {
 type meRateValueRepo interface {
 	ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error)
 	ObtainLatestRateValuesBySourceNames(ctx context.Context, names []string) (map[string]domain.RateValue, error)
+}
+
+// meProfileRepo is a pass-through interface for user-profile upserts.
+type meProfileRepo interface {
+	UpsertRateUserProfile(ctx context.Context, record *domain.RateUserProfile) error
 }

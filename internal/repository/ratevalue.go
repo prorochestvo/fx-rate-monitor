@@ -280,36 +280,115 @@ func (r *RateValueRepository) RemoveRateValue(ctx context.Context, record *domai
 	return nil
 }
 
-// ObtainRateValueChartBySourceName returns aggregated rate data grouped by day (week/month)
-// or month (year) for the given source and period.
-func (r *RateValueRepository) ObtainRateValueChartBySourceName(ctx context.Context, sourceName string, period domain.ChartPeriod) ([]domain.ChartPoint, error) {
-	now := time.Now().UTC()
-
-	var since time.Time
-	var groupExpr string
-	switch period {
-	case domain.ChartPeriodWeek:
-		since = now.AddDate(0, 0, -7)
-		groupExpr = "strftime('%Y-%m-%d', " + rateValueTimestampFieldName + ")"
-	case domain.ChartPeriodMonth:
-		since = now.AddDate(0, -1, 0)
-		groupExpr = "strftime('%Y-%m-%d', " + rateValueTimestampFieldName + ")"
-	case domain.ChartPeriodYear:
-		since = now.AddDate(-1, 0, 0)
-		groupExpr = "strftime('%Y-%m', " + rateValueTimestampFieldName + ")"
-	default:
-		return nil, fmt.Errorf("unknown chart period: %q", period)
+// ObtainHistoryForPairsPaged returns rate_values rows for the given
+// (source_name, base, quote) tuples, sorted by timestamp DESC then id DESC,
+// paginated by limit and offset. Used by the per-pair history endpoint to load
+// a page of one canonical pair's events across every source the caller is
+// subscribed to for that pair.
+//
+// Returns rows AND the total row count (without limit) so the handler can
+// compute pagination metadata in one round-trip.
+//
+// Empty pairs is a fast no-op (returns empty slice and total=0).
+//
+// NOTE: SQLite's expression-tree limit is ~1000 terms by default. Each pair
+// tuple contributes 3 terms. A user with ~333+ unique source subscriptions on
+// one pair would overflow that limit. Vanishingly unlikely given current data;
+// chunking is left for a future iteration.
+func (r *RateValueRepository) ObtainHistoryForPairsPaged(
+	ctx context.Context,
+	pairs []domain.SourcePairKey,
+	limit, offset int64,
+) ([]domain.RateValue, int64, error) {
+	if len(pairs) == 0 {
+		return []domain.RateValue{}, 0, nil
 	}
 
-	query := fmt.Sprintf(
-		"SELECT %s AS label, AVG(%s) AS avg_price "+
-			"FROM %s WHERE %s = ? AND %s >= ? "+
-			"GROUP BY label ORDER BY label ASC;",
-		groupExpr, rateValuePriceFieldName,
-		rateValueTableName,
-		rateValueSourceNameFieldName,
-		rateValueTimestampFieldName,
-	)
+	tx, err := r.db.ReadOnlyTransaction(ctx)
+	if err != nil {
+		return nil, 0, errors.Join(err, internal.NewStackTraceError())
+	}
+	defer printRollbackError(tx)
+
+	tuples := make([]string, 0, len(pairs))
+	args := make([]any, 0, len(pairs)*3)
+	for _, p := range pairs {
+		tuples = append(tuples, "(?, ?, ?)")
+		args = append(args, p.SourceName, p.BaseCurrency, p.QuoteCurrency)
+	}
+	inClause := "(" +
+		rateValueSourceNameFieldName + ", " +
+		rateValueBaseCurrencyFieldName + ", " +
+		rateValueQuoteCurrencyFieldName + ") IN (" +
+		strings.Join(tuples, ", ") + ")"
+
+	// COUNT(*) over the full WHERE so the caller can paginate.
+	countQuery := "SELECT COUNT(*) FROM " + rateValueTableName + " WHERE " + inClause + ";"
+	var total int64
+	if err = tx.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, errors.Join(err, fmt.Errorf("SQL: %s", countQuery), internal.NewTraceError())
+	}
+
+	if total == 0 {
+		return []domain.RateValue{}, 0, nil
+	}
+
+	// Paginated SELECT over the same WHERE, newest first.
+	selectArgs := make([]any, 0, len(args)+2)
+	selectArgs = append(selectArgs, args...)
+	selectArgs = append(selectArgs, limit, offset)
+	query := rateValueSqlSelect + "\nWHERE " + inClause +
+		" ORDER BY " + rateValueTimestampFieldName + " DESC, " + rateValueIdFieldName + " DESC" +
+		" LIMIT ? OFFSET ?;"
+
+	rows, err := tx.QueryContext(ctx, query, selectArgs...)
+	if err != nil {
+		return nil, 0, errors.Join(err, fmt.Errorf("SQL: %s", query), internal.NewTraceError())
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	result := make([]domain.RateValue, 0, limit)
+	for rows.Next() {
+		var item domain.RateValue
+		var timestamp string
+		if scanErr := rows.Scan(
+			&item.ID, &item.SourceName, &item.BaseCurrency, &item.QuoteCurrency, &item.Price, &timestamp,
+		); scanErr != nil {
+			return nil, 0, errors.Join(scanErr, internal.NewTraceError())
+		}
+		parsed, parseErr := time.Parse(time.RFC3339, timestamp)
+		if parseErr != nil {
+			return nil, 0, errors.Join(
+				fmt.Errorf("rate %s has invalid timestamp %s: %w", item.ID, timestamp, parseErr),
+				internal.NewTraceError(),
+			)
+		}
+		item.Timestamp = parsed
+		result = append(result, item)
+	}
+	if iterErr := rows.Err(); iterErr != nil {
+		return nil, 0, errors.Join(iterErr, internal.NewTraceError())
+	}
+	return result, total, nil
+}
+
+// ObtainValuesForPairsSince returns rate_value rows matching any of the given
+// (source_name, base_currency, quote_currency) tuples whose timestamp is >=
+// since, ordered by timestamp ASC then id ASC for deterministic ordering of
+// rows that share a second-precision RFC3339 timestamp.
+//
+// The Kind field on each SourcePairKey is not used in the SQL filter because
+// rate_values does not store kind — the kind is a property of rate_sources
+// and is threaded through SourcePairKey for the service layer to use when
+// grouping results.
+//
+// Empty pairs is a fast no-op (no query issued) to avoid an invalid IN ()
+// clause. SQLite's expression-tree limit is ~1000 terms by default; for users
+// with very many subscriptions, chunking may be necessary in a future iteration.
+func (r *RateValueRepository) ObtainValuesForPairsSince(ctx context.Context, pairs []domain.SourcePairKey, since time.Time) ([]domain.RateValue, error) {
+	if len(pairs) == 0 {
+		return []domain.RateValue{}, nil
+	}
 
 	tx, err := r.db.ReadOnlyTransaction(ctx)
 	if err != nil {
@@ -317,25 +396,57 @@ func (r *RateValueRepository) ObtainRateValueChartBySourceName(ctx context.Conte
 	}
 	defer printRollbackError(tx)
 
-	rows, err := tx.QueryContext(ctx, query, sourceName, since.Format(time.RFC3339))
+	// Build WHERE (source_name, base_currency, quote_currency) IN ((?,?,?), ...) AND timestamp >= ?
+	// Each tuple contributes 3 placeholders.
+	tuples := make([]string, 0, len(pairs))
+	args := make([]any, 0, len(pairs)*3+2)
+	for _, p := range pairs {
+		tuples = append(tuples, "(?, ?, ?)")
+		args = append(args, p.SourceName, p.BaseCurrency, p.QuoteCurrency)
+	}
+	args = append(args, since.UTC().Format(time.RFC3339))
+
+	// LIMIT caps the result set to prevent an unbounded scan on large data sets.
+	// len(pairs)*2000 covers ~12 days of minute-grain data per pair and is well
+	// below SQLite's default expression-tree limit of ~1000 terms.
+	limit := len(pairs) * 2000
+	args = append(args, limit)
+
+	query := rateValueSqlSelect + "\nWHERE (" +
+		rateValueSourceNameFieldName + ", " +
+		rateValueBaseCurrencyFieldName + ", " +
+		rateValueQuoteCurrencyFieldName + ") IN (" +
+		strings.Join(tuples, ", ") +
+		") AND " + rateValueTimestampFieldName + " >= ?" +
+		" ORDER BY " + rateValueTimestampFieldName + " ASC, " + rateValueIdFieldName + " ASC LIMIT ?;"
+
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, errors.Join(err, internal.NewTraceError())
+		return nil, errors.Join(err, fmt.Errorf("SQL: %s", query), internal.NewTraceError())
 	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
 
-	var result []domain.ChartPoint
+	result := make([]domain.RateValue, 0, len(pairs)*200)
 	for rows.Next() {
-		var p domain.ChartPoint
-		if scanErr := rows.Scan(&p.Label, &p.Price); scanErr != nil {
+		var item domain.RateValue
+		var timestamp string
+		if scanErr := rows.Scan(
+			&item.ID, &item.SourceName, &item.BaseCurrency, &item.QuoteCurrency, &item.Price, &timestamp,
+		); scanErr != nil {
 			return nil, errors.Join(scanErr, internal.NewTraceError())
 		}
-		result = append(result, p)
+		parsed, parseErr := time.Parse(time.RFC3339, timestamp)
+		if parseErr != nil {
+			return nil, errors.Join(fmt.Errorf("rate %s has invalid timestamp %s: %w", item.ID, timestamp, parseErr), internal.NewTraceError())
+		}
+		item.Timestamp = parsed
+		result = append(result, item)
 	}
-	// rows.Next returns false on both EOF and a mid-iteration error; without
-	// this check a context cancellation between Next() calls would silently
-	// truncate the chart in the HTTP response.
 	if iterErr := rows.Err(); iterErr != nil {
 		return nil, errors.Join(iterErr, internal.NewTraceError())
+	}
+	if result == nil {
+		result = []domain.RateValue{}
 	}
 	return result, nil
 }

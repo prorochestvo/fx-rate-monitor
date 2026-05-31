@@ -19,10 +19,18 @@ var _ Fetcher = (*ChromedpFetcher)(nil)
 
 // findChromiumOrSkip looks for a Chromium/Chrome binary in the locations
 // chromedp checks, plus CHROMIUM_PATH from the environment used by cmd/doctor rulegen.
-// The test is skipped cleanly if no binary is found — CI runners without
-// Chromium must not fail, only skip.
+// The test is skipped cleanly when no binary is found, or when running on a
+// default GitHub Actions runner: ubuntu-latest ships google-chrome on PATH
+// but its sandbox cannot bring up the DevTools websocket, which surfaces as
+// "websocket url timeout reached" after ~20 s. Set RUN_CHROMEDP_TESTS=1 to
+// force-enable on a CI environment that has a working browser sandbox.
 func findChromiumOrSkip(t *testing.T) string {
 	t.Helper()
+
+	if os.Getenv("CI") != "" && os.Getenv("RUN_CHROMEDP_TESTS") != "1" {
+		t.Skip("CI env detected without RUN_CHROMEDP_TESTS=1; skipping chromedp integration test")
+		return ""
+	}
 
 	candidates := []string{
 		"chromium",

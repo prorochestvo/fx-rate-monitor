@@ -58,7 +58,6 @@ type rateSourceRepository interface {
 
 type rateValueRepository interface {
 	ObtainLastNRateValuesBySourceName(context.Context, string, int64) ([]domain.RateValue, error)
-	ObtainRateValueChartBySourceName(context.Context, string, domain.ChartPeriod) ([]domain.ChartPoint, error)
 }
 
 type rateUserSubscriptionRepository interface {
@@ -204,15 +203,6 @@ func (h *RateRestApi) ObtainPendingRateUserEvents(ctx context.Context) ([]domain
 	items, err := h.rateUserEventRepository.ObtainLastNRateUserEvents(
 		ctx, 0, 1000, domain.RateUserEventStatusPending,
 	)
-	if err != nil {
-		return nil, errors.Join(err, internal.NewTraceError())
-	}
-	return items, nil
-}
-
-// ObtainRateValueChartBySourceName returns aggregated chart data for the given source and period.
-func (h *RateRestApi) ObtainRateValueChartBySourceName(ctx context.Context, name string, period domain.ChartPeriod) ([]domain.ChartPoint, error) {
-	items, err := h.rateValueRepository.ObtainRateValueChartBySourceName(ctx, name, period)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewTraceError())
 	}

@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS rate_user_events (
 	sent_at      TEXT,
 	last_error   TEXT NOT NULL DEFAULT '',
 	created_at   TEXT NOT NULL,
-	source_name  TEXT NOT NULL DEFAULT ''
+	source_name  TEXT REFERENCES rate_sources(name) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_rate_user_events_status  ON rate_user_events (status);
 CREATE INDEX IF NOT EXISTS idx_rate_user_events_user    ON rate_user_events (user_type, user_id);

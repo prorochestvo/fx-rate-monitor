@@ -34,6 +34,7 @@ func TestNewRateCheckAgent(t *testing.T) {
 			&mockCheckValueRepository{},
 			&mockCheckSubscriptionRepository{},
 			&mockCheckEventRepository{},
+			nil, // profile repo is optional → nil falls back to UTC.
 			io.Discard,
 		)
 		require.NoError(t, err)
@@ -42,25 +43,25 @@ func TestNewRateCheckAgent(t *testing.T) {
 	t.Run("nil rateSourceRepository returns error", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := NewRateCheckAgent(nil, &mockCheckValueRepository{}, &mockCheckSubscriptionRepository{}, &mockCheckEventRepository{}, io.Discard)
+		_, err := NewRateCheckAgent(nil, &mockCheckValueRepository{}, &mockCheckSubscriptionRepository{}, &mockCheckEventRepository{}, nil, io.Discard)
 		require.Error(t, err)
 	})
 	t.Run("nil rateValueRepository returns error", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := NewRateCheckAgent(&mockCheckSourceRepository{}, nil, &mockCheckSubscriptionRepository{}, &mockCheckEventRepository{}, io.Discard)
+		_, err := NewRateCheckAgent(&mockCheckSourceRepository{}, nil, &mockCheckSubscriptionRepository{}, &mockCheckEventRepository{}, nil, io.Discard)
 		require.Error(t, err)
 	})
 	t.Run("nil rateUserSubscriptionRepository returns error", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := NewRateCheckAgent(&mockCheckSourceRepository{}, &mockCheckValueRepository{}, nil, &mockCheckEventRepository{}, io.Discard)
+		_, err := NewRateCheckAgent(&mockCheckSourceRepository{}, &mockCheckValueRepository{}, nil, &mockCheckEventRepository{}, nil, io.Discard)
 		require.Error(t, err)
 	})
 	t.Run("nil rateUserEventRepository returns error", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := NewRateCheckAgent(&mockCheckSourceRepository{}, &mockCheckValueRepository{}, &mockCheckSubscriptionRepository{}, nil, io.Discard)
+		_, err := NewRateCheckAgent(&mockCheckSourceRepository{}, &mockCheckValueRepository{}, &mockCheckSubscriptionRepository{}, nil, nil, io.Discard)
 		require.Error(t, err)
 	})
 }
@@ -390,9 +391,13 @@ func TestRateCheckAgent_Run(t *testing.T) {
 		require.Len(t, eventRepo.retained, 1, "all three triggers must collapse to one bullet")
 
 		msg := eventRepo.retained[0].Message
-		// The badge must contain both Δ (delta) and ⏰ (schedule).
-		require.Contains(t, msg, badgeIconDelta, "delta badge glyph must appear")
-		require.Contains(t, msg, badgeIconSchedule, "schedule badge glyph must appear")
+		// Hashtags must cover both delta and at least one schedule type.
+		require.Contains(t, msg, hashtagDelta, "#DELTA tag must appear")
+		require.True(t,
+			strings.Contains(msg, hashtagInterval) ||
+				strings.Contains(msg, hashtagDaily) ||
+				strings.Contains(msg, hashtagCron),
+			"at least one schedule hashtag must appear")
 
 		require.Len(t, subRepo.retained, 3, "all three subscriptions must be retained")
 		for _, s := range subRepo.retained {
@@ -438,8 +443,9 @@ func TestRateCheckAgent_Run(t *testing.T) {
 		require.Len(t, eventRepo.retained, 1)
 		msg := eventRepo.retained[0].Message
 
-		// Badge shows Δ exactly once.
-		require.Contains(t, msg, badgeIconDelta)
+		// Hashtag shows #DELTA exactly once even though delta fires twice.
+		require.Contains(t, msg, hashtagDelta)
+		require.Equal(t, 1, strings.Count(msg, hashtagDelta))
 
 		require.Len(t, subRepo.retained, 2, "both subscriptions must be retained")
 	})

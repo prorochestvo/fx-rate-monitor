@@ -168,47 +168,45 @@ func TestMeSubscriptionsURL(t *testing.T) {
 	})
 }
 
-func TestRatesChartURL(t *testing.T) {
+func TestMeRatesChartURL(t *testing.T) {
 	t.Parallel()
 
-	t.Run("week period produces period query param", func(t *testing.T) {
+	t.Run("returns fixed endpoint with no query string", func(t *testing.T) {
 		t.Parallel()
-		path, q := parseQuery(t, chartURL("usd-eur", "week"))
-		assert.Equal(t, "/api/sources/usd-eur/rates/chart", path)
-		assert.Equal(t, "week", q.Get("period"))
+		assert.Equal(t, "/api/me/rates/chart", meRatesChartURL())
+	})
+}
+
+func TestMeRatesHistoryURL(t *testing.T) {
+	t.Parallel()
+
+	t.Run("canonical pair with slash is percent-encoded", func(t *testing.T) {
+		t.Parallel()
+		raw := meRatesHistoryURL("USD/KZT", 1, 20)
+		// url.Values.Encode encodes "/" as "%2F" in query values.
+		assert.Contains(t, raw, "pair=USD%2FKZT")
+		_, q := parseQuery(t, raw)
+		assert.Equal(t, "USD/KZT", q.Get("pair"))
+		assert.Equal(t, "1", q.Get("page"))
+		assert.Equal(t, "20", q.Get("limit"))
 	})
 
-	t.Run("month period produces period query param", func(t *testing.T) {
+	t.Run("page and limit are emitted correctly", func(t *testing.T) {
 		t.Parallel()
-		path, q := parseQuery(t, chartURL("usd-eur", "month"))
-		assert.Equal(t, "/api/sources/usd-eur/rates/chart", path)
-		assert.Equal(t, "month", q.Get("period"))
+		path, q := parseQuery(t, meRatesHistoryURL("EUR/KZT", 3, 50))
+		assert.Equal(t, "/api/me/rates/history", path)
+		assert.Equal(t, "3", q.Get("page"))
+		assert.Equal(t, "50", q.Get("limit"))
 	})
 
-	t.Run("year period produces period query param", func(t *testing.T) {
+	t.Run("unicode hostile pair label is url-encoded by url.Values", func(t *testing.T) {
 		t.Parallel()
-		path, q := parseQuery(t, chartURL("usd-eur", "year"))
-		assert.Equal(t, "/api/sources/usd-eur/rates/chart", path)
-		assert.Equal(t, "year", q.Get("period"))
-	})
-
-	t.Run("empty period omits query string entirely", func(t *testing.T) {
-		t.Parallel()
-		raw := chartURL("usd-eur", "")
-		assert.Equal(t, "/api/sources/usd-eur/rates/chart", raw)
-		assert.NotContains(t, raw, "?", "no query string when period is empty")
-	})
-
-	t.Run("name with space is path-escaped", func(t *testing.T) {
-		t.Parallel()
-		raw := chartURL("usd eur", "week")
-		assert.Contains(t, raw, "/api/sources/usd%20eur/rates/chart")
-	})
-
-	t.Run("name with slash is path-escaped", func(t *testing.T) {
-		t.Parallel()
-		raw := chartURL("a/b", "week")
-		assert.Contains(t, raw, "/api/sources/a%2Fb/rates/chart")
+		hostile := "A<B>/C&D"
+		raw := meRatesHistoryURL(hostile, 1, 20)
+		_, q := parseQuery(t, raw)
+		assert.Equal(t, hostile, q.Get("pair"), "url.Values.Encode must round-trip the label")
+		assert.NotContains(t, raw, "<", "< must be percent-encoded in the raw URL")
+		assert.NotContains(t, raw, ">", "> must be percent-encoded in the raw URL")
 	})
 }
 

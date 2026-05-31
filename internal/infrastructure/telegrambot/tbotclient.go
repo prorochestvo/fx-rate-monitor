@@ -108,7 +108,7 @@ func (tbot *TelegramBotClient) SendPlainTextMessageToAdmin(ctx context.Context, 
 // SendPlainTextMessage sends a plain-text (no parse mode) message to chatID.
 func (tbot *TelegramBotClient) SendPlainTextMessage(ctx context.Context, chatID TelegramChatID, text string) error {
 	m := tgbotapi.NewMessage(int64(chatID), text)
-	return tbot.emit(ctx, &m)
+	return tbot.emit(ctx, &m, int64(chatID), "text")
 }
 
 // SendMarkdownMessageToAdmin sends a Markdown-formatted message to the configured admin chat.
@@ -120,7 +120,7 @@ func (tbot *TelegramBotClient) SendMarkdownMessageToAdmin(ctx context.Context, t
 func (tbot *TelegramBotClient) SendMarkdownMessage(ctx context.Context, chatID TelegramChatID, text string) error {
 	m := tgbotapi.NewMessage(int64(chatID), text)
 	m.ParseMode = tgbotapi.ModeMarkdown
-	return tbot.emit(ctx, &m)
+	return tbot.emit(ctx, &m, int64(chatID), "markdown")
 }
 
 // SendHTMLMessageToAdmin sends an HTML-formatted message to the configured admin chat.
@@ -132,7 +132,7 @@ func (tbot *TelegramBotClient) SendHTMLMessageToAdmin(ctx context.Context, text 
 func (tbot *TelegramBotClient) SendHTMLMessage(ctx context.Context, chatID TelegramChatID, text string) error {
 	m := tgbotapi.NewMessage(int64(chatID), text)
 	m.ParseMode = tgbotapi.ModeHTML
-	return tbot.emit(ctx, &m)
+	return tbot.emit(ctx, &m, int64(chatID), "html")
 }
 
 // SendHTMLMessageReturning sends an HTML-formatted message and returns the
@@ -142,7 +142,7 @@ func (tbot *TelegramBotClient) SendHTMLMessage(ctx context.Context, chatID Teleg
 func (tbot *TelegramBotClient) SendHTMLMessageReturning(_ context.Context, chatID TelegramChatID, text string) (int, error) {
 	m := tgbotapi.NewMessage(int64(chatID), text)
 	m.ParseMode = tgbotapi.ModeHTML
-	msg, err := tbot.bot.Send(m)
+	msg, err := tbot.dispatch(m, int64(chatID), "html")
 	if err != nil {
 		return 0, errors.Join(err, internal.NewTraceError())
 	}
@@ -157,7 +157,7 @@ func (tbot *TelegramBotClient) SendDocumentToAdmin(ctx context.Context, fileName
 // SendDocument uploads content as a file named name to chatID.
 func (tbot *TelegramBotClient) SendDocument(ctx context.Context, chatID TelegramChatID, fileName string, fileContent []byte) error {
 	d := tgbotapi.NewDocument(int64(chatID), tgbotapi.FileBytes{Name: fileName, Bytes: fileContent})
-	return tbot.emit(ctx, d)
+	return tbot.emit(ctx, d, int64(chatID), "document")
 }
 
 // SendHTMLMessageWithKeyboard sends an HTML-formatted message with an inline keyboard to chatID.
@@ -165,7 +165,7 @@ func (tbot *TelegramBotClient) SendHTMLMessageWithKeyboard(_ context.Context, ch
 	m := tgbotapi.NewMessage(int64(chatID), text)
 	m.ParseMode = tgbotapi.ModeHTML
 	m.ReplyMarkup = keyboard
-	if _, err := tbot.bot.Send(m); err != nil {
+	if _, err := tbot.dispatch(m, int64(chatID), "html+kb"); err != nil {
 		return errors.Join(err, internal.NewTraceError())
 	}
 	return nil
@@ -175,8 +175,10 @@ func (tbot *TelegramBotClient) SendHTMLMessageWithKeyboard(_ context.Context, ch
 func (tbot *TelegramBotClient) AnswerCallbackQuery(_ context.Context, callbackQueryID, text string) error {
 	cfg := tgbotapi.NewCallback(callbackQueryID, text)
 	if _, err := tbot.bot.Request(cfg); err != nil {
+		log.Printf("telegram: send kind=callback_ack err=%v", err)
 		return errors.Join(err, internal.NewTraceError())
 	}
+	log.Printf("telegram: send kind=callback_ack")
 	return nil
 }
 
@@ -185,7 +187,7 @@ func (tbot *TelegramBotClient) AnswerCallbackQuery(_ context.Context, callbackQu
 func (tbot *TelegramBotClient) EditMessageText(_ context.Context, chatID TelegramChatID, messageID int, text string) error {
 	edit := tgbotapi.NewEditMessageText(int64(chatID), messageID, text)
 	edit.ParseMode = tgbotapi.ModeHTML
-	if _, err := tbot.bot.Send(edit); err != nil {
+	if _, err := tbot.dispatch(edit, int64(chatID), "edit"); err != nil {
 		if strings.Contains(err.Error(), "message is not modified") {
 			return nil
 		}
@@ -207,7 +209,7 @@ func (tbot *TelegramBotClient) EditHTMLMessageWithKeyboard(
 	edit := tgbotapi.NewEditMessageText(int64(chatID), messageID, text)
 	edit.ParseMode = tgbotapi.ModeHTML
 	edit.ReplyMarkup = &keyboard
-	if _, err := tbot.bot.Send(edit); err != nil {
+	if _, err := tbot.dispatch(edit, int64(chatID), "edit+kb"); err != nil {
 		s := err.Error()
 		if strings.Contains(s, "message is not modified") ||
 			strings.Contains(s, "message to edit not found") {
@@ -244,12 +246,29 @@ func (tbot *TelegramBotClient) Listen(ctx context.Context, handler UpdateHandler
 	}
 }
 
-// emit dispatches a Chattable message via the bot API and discards the returned message.
-func (tbot *TelegramBotClient) emit(_ context.Context, m tgbotapi.Chattable) error {
-	if _, err := tbot.bot.Send(m); err != nil {
+// emit dispatches a Chattable message via the bot API, writes an access-log
+// line for the send, and discards the returned message. chatID and kind are
+// passed in by the caller so the log line carries stable, typed metadata
+// (we do not want to introspect tgbotapi.Chattable here).
+func (tbot *TelegramBotClient) emit(_ context.Context, m tgbotapi.Chattable, chatID int64, kind string) error {
+	if _, err := tbot.dispatch(m, chatID, kind); err != nil {
 		return errors.Join(err, internal.NewTraceError())
 	}
 	return nil
+}
+
+// dispatch is the single fan-in for tbot.bot.Send + access-log. Returns the
+// Telegram-assigned message so callers (e.g. SendHTMLMessageReturning) can
+// recover the message id. The log line mirrors the inbound update format
+// emitted by service.TelegramApi.Handle: "telegram: send chat=X kind=Y ...".
+func (tbot *TelegramBotClient) dispatch(m tgbotapi.Chattable, chatID int64, kind string) (tgbotapi.Message, error) {
+	msg, err := tbot.bot.Send(m)
+	if err != nil {
+		log.Printf("telegram: send chat=%d kind=%s err=%v", chatID, kind, err)
+		return msg, err
+	}
+	log.Printf("telegram: send chat=%d kind=%s msg_id=%d", chatID, kind, msg.MessageID)
+	return msg, nil
 }
 
 const regexpTelegramToken = `^\d{9,}:[a-zA-Z0-9_-]{35,}$`

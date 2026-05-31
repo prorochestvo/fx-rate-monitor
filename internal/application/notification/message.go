@@ -15,12 +15,19 @@ import (
 const (
 	telegramMaxMessageLen = 2048
 
-	// badgeIconDelta is the badge glyph for delta-triggered alerts.
-	badgeIconDelta = "Δ" // U+0394
+	// hashtagDelta is the per-trigger hashtag emitted when a delta condition
+	// fired. Hashtags are uppercase ASCII so they render as a single clickable
+	// token in every Telegram client and so the user can filter their chat
+	// history by trigger type. Tag list is closed — see message.go godoc.
+	hashtagDelta = "#DELTA"
 
-	// badgeIconSchedule is the badge glyph for any time-based condition
-	// (interval, daily, cron) that fired in a message part.
-	badgeIconSchedule = "⏰" // U+23F0
+	// hashtagInterval/hashtagDaily/hashtagCron identify time-based triggers
+	// separately so users can distinguish e.g. a daily 09:00 alert from a
+	// fixed-interval one. The schedule-family triggers are NOT collapsed
+	// to a single tag because the user explicitly asked for per-type filtering.
+	hashtagInterval = "#INTERVAL"
+	hashtagDaily    = "#DAILY"
+	hashtagCron     = "#CRON"
 
 	// arrowUp is the in-table arrow for a positive delta. ASCII-range compatible
 	// with <pre> rendering; replaces the old wide emoji.
@@ -58,8 +65,10 @@ type alertTrigger struct {
 // buildAlertMessage renders alerts into one or more Telegram HTML message parts.
 // now is the run timestamp, used verbatim in the header — the function never
 // reads time.Now() itself (project preference: clock is injected, not read).
+// loc controls the timezone the timestamp is rendered in; nil falls back to
+// UTC so callers without a loaded location stay safe.
 // Returns an empty slice when alerts is empty.
-func buildAlertMessage(now time.Time, alerts ...alert) ([]string, error) {
+func buildAlertMessage(now time.Time, loc *time.Location, alerts ...alert) ([]string, error) {
 	if len(alerts) == 0 {
 		return nil, nil
 	}
@@ -71,7 +80,7 @@ func buildAlertMessage(now time.Time, alerts ...alert) ([]string, error) {
 	})
 
 	rows := buildRows(alerts)
-	return splitIntoParts(now, rows, alerts), nil
+	return splitIntoParts(now, loc, rows, alerts), nil
 }
 
 // pairLabel returns the display pair string for a row (BID → base/quote, ASK → quote/base).
@@ -154,40 +163,70 @@ func renderBlock(rows []tableRow) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// reasonBadge computes the header badge fragment for a set of alerts.
-// It returns a string such as "Δ ⏰ " (both), "Δ " (delta-only), "⏰ "
-// (schedule-only), or "" (none). The trailing space is included so callers
-// can concatenate directly with "🕒".
-func reasonBadge(partAlerts []alert) string {
-	var hasDelta, hasSched bool
+// reasonHashtags returns the first header-line prefix for a message part.
+// It collects which trigger types fired across partAlerts and emits one
+// hashtag per distinct type. Order is canonical: #DELTA first when present,
+// then schedule-family in alphabetical order (#CRON, #DAILY, #INTERVAL).
+// Deterministic ordering keeps tests stable and avoids visual reshuffle in
+// the user's chat history when the same alert recurs.
+//
+// Returns an empty string when no trigger types are present (e.g. a
+// first-fire row that has no Triggers attached); the header still renders
+// "FX rates" cleanly without a leading hashtag.
+func reasonHashtags(partAlerts []alert) string {
+	var hasDelta, hasInterval, hasDaily, hasCron bool
 	for _, a := range partAlerts {
 		for _, tr := range a.Triggers {
 			switch tr.ConditionType {
 			case domain.ConditionTypeDelta:
 				hasDelta = true
-			case domain.ConditionTypeInterval, domain.ConditionTypeDaily, domain.ConditionTypeCron:
-				hasSched = true
+			case domain.ConditionTypeInterval:
+				hasInterval = true
+			case domain.ConditionTypeDaily:
+				hasDaily = true
+			case domain.ConditionTypeCron:
+				hasCron = true
 			}
 		}
 	}
-	var sb strings.Builder
+	var tags []string
 	if hasDelta {
-		sb.WriteString(badgeIconDelta)
-		sb.WriteByte(' ')
+		tags = append(tags, hashtagDelta)
 	}
-	if hasSched {
-		sb.WriteString(badgeIconSchedule)
-		sb.WriteByte(' ')
+	if hasCron {
+		tags = append(tags, hashtagCron)
 	}
-	return sb.String()
+	if hasDaily {
+		tags = append(tags, hashtagDaily)
+	}
+	if hasInterval {
+		tags = append(tags, hashtagInterval)
+	}
+	return strings.Join(tags, " ")
 }
 
-// headerLines returns the two header lines for a message part, using now as the
-// timestamp and the given alerts to compute the badge.
-func headerLines(now time.Time, partAlerts []alert) string {
-	ts := now.UTC().Format("Mon 2 Jan, 15:04 UTC")
-	badge := reasonBadge(partAlerts)
-	return "📊 FX rates\n" + badge + "🕒 " + ts
+// headerLines returns the two header lines for a message part.
+//
+// Line 1: "#TAG1 #TAG2 FX rates" or just "FX rates" when partAlerts carry
+//
+//	no triggers. The hashtag prefix lets Telegram users tap a tag to
+//	filter notification history by trigger type.
+//
+// Line 2: the timestamp rendered in loc with a numeric offset suffix, e.g.
+//
+//	"Sun 24 May, 14:57 +05" for Asia/Almaty or "Sun 24 May, 09:57 +00"
+//	for UTC. No leading glyph — user-requested cleanup of the 🕒 emoji.
+//	loc=nil falls back to UTC.
+func headerLines(now time.Time, loc *time.Location, partAlerts []alert) string {
+	if loc == nil {
+		loc = time.UTC
+	}
+	ts := now.In(loc).Format("Mon 2 Jan, 15:04 -07")
+	title := "FX rates"
+	if tags := reasonHashtags(partAlerts); tags != "" {
+		title = tags + " " + title
+	}
+	return title + "\n" + ts
 }
 
 // splitIntoParts packs rows into message parts bounded by telegramMaxMessageLen,
@@ -195,28 +234,28 @@ func headerLines(now time.Time, partAlerts []alert) string {
 // Widths are recomputed per part so each part is tightly aligned.
 // A single row that would alone exceed the limit is still emitted as its own
 // part (Telegram will reject it, but the loop must not spin forever).
-func splitIntoParts(now time.Time, rows []tableRow, alerts []alert) []string {
+func splitIntoParts(now time.Time, loc *time.Location, rows []tableRow, alerts []alert) []string {
 	var parts []string
 	start := 0
 
 	for start < len(rows) {
 		end := start + 1 // always include at least one row
 		for end < len(rows) {
-			candidate := buildPart(now, rows[start:end+1], alerts[start:end+1])
+			candidate := buildPart(now, loc, rows[start:end+1], alerts[start:end+1])
 			if len(candidate) > telegramMaxMessageLen {
 				break
 			}
 			end++
 		}
-		parts = append(parts, buildPart(now, rows[start:end], alerts[start:end]))
+		parts = append(parts, buildPart(now, loc, rows[start:end], alerts[start:end]))
 		start = end
 	}
 	return parts
 }
 
 // buildPart assembles one complete message part for the given row and alert slices.
-func buildPart(now time.Time, rows []tableRow, partAlerts []alert) string {
-	header := headerLines(now, partAlerts)
+func buildPart(now time.Time, loc *time.Location, rows []tableRow, partAlerts []alert) string {
+	header := headerLines(now, loc, partAlerts)
 	block := renderBlock(rows)
 	return header + "\n\n<pre>\n" + block + "\n</pre>"
 }

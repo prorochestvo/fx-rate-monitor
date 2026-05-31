@@ -376,50 +376,59 @@ func TestClient_SetSourceActive(t *testing.T) {
 	})
 }
 
-func TestClient_RatesChart(t *testing.T) {
+func TestClient_MeRatesChart(t *testing.T) {
 	t.Parallel()
 
-	t.Run("happy path decodes two chart points", func(t *testing.T) {
+	t.Run("happy path decodes chart response", func(t *testing.T) {
 		t.Parallel()
 		f := &fakeFetcher{
-			jsonResponse: []byte(`[{"label":"2026-01-01","price":1.08},{"label":"2026-01-02","price":1.10}]`),
+			jsonResponse: []byte(`{"window":"7 days","pairs":[{"pair":"USD/KZT","category":"fiat","spread_pct":0.29,"series":[{"kind":"BID","color":"#1D9E75","latest":449.5,"delta_pct":0.1,"sparse":false,"points":[{"timestamp":"2026-01-01T00:00:00Z","value":449.5}]},{"kind":"ASK","color":"#378ADD","latest":450.0,"delta_pct":0.0,"sparse":false}]}]}`),
 		}
 		c := apiclient.New(f)
-		got, err := c.RatesChart(t.Context(), "usd-eur", "week")
+		got, err := c.MeRatesChart(t.Context(), "test-init-data")
 		require.NoError(t, err)
-		require.Len(t, got, 2)
-		assert.Equal(t, "2026-01-01", got[0].Label)
-		assert.InDelta(t, 1.08, got[0].Price, 0.001)
-		assert.Equal(t, "2026-01-02", got[1].Label)
-		assert.InDelta(t, 1.10, got[1].Price, 0.001)
+		assert.Equal(t, "7 days", got.Window)
+		require.Len(t, got.Pairs, 1)
+		assert.Equal(t, "USD/KZT", got.Pairs[0].Pair)
+		assert.Equal(t, "fiat", got.Pairs[0].Category)
+		require.NotNil(t, got.Pairs[0].SpreadPct)
+		assert.InDelta(t, 0.29, *got.Pairs[0].SpreadPct, 0.001)
+		require.Len(t, got.Pairs[0].Series, 2)
+		assert.Equal(t, "BID", got.Pairs[0].Series[0].Kind)
+		assert.Equal(t, "#1D9E75", got.Pairs[0].Series[0].Color)
+		assert.Equal(t, 449.5, got.Pairs[0].Series[0].Latest)
+		require.Len(t, got.Pairs[0].Series[0].Points, 1)
+		assert.Equal(t, "ASK", got.Pairs[0].Series[1].Kind)
 	})
 
 	t.Run("decode error on invalid json", func(t *testing.T) {
 		t.Parallel()
 		f := &fakeFetcher{jsonResponse: []byte(`not-json`)}
 		c := apiclient.New(f)
-		_, err := c.RatesChart(t.Context(), "usd-eur", "week")
+		_, err := c.MeRatesChart(t.Context(), "tok")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "decode chart points")
+		assert.Contains(t, err.Error(), "decode me rates chart")
 	})
 
 	t.Run("fetcher error propagates verbatim", func(t *testing.T) {
 		t.Parallel()
 		f := &fakeFetcher{jsonErr: errors.New("connection refused")}
 		c := apiclient.New(f)
-		_, err := c.RatesChart(t.Context(), "usd-eur", "week")
+		_, err := c.MeRatesChart(t.Context(), "tok")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "connection refused")
 	})
 
-	t.Run("empty list returns non-nil empty slice", func(t *testing.T) {
+	t.Run("header is set from initData parameter", func(t *testing.T) {
 		t.Parallel()
-		f := &fakeFetcher{jsonResponse: []byte(`[]`)}
+		const tok = "query_id=AAH&user=%7B%22id%22%3A123%7D"
+		f := &fakeFetcher{
+			jsonResponse: []byte(`{"window":"168h0m0s","pairs":[]}`),
+		}
 		c := apiclient.New(f)
-		got, err := c.RatesChart(t.Context(), "usd-eur", "week")
+		_, err := c.MeRatesChart(t.Context(), tok)
 		require.NoError(t, err)
-		assert.NotNil(t, got)
-		assert.Empty(t, got)
+		assert.Equal(t, tok, f.lastHeaders["X-Telegram-Init-Data"])
 	})
 }
 
@@ -479,5 +488,59 @@ func TestClient_MeSubscriptions(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotNil(t, got.Items)
 		assert.Empty(t, got.Items)
+	})
+}
+
+func TestClient_MeRatesHistory(t *testing.T) {
+	t.Parallel()
+
+	t.Run("happy path decodes history response", func(t *testing.T) {
+		t.Parallel()
+		body := `{"pair":"USD/KZT","page":1,"limit":20,"total":1,"items":[{"source_name":"src","source_title":"Test","timestamp":"2026-05-30T12:00:00Z","bid":490.0}]}`
+		f := &fakeFetcher{jsonResponse: []byte(body)}
+		c := apiclient.New(f)
+		resp, err := c.MeRatesHistory(t.Context(), "init", "USD/KZT", 1, 20)
+		require.NoError(t, err)
+		assert.Equal(t, "USD/KZT", resp.Pair)
+		assert.EqualValues(t, 1, resp.Total)
+		require.Len(t, resp.Items, 1)
+		require.NotNil(t, resp.Items[0].Bid)
+		assert.Equal(t, 490.0, *resp.Items[0].Bid)
+	})
+
+	t.Run("X-Telegram-Init-Data header is forwarded", func(t *testing.T) {
+		t.Parallel()
+		const initData = "query_id=AAH&user=%7B%22id%22%3A123%7D"
+		f := &fakeFetcher{jsonResponse: []byte(`{"pair":"USD/KZT","page":1,"limit":20,"total":0,"items":[]}`)}
+		c := apiclient.New(f)
+		_, err := c.MeRatesHistory(t.Context(), initData, "USD/KZT", 1, 20)
+		require.NoError(t, err)
+		assert.Equal(t, initData, f.lastHeaders["X-Telegram-Init-Data"])
+	})
+
+	t.Run("server 401 propagates as error", func(t *testing.T) {
+		t.Parallel()
+		f := &fakeFetcher{jsonErr: errors.New("http 401")}
+		c := apiclient.New(f)
+		_, err := c.MeRatesHistory(t.Context(), "bad", "USD/KZT", 1, 20)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "http 401")
+	})
+
+	t.Run("malformed json returns decode error", func(t *testing.T) {
+		t.Parallel()
+		f := &fakeFetcher{jsonResponse: []byte(`not-json`)}
+		c := apiclient.New(f)
+		_, err := c.MeRatesHistory(t.Context(), "tok", "USD/KZT", 1, 20)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decode me rates history")
+	})
+
+	t.Run("server 500 propagates as non-nil error", func(t *testing.T) {
+		t.Parallel()
+		f := &fakeFetcher{jsonErr: errors.New("http 500")}
+		c := apiclient.New(f)
+		_, err := c.MeRatesHistory(t.Context(), "tok", "USD/KZT", 1, 20)
+		require.Error(t, err)
 	})
 }

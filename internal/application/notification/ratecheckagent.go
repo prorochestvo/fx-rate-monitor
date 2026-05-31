@@ -15,11 +15,15 @@ import (
 )
 
 // NewRateCheckAgent constructs a RateCheckAgent. All repository arguments are required.
+// rRateUserProfile is optional — when nil, every notification renders in UTC. The
+// optional shape keeps existing unit tests compiling without forcing them to
+// supply a fake profile repo when they only exercise the alert pipeline.
 func NewRateCheckAgent(
 	rRateSource rateSourceRepository,
 	rRateValue rateValueRepository,
 	rRateUserSubscription rateUserSubscriptionRepository,
 	rRateUserEvent rateCheckEventRepository,
+	rRateUserProfile rateUserProfileRepository,
 	logger io.Writer,
 ) (*RateCheckAgent, error) {
 	if rRateSource == nil || rRateValue == nil || rRateUserSubscription == nil || rRateUserEvent == nil {
@@ -33,6 +37,7 @@ func NewRateCheckAgent(
 		rateValueRepository:            rRateValue,
 		rateUserSubscriptionRepository: rRateUserSubscription,
 		rateUserEventRepository:        rRateUserEvent,
+		rateUserProfileRepository:      rRateUserProfile,
 		logger:                         logger,
 	}, nil
 }
@@ -41,11 +46,16 @@ func NewRateCheckAgent(
 // notifications are due, builds alert messages, and queues them as RateUserEvents.
 // It is designed to run to completion on each invocation (one-shot), decoupled from
 // the data-collection cycle.
+//
+// rateUserProfileRepository is nil-safe: when not injected, all notification
+// timestamps render in UTC. When injected, each user's notifications use their
+// stored IANA timezone, with UTC fallback on lookup failure / unknown zone.
 type RateCheckAgent struct {
 	rateSourceRepository           rateSourceRepository
 	rateValueRepository            rateValueRepository
 	rateUserSubscriptionRepository rateUserSubscriptionRepository
 	rateUserEventRepository        rateCheckEventRepository
+	rateUserProfileRepository      rateUserProfileRepository
 	logger                         io.Writer
 }
 
@@ -66,6 +76,14 @@ type rateUserSubscriptionRepository interface {
 // used by RateDispatchAgent — each type declares only what it needs.
 type rateCheckEventRepository interface {
 	RetainRateUserEvent(context.Context, *domain.RateUserEvent) error
+}
+
+// rateUserProfileRepository looks up the per-user timezone preference.
+// Implementations return (nil, internal.ErrNotFound) when no row exists for
+// the user — that absence is normal, not an error, and the agent treats it as
+// "use UTC".
+type rateUserProfileRepository interface {
+	ObtainRateUserProfileByUserID(context.Context, domain.UserType, string) (*domain.RateUserProfile, error)
 }
 
 // Run iterates every rate source, checks active subscriptions, and queues alert events
@@ -216,7 +234,8 @@ func (a *RateCheckAgent) Run(ctx context.Context) error {
 		totalAttempted int
 	)
 	for chatID, alerts := range telegramBotAlerts {
-		msgs, err := buildAlertMessage(now, alerts...)
+		loc := a.resolveUserTimezone(ctx, domain.UserTypeTelegram, chatID)
+		msgs, err := buildAlertMessage(now, loc, alerts...)
 		if err != nil {
 			// Returned to caller via combined; cmd/notifier logs the joined error
 			// at run completion. Avoid logging here too — duplicate noise.
@@ -265,6 +284,35 @@ func (a *RateCheckAgent) Run(ctx context.Context) error {
 		totalQueued, totalAttempted, totalChats)
 
 	return errors.Join(combined...)
+}
+
+// resolveUserTimezone returns the time.Location stored for (userType, userID)
+// or nil when no profile is configured / the stored name is unknown to the
+// running Go runtime. A nil return tells buildAlertMessage to fall back to
+// UTC, which keeps the pipeline working when the notifier is invoked before
+// the user has ever opened the Mini App. Failures are logged once each, never
+// fatal — a wrong timezone is strictly preferable to a missed notification.
+func (a *RateCheckAgent) resolveUserTimezone(ctx context.Context, userType domain.UserType, userID string) *time.Location {
+	if a.rateUserProfileRepository == nil {
+		return nil
+	}
+	profile, err := a.rateUserProfileRepository.ObtainRateUserProfileByUserID(ctx, userType, userID)
+	if err != nil {
+		if errors.Is(err, internal.ErrNotFound) {
+			return nil
+		}
+		fmt.Fprintf(a.logger, "notification check: profile lookup chat_id=%s: %v\n", userID, err)
+		return nil
+	}
+	if profile == nil || profile.Timezone == "" {
+		return nil
+	}
+	loc, err := time.LoadLocation(profile.Timezone)
+	if err != nil {
+		fmt.Fprintf(a.logger, "notification check: unknown timezone chat_id=%s tz=%q: %v\n", userID, profile.Timezone, err)
+		return nil
+	}
+	return loc
 }
 
 // triggerOrder defines the canonical sort position for each condition type.

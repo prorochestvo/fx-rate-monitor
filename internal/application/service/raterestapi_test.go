@@ -291,31 +291,6 @@ func TestRateRestApi_ObtainPendingRateUserEvents(t *testing.T) {
 	})
 }
 
-func TestRateRestApi_ObtainRateValueChartBySourceName(t *testing.T) {
-	t.Parallel()
-
-	t.Run("delegates and returns chart points", func(t *testing.T) {
-		t.Parallel()
-
-		want := []domain.ChartPoint{{Label: "2026-04-01", Price: 450.0}}
-		repo := &mockRateValueRepository{chartPoints: want}
-		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, repo, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
-
-		got, err := svc.ObtainRateValueChartBySourceName(t.Context(), "src1", domain.ChartPeriodWeek)
-		require.NoError(t, err)
-		require.Equal(t, want, got)
-	})
-	t.Run("error propagated", func(t *testing.T) {
-		t.Parallel()
-
-		repo := &mockRateValueRepository{err: errors.New("fail")}
-		svc := newRateRestAPI(t, &mockExecutionHistoryRepository{}, &mockRateSourceRepository{}, repo, &mockRateUserSubscriptionRepository{}, &mockRateUserEventRepository{})
-
-		_, err := svc.ObtainRateValueChartBySourceName(t.Context(), "src1", domain.ChartPeriodWeek)
-		require.Error(t, err)
-	})
-}
-
 func TestRateRestApi_ObtainFailedRateUserEventsBySourceName(t *testing.T) {
 	t.Parallel()
 
@@ -475,17 +450,12 @@ func (m *mockRateSourceRepository) RetainRateSource(_ context.Context, s *domain
 }
 
 type mockRateValueRepository struct {
-	values      []domain.RateValue
-	chartPoints []domain.ChartPoint
-	err         error
+	values []domain.RateValue
+	err    error
 }
 
 func (m *mockRateValueRepository) ObtainLastNRateValuesBySourceName(_ context.Context, _ string, _ int64) ([]domain.RateValue, error) {
 	return m.values, m.err
-}
-
-func (m *mockRateValueRepository) ObtainRateValueChartBySourceName(_ context.Context, _ string, _ domain.ChartPeriod) ([]domain.ChartPoint, error) {
-	return m.chartPoints, m.err
 }
 
 type mockRateUserSubscriptionRepository struct {

@@ -6,10 +6,6 @@ const (
 	// Sources lists all configured rate sources.
 	Sources = "/api/sources"
 
-	// SourceRatesChart returns aggregated chart data for a named source.
-	// Must be registered BEFORE SourceRates so the more-specific pattern wins.
-	SourceRatesChart = "/api/sources/{name}/rates/chart"
-
 	// SourceRates returns recent rate values for a named source.
 	// The {name} segment maps to r.PathValue("name") in Go 1.22+.
 	SourceRates = "/api/sources/{name}/rates"
@@ -51,6 +47,24 @@ const (
 	// MeSubscriptions returns the calling user's own subscriptions enriched with the
 	// latest rate value per source. Authentication is via Telegram WebApp initData HMAC.
 	MeSubscriptions = "/api/me/subscriptions"
+
+	// MeRatesChart returns the sparkline-list chart data for the calling user's
+	// subscribed currency pairs over the last 7 days. Authentication is via
+	// Telegram WebApp initData HMAC (X-Telegram-Init-Data header only; no query
+	// parameter to prevent initData from appearing in access logs).
+	MeRatesChart = "/api/me/rates/chart"
+
+	// MeRatesHistory returns paginated rate-collection events for the calling
+	// user's subscribed sources that match a canonical pair label.
+	// Authentication is via Telegram WebApp initData HMAC (X-Telegram-Init-Data
+	// header only; no query parameter to prevent initData from appearing in
+	// access logs).
+	MeRatesHistory = "/api/me/rates/history"
+
+	// MeProfile upserts the calling user's profile preferences (currently only
+	// IANA timezone). Authentication is via Telegram WebApp initData HMAC, same
+	// as MeSubscriptions.
+	MeProfile = "/api/me/profile"
 
 	// Healthz reports service readiness. Returns 200 when the database is
 	// reachable, 503 otherwise. Intended for monitoring probes and systemd

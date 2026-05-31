@@ -21,8 +21,8 @@ var _ sqlitedb.Committer = (*mockFailDB)(nil)
 //
 // Optional sourceNames are pre-seeded into rate_sources via seedRateSources so
 // dependent rows (rate_values, rate_user_subscriptions, rate_user_events) can
-// satisfy the FK added in migration 202605.008. Tests using custom source names
-// outside the canonical seed should pass them here.
+// satisfy the FK on rate_user_subscriptions.source_name. Tests using custom
+// source names outside the canonical seed should pass them here.
 //
 // The shared mutex guards only the sql.Open + PRAGMA + migrate phase; seeding
 // proceeds without it so parallel tests don't serialise behind each other's
@@ -63,7 +63,7 @@ func stubSQLiteDB(t testing.TB, sourceNames ...string) *sqlitedb.SQLiteClient {
 
 // seedRateSources inserts a minimal rate_source row for each provided name so
 // dependent rows (rate_values, rate_user_subscriptions, rate_user_events) can
-// reference them without violating the FK added in migration 202605.008.
+// reference them without violating the FK on rate_user_subscriptions.source_name.
 // Tests that pick arbitrary source names (not from the canonical seed) should
 // call this immediately after stubSQLiteDB.
 func seedRateSources(t testing.TB, db *sqlitedb.SQLiteClient, names ...string) {

@@ -20,14 +20,18 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata" // embedded IANA tzdata for time.LoadLocation in profile-upsert
 
 	"github.com/prorochestvo/dsninjector"
 	"github.com/seilbekskindirov/monitor/internal"
+	appchart "github.com/seilbekskindirov/monitor/internal/application/chart"
 	"github.com/seilbekskindirov/monitor/internal/application/service"
 	"github.com/seilbekskindirov/monitor/internal/gateway"
+	"github.com/seilbekskindirov/monitor/internal/gateway/middleware"
 	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
 	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
 	"github.com/seilbekskindirov/monitor/internal/repository"
+	"github.com/seilbekskindirov/monitor/internal/tools/httpenc"
 	_ "modernc.org/sqlite"
 )
 
@@ -143,6 +147,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("repositories: %s", err.Error())
 	}
+	profileRepo, err := repository.NewRateUserProfileRepository(db)
+	if err != nil {
+		log.Fatalf("repositories: %s", err.Error())
+	}
 	log.Println("repositories: initiated")
 
 	restAPI, err := service.NewRateRestAPI(
@@ -163,12 +171,16 @@ func main() {
 		// startup instead of silently rejecting every authenticated request.
 		log.Fatalf("services: bot token is empty — check TELEGRAMBOT_DSN")
 	}
-	mux, err := gateway.NewGateway(restAPI, botToken, subscriptionRepo, sourceRepo, rateValueRepo)
+	// rateValueRepo satisfies both ValuesLoader (for ObtainMeChart) and
+	// HistoryValuesLoader (for ObtainMeHistory) — the same instance covers both.
+	chartSvc := appchart.NewService(subscriptionRepo, sourceRepo, rateValueRepo, rateValueRepo, time.Now)
+	mux, err := gateway.NewGateway(restAPI, botToken, subscriptionRepo, sourceRepo, rateValueRepo, profileRepo, chartSvc)
 	if err != nil {
 		log.Fatalf("services: mux api is failed, %s", err.Error())
 		return
 	}
 	var fsys http.FileSystem
+	var embeddedSub fs.FS
 	if StaticDir != "" {
 		fsys = http.Dir(StaticDir)
 	} else {
@@ -176,9 +188,47 @@ func main() {
 		if err != nil {
 			log.Fatalf("embed sub: %v", err)
 		}
+		embeddedSub = sub
 		fsys = http.FS(sub)
 	}
-	mux.Handle("/", http.FileServer(fsys))
+	// wasmGzipHandler intercepts *.wasm requests and serves the pre-compressed
+	// *.wasm.gz sibling with Content-Encoding: gzip when both conditions hold:
+	//   1. The client advertises Accept-Encoding: gzip.
+	//   2. The *.gz sibling exists in the embedded FS.
+	// Falls back to the plain FileServer for all other requests and whenever
+	// the *.gz file is absent (e.g. first run before make build produces it).
+	// Scoped to *.wasm only — compressing HTML/JS here is unnecessary complexity.
+	fileHandler := http.FileServer(fsys)
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if embeddedSub != nil &&
+			strings.HasSuffix(r.URL.Path, ".wasm") &&
+			httpenc.AcceptsGzip(r.Header.Get("Accept-Encoding")) {
+			gzPath := strings.TrimPrefix(r.URL.Path, "/") + ".gz"
+			f, openErr := embeddedSub.Open(gzPath)
+			if openErr == nil {
+				defer func() { _ = f.Close() }()
+				fi, statErr := f.Stat()
+				if statErr != nil {
+					log.Printf("wasm.gz stat %s: %v", gzPath, statErr)
+					http.Error(w, "internal error", http.StatusInternalServerError)
+					return
+				}
+				rs, ok := f.(io.ReadSeeker)
+				if !ok {
+					log.Printf("wasm.gz %s does not implement io.ReadSeeker", gzPath)
+					http.Error(w, "internal error", http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Vary", "Accept-Encoding")
+				w.Header().Set("Content-Encoding", "gzip")
+				w.Header().Set("Content-Type", "application/wasm")
+				http.ServeContent(w, r, fi.Name(), fi.ModTime(), rs)
+				return
+			}
+			// *.gz not found in embedded FS — fall through to plain file server.
+		}
+		fileHandler.ServeHTTP(w, r)
+	}))
 	tbotAPI, err := service.NewTelegramApi(tbot, subscriptionRepo, sourceRepo, webAppURL)
 	if err != nil {
 		log.Fatalf("services: telegram api is failed, %s", err.Error())
@@ -201,7 +251,7 @@ func main() {
 	// the goroutine and could connect to a not-yet-bound port.
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", HttpPort),
-		Handler:      mux,
+		Handler:      middleware.Logger(mux, l.WriterAs(internal.LogLevelInfo)),
 		ReadTimeout:  HttpTimeOut,
 		WriteTimeout: HttpTimeOut,
 		IdleTimeout:  HttpTimeOut >> 1,

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/seilbekskindirov/monitor/internal"
+	appchart "github.com/seilbekskindirov/monitor/internal/application/chart"
 	"github.com/seilbekskindirov/monitor/internal/domain"
 	"github.com/seilbekskindirov/monitor/internal/dto"
 	"github.com/seilbekskindirov/monitor/internal/tools/tgwebapp"
@@ -22,13 +23,17 @@ import (
 // NewHandler constructs a Handler wired to the rate service and, optionally,
 // to the Mini App auth dependencies. botToken, meSubRepo, meSourceRepo, and
 // meRateValueRepo are required for ListMeSubscriptions; the remaining handlers
-// only need srvRate.
+// only need srvRate. meProfileRepo is required for UpsertMeProfile.
+// meChartSvc is required for GetMeRatesChart and may be nil if not wired
+// (returns 503 when nil).
 func NewHandler(
 	srvRate rateService,
 	botToken string,
 	meSubRepo meSubscriptionRepository,
 	meSourceRepo meSourceRepository,
 	meRateValueRepo meRateValueRepository,
+	meProfileRepo meProfileRepository,
+	meChartSvc meChartService,
 ) (*Handler, error) {
 	h := &Handler{
 		rateService:      srvRate,
@@ -36,6 +41,8 @@ func NewHandler(
 		meSubRepo:        meSubRepo,
 		meSourceRepo:     meSourceRepo,
 		meRateValueRepo:  meRateValueRepo,
+		meProfileRepo:    meProfileRepo,
+		meChartSvc:       meChartSvc,
 		validateInitData: tgwebapp.ValidateInitData,
 		nowFn:            time.Now,
 	}
@@ -49,6 +56,8 @@ type Handler struct {
 	meSubRepo       meSubscriptionRepository
 	meSourceRepo    meSourceRepository
 	meRateValueRepo meRateValueRepository
+	meProfileRepo   meProfileRepository
+	meChartSvc      meChartService
 
 	// validateInitData is the Telegram WebApp initData verifier. It is a field so
 	// tests can inject a fake without needing real bot tokens.
@@ -68,7 +77,6 @@ type rateService interface {
 	ObtainListOfLastRateUserEvent(ctx context.Context, limit int64) ([]domain.RateUserEvent, error)
 	ObtainFailedListOfRateUserEvent(ctx context.Context, offset, limit int64) ([]domain.RateUserEvent, error)
 	ObtainPendingRateUserEvents(ctx context.Context) ([]domain.RateUserEvent, error)
-	ObtainRateValueChartBySourceName(ctx context.Context, name string, period domain.ChartPeriod) ([]domain.ChartPoint, error)
 	ObtainFailedRateUserEventsBySourceName(ctx context.Context, sourceName string, page, pageSize int64) ([]domain.RateUserEvent, error)
 	ObtainSubscriptionSummaryBySource(ctx context.Context, sourceName string) ([]domain.RateUserSubscriptionSummary, error)
 	ObtainStats(ctx context.Context) (domain.StatsResult, error)
@@ -89,6 +97,17 @@ type meSourceRepository interface {
 type meRateValueRepository interface {
 	ObtainLastNRateValuesBySourceName(ctx context.Context, name string, limit int64) ([]domain.RateValue, error)
 	ObtainLatestRateValuesBySourceNames(ctx context.Context, names []string) (map[string]domain.RateValue, error)
+}
+
+type meProfileRepository interface {
+	UpsertRateUserProfile(ctx context.Context, record *domain.RateUserProfile) error
+}
+
+// meChartService is the application service contract consumed by GetMeRatesChart
+// and GetMeRatesHistory. It is satisfied by *appchart.Service.
+type meChartService interface {
+	ObtainMeChart(ctx context.Context, userID string) (*appchart.MeChart, error)
+	ObtainMeHistory(ctx context.Context, userID, pair string, page, limit int64) (*appchart.MeHistoryResult, error)
 }
 
 // Healthz reports whether the service can reach its dependencies. Returns
@@ -315,31 +334,6 @@ func (h *Handler) ListPendingEvents(w http.ResponseWriter, r *http.Request) {
 			Status:    string(e.Status),
 			CreatedAt: e.CreatedAt,
 		})
-	}
-	writeJSON(w, resp)
-}
-
-// GetRatesChart returns aggregated rate data for a source over a given period.
-//
-// GET /api/sources/{name}/rates/chart?period=week|month|year
-func (h *Handler) GetRatesChart(w http.ResponseWriter, r *http.Request) {
-	name, err := extractName(r)
-	if err != nil {
-		http.Error(w, `{"error":"missing source name"}`, http.StatusBadRequest)
-		return
-	}
-	period := domain.ChartPeriod(r.URL.Query().Get("period"))
-	if period == "" {
-		period = domain.ChartPeriodWeek
-	}
-	points, err := h.rateService.ObtainRateValueChartBySourceName(r.Context(), name, period)
-	if err != nil {
-		h.internalError(w, err)
-		return
-	}
-	resp := make([]dto.ChartPointResponse, 0, len(points))
-	for _, p := range points {
-		resp = append(resp, dto.ChartPointResponse{Label: p.Label, Price: p.Price})
 	}
 	writeJSON(w, resp)
 }
@@ -674,6 +668,217 @@ func (h *Handler) ListMeSubscriptions(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// UpsertMeProfile stores the caller's IANA timezone so notification timestamps
+// can be rendered in their local time. Fire-and-forget from the Mini App on
+// every mount: the client sends whatever Intl.DateTimeFormat resolves to and
+// the server validates via time.LoadLocation.
+//
+// POST /api/me/profile
+// Body: {"timezone":"Asia/Almaty"}
+// Auth: X-Telegram-Init-Data header (same HMAC scheme as ListMeSubscriptions).
+//
+// 204 No Content on success, 400 on bad timezone, 401 on auth failure, 500
+// on persistence failure. The response body is empty on success — Mini App
+// callers fire-and-forget and discard it.
+func (h *Handler) UpsertMeProfile(w http.ResponseWriter, r *http.Request) {
+	initData := r.Header.Get("X-Telegram-Init-Data")
+	userID, err := h.validateInitData(initData, h.botToken, meSubscriptionsMaxAge, h.nowFn())
+	if err != nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// Bound the read so a malicious or buggy client cannot inflate memory
+	// — the request body should be a tiny JSON object.
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<10) // 1 KiB
+	var body dto.MeProfileRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	body.Timezone = strings.TrimSpace(body.Timezone)
+	body.Locale = strings.TrimSpace(body.Locale)
+	if body.Timezone == "" {
+		http.Error(w, `{"error":"timezone is required"}`, http.StatusBadRequest)
+		return
+	}
+	// Bound locale on the way in so a buggy caller can't dump megabytes into
+	// the column. BCP-47 tags max out around 35 chars in practice; 64 is a
+	// safe cap that won't reject any realistic value.
+	if len(body.Locale) > 64 {
+		http.Error(w, `{"error":"locale too long"}`, http.StatusBadRequest)
+		return
+	}
+
+	tgUserID := strconv.FormatInt(userID, 10)
+	record := &domain.RateUserProfile{
+		UserType: domain.UserTypeTelegram,
+		UserID:   tgUserID,
+		Timezone: body.Timezone,
+		Locale:   body.Locale,
+	}
+	if err := h.meProfileRepo.UpsertRateUserProfile(r.Context(), record); err != nil {
+		// PublicError → 400 with the safe message. Other errors → 500.
+		var pub *internal.PublicError
+		if errors.As(err, &pub) {
+			http.Error(w, `{"error":"`+pub.Details()+`"}`, http.StatusBadRequest)
+			return
+		}
+		h.internalError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// GetMeRatesChart returns the sparkline-list chart data for the calling user's
+// subscribed currency pairs over the last 7 days. BID and ASK for the same
+// canonical pair appear as a single row with two series entries.
+//
+// GET /api/me/rates/chart
+// Auth: X-Telegram-Init-Data header only. The HMAC-signed payload must never
+// be passed via query string (it would appear in access logs and Referer headers).
+//
+// The pair display label is always BID-natural (e.g. "USD/KZT") regardless of
+// which directions are subscribed. The label assignment is owned by the service
+// layer, not this handler.
+func (h *Handler) GetMeRatesChart(w http.ResponseWriter, r *http.Request) {
+	initData := r.Header.Get("X-Telegram-Init-Data")
+
+	userID, err := h.validateInitData(initData, h.botToken, meSubscriptionsMaxAge, h.nowFn())
+	if err != nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if h.meChartSvc == nil {
+		http.Error(w, `{"error":"chart service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	tgUserID := strconv.FormatInt(userID, 10)
+	ch, err := h.meChartSvc.ObtainMeChart(r.Context(), tgUserID)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// Client navigated away or the request timed out before the service
+			// could respond. This is a normal client-side event, not a server
+			// failure. 499 ("client closed request") distinguishes it in access
+			// logs from genuine 500-class failures.
+			http.Error(w, `{"error":"request cancelled"}`, 499)
+			return
+		}
+		h.internalError(w, fmt.Errorf("GetMeRatesChart: %w", err))
+		return
+	}
+
+	pairRows := make([]dto.MeChartPairRow, 0, len(ch.Pairs))
+	for _, row := range ch.Pairs {
+		seriesDTOs := make([]dto.MeChartSeries, 0, len(row.Series))
+		for _, sr := range row.Series {
+			s := dto.MeChartSeries{
+				Kind:     string(sr.Kind),
+				Color:    sr.Color,
+				Latest:   sr.Latest,
+				DeltaPct: sr.DeltaPct,
+				Sparse:   sr.Sparse,
+			}
+			if len(sr.Points) > 0 {
+				pts := make([]dto.MeChartPoint, 0, len(sr.Points))
+				for _, p := range sr.Points {
+					pts = append(pts, dto.MeChartPoint{
+						Timestamp: p.Timestamp,
+						Value:     p.Value,
+					})
+				}
+				s.Points = pts
+			}
+			seriesDTOs = append(seriesDTOs, s)
+		}
+		pairRows = append(pairRows, dto.MeChartPairRow{
+			Pair:      row.Pair,
+			Category:  string(row.Category),
+			SpreadPct: row.SpreadPct,
+			Series:    seriesDTOs,
+		})
+	}
+
+	writeJSON(w, dto.MeChartResponse{
+		Window: "7 days",
+		Pairs:  pairRows,
+	})
+}
+
+// GetMeRatesHistory returns paginated rate-collection events for the calling
+// user's subscribed sources that match the given canonical pair label.
+//
+// GET /api/me/rates/history?pair=<canonical>&page=<n>&limit=<n>
+// Auth: X-Telegram-Init-Data header only.
+//
+//   - 400 on missing or empty pair.
+//   - 400 on non-integer limit.
+//   - 401 on bad initData.
+//   - 499 on ctx canceled / deadline exceeded.
+//   - 200 with an empty Items list when the user has no matching
+//     subscriptions (NOT 404).
+func (h *Handler) GetMeRatesHistory(w http.ResponseWriter, r *http.Request) {
+	initData := r.Header.Get("X-Telegram-Init-Data")
+
+	userID, err := h.validateInitData(initData, h.botToken, meSubscriptionsMaxAge, h.nowFn())
+	if err != nil {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	if h.meChartSvc == nil {
+		http.Error(w, `{"error":"chart service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	pair := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("pair")))
+	if pair == "" {
+		http.Error(w, `{"error":"pair is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	page := parsePage(r.URL.Query().Get("page"))
+	limit, err := parseHistoryLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		http.Error(w, `{"error":"limit must be a number"}`, http.StatusBadRequest)
+		return
+	}
+
+	tgUserID := strconv.FormatInt(userID, 10)
+	result, err := h.meChartSvc.ObtainMeHistory(r.Context(), tgUserID, pair, page, limit)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			http.Error(w, `{"error":"request cancelled"}`, 499)
+			return
+		}
+		h.internalError(w, fmt.Errorf("GetMeRatesHistory: %w", err))
+		return
+	}
+
+	items := make([]dto.MeHistoryRow, 0, len(result.Items))
+	for _, row := range result.Items {
+		items = append(items, dto.MeHistoryRow{
+			SourceName:  row.SourceName,
+			SourceTitle: row.SourceTitle,
+			Timestamp:   row.Timestamp,
+			Bid:         row.Bid,
+			Ask:         row.Ask,
+			BidDeltaPct: row.BidDeltaPct,
+			AskDeltaPct: row.AskDeltaPct,
+		})
+	}
+
+	writeJSON(w, dto.MeHistoryResponse{
+		Pair:  result.Pair,
+		Page:  int(page),
+		Limit: int(limit),
+		Total: result.Total,
+		Items: items,
+	})
+}
+
 // internalError logs the underlying error with a trace and returns a generic 500 to the client.
 func (h *Handler) internalError(w http.ResponseWriter, err error) {
 	log.Print(errors.Join(err, internal.NewTraceError()))
@@ -762,6 +967,31 @@ func extractName(r *http.Request) (string, error) {
 		return "", fmt.Errorf("missing path param: name")
 	}
 	return v, nil
+}
+
+const (
+	meHistoryDefaultLimit = int64(20)
+	meHistoryMaxLimit     = int64(100)
+)
+
+// parseHistoryLimit parses the ?limit= query parameter for the history
+// endpoint, clamped to [1, meHistoryMaxLimit], default meHistoryDefaultLimit.
+// Returns an error only when the value is present but non-integer.
+func parseHistoryLimit(raw string) (int64, error) {
+	if raw == "" {
+		return meHistoryDefaultLimit, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if n < 1 {
+		n = meHistoryDefaultLimit
+	}
+	if n > meHistoryMaxLimit {
+		n = meHistoryMaxLimit
+	}
+	return n, nil
 }
 
 // parsePageSize parses a "page_size" query parameter, clamped to [1, 50], default 10.

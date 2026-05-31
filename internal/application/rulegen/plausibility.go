@@ -16,7 +16,7 @@ type valueRange struct {
 
 // plausibleRanges maps every (base, quote) pair seeded in
 // migrations/202605.007.rate_sources.seed_initial.sql to an inclusive [Lo, Hi]
-// float64 window. Pairs absent from the table fall through to the universal
+// float64 window (see migrations/ for the current seed filename). Pairs absent from the table fall through to the universal
 // (MinPlausibleRateValue, MaxPlausibleRateValue] check in the executor, so
 // unknown pairs are never hard-rejected by this table.
 //

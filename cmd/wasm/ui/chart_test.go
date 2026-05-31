@@ -1,232 +1,310 @@
 package ui_test
 
 import (
-	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/seilbekskindirov/monitor/cmd/wasm/ui"
+	"github.com/seilbekskindirov/monitor/internal/domain/ratepair"
 	"github.com/seilbekskindirov/monitor/internal/dto"
 )
 
-func pts(labelPricePairs ...any) []dto.ChartPointResponse {
-	out := make([]dto.ChartPointResponse, 0, len(labelPricePairs)/2)
-	for i := 0; i+1 < len(labelPricePairs); i += 2 {
-		out = append(out, dto.ChartPointResponse{
-			Label: labelPricePairs[i].(string),
-			Price: labelPricePairs[i+1].(float64),
-		})
+// mkPoint builds a MeChartPoint at the given RFC3339 time and value.
+func mkPoint(ts string, v float64) dto.MeChartPoint {
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		panic(err)
 	}
-	return out
+	return dto.MeChartPoint{Timestamp: t, Value: v}
 }
 
-func series(name, color string, points []dto.ChartPointResponse) ui.Series {
-	return ui.Series{Name: name, Color: color, Points: points}
+// mkSeries constructs a MeChartSeries for test use.
+func mkSeries(kind, color string, delta float64, sparse bool, points []dto.MeChartPoint) dto.MeChartSeries {
+	var latest float64
+	if len(points) > 0 {
+		latest = points[len(points)-1].Value
+	}
+	return dto.MeChartSeries{
+		Kind:     kind,
+		Color:    color,
+		Latest:   latest,
+		DeltaPct: delta,
+		Sparse:   sparse,
+		Points:   points,
+	}
 }
 
-func defaultOpts() ui.OverlayOptions { return ui.OverlayOptions{Width: 320, Height: 180} }
+// mkRow constructs a MeChartPairRow for test use.
+func mkRow(pair, category string, spreadPct *float64, series []dto.MeChartSeries) dto.MeChartPairRow {
+	return dto.MeChartPairRow{
+		Pair:      pair,
+		Category:  category,
+		SpreadPct: spreadPct,
+		Series:    series,
+	}
+}
 
-func TestRenderOverlayChart(t *testing.T) {
+func float64Ptr(v float64) *float64 { return &v }
+
+func TestRenderSparklineList(t *testing.T) {
 	t.Parallel()
 
-	t.Run("nil series renders no-data placeholder", func(t *testing.T) {
+	t.Run("empty pairs produces empty-state HTML", func(t *testing.T) {
 		t.Parallel()
-		html := ui.RenderOverlayChart(nil, defaultOpts())
-		assert.Contains(t, html, "No data")
-		assert.NotContains(t, html, "overlay-chart-legend")
+		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: nil})
+		assert.Contains(t, html, "sparkline-empty")
+		assert.NotContains(t, html, "sparkline-row")
 	})
 
-	t.Run("all series empty renders no-data placeholder", func(t *testing.T) {
+	t.Run("two-series row renders pair label, Spread, and SVG with two polylines", func(t *testing.T) {
 		t.Parallel()
-		html := ui.RenderOverlayChart([]ui.Series{
-			series("a", "#f00", nil),
-			series("b", "#00f", []dto.ChartPointResponse{}),
-		}, defaultOpts())
-		assert.Contains(t, html, "No data")
-		assert.NotContains(t, html, "overlay-chart-legend")
+		bidPts := []dto.MeChartPoint{
+			mkPoint("2026-05-23T00:00:00Z", 480.0),
+			mkPoint("2026-05-24T00:00:00Z", 487.55),
+		}
+		askPts := []dto.MeChartPoint{
+			mkPoint("2026-05-23T00:00:00Z", 481.0),
+			mkPoint("2026-05-24T00:00:00Z", 488.95),
+		}
+		bid := mkSeries("BID", ratepair.ColorBid, 3.6, false, bidPts)
+		ask := mkSeries("ASK", ratepair.ColorAsk, 3.4, false, askPts)
+		row := mkRow("USD/KZT", "fiat", float64Ptr(0.29), []dto.MeChartSeries{bid, ask})
+		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: []dto.MeChartPairRow{row}})
+
+		assert.Contains(t, html, "sparkline-row")
+		assert.Contains(t, html, `data-pair="USD/KZT"`)
+		assert.Contains(t, html, `role="button"`)
+		assert.Contains(t, html, `tabindex="0"`)
+		assert.Contains(t, html, "USD/KZT")
+		// Text block: pair label + Spread line.
+		assert.Contains(t, html, "sparkline-row-text")
+		assert.Contains(t, html, "Spread 0.29%")
+		// No per-series value text or sparkline-value-line in the list.
+		assert.NotContains(t, html, ">B<")
+		assert.NotContains(t, html, ">A<")
+		assert.NotContains(t, html, "sparkline-value-line")
+		// SVG sparkline with two polylines is present.
+		assert.Contains(t, html, "sparkline-row-chart")
+		assert.Contains(t, html, "<svg")
+		assert.Equal(t, 2, strings.Count(html, "<polyline "), "two-series row must emit two polylines")
 	})
 
-	t.Run("single series with one point renders flat line at zero", func(t *testing.T) {
+	t.Run("single-series row renders pair label, Δ delta, and SVG with one polyline", func(t *testing.T) {
 		t.Parallel()
-		html := ui.RenderOverlayChart([]ui.Series{
-			series("usd", "#f00", pts("2026-01-01", 1.08)),
-		}, defaultOpts())
-		assert.Contains(t, html, `<polyline`)
-		// A single point means 0% change — the Y should be at the baseline (0%).
-		// With only one X label, x = Width/2 = 160.00, pct = 0%
-		assert.Contains(t, html, "160.00,")
-		assert.NotContains(t, html, "No data")
+		bidPts := []dto.MeChartPoint{
+			mkPoint("2026-05-23T00:00:00Z", 480.0),
+			mkPoint("2026-05-27T00:00:00Z", 492.0),
+		}
+		bid := mkSeries("BID", ratepair.ColorBid, 2.5, false, bidPts)
+		row := mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{bid})
+		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: []dto.MeChartPairRow{row}})
+
+		assert.Contains(t, html, "USD/KZT")
+		assert.Contains(t, html, `data-pair="USD/KZT"`)
+		assert.Contains(t, html, "sparkline-row-text")
+		assert.Contains(t, html, "sparkline-row-delta")
+		assert.Contains(t, html, "Δ")
+		assert.Contains(t, html, "+2.50%")
+		// No per-series prefix text in the list.
+		assert.NotContains(t, html, ">BID<")
+		// SVG is present with one polyline.
+		assert.Contains(t, html, "sparkline-row-chart")
+		assert.Contains(t, html, "<svg")
+		assert.Equal(t, 1, strings.Count(html, "<polyline "), "single-series row must emit one polyline")
 	})
 
-	t.Run("single series with two ascending points renders one polyline", func(t *testing.T) {
+	t.Run("no-data row (sparse series with zero Latest) renders Δ +0.0% delta and flat SVG line", func(t *testing.T) {
 		t.Parallel()
-		html := ui.RenderOverlayChart([]ui.Series{
-			series("usd", "#f00", pts("2026-01-01", 1.00, "2026-01-02", 1.10)),
-		}, defaultOpts())
-		assert.Contains(t, html, `<polyline`)
-		// First point x=0, pct=0%; second point x=320, pct=10%
-		// Verify the first coordinate is at x=0.
-		assert.Contains(t, html, `points="0.00,`)
+		// A sparse series with Latest==0 is still a series; the collapsed row
+		// shows Δ +0.0% (the sparse formatSparklineDelta value) and a flat SVG
+		// line (renderChartArea handles the all-sparse all-zero as "no data" badge).
+		sr := dto.MeChartSeries{
+			Kind:   "BID",
+			Color:  ratepair.ColorBid,
+			Latest: 0,
+			Sparse: true,
+			Points: nil,
+		}
+		row := mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{sr})
+		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: []dto.MeChartPairRow{row}})
+
+		assert.Contains(t, html, "Δ")
+		assert.Contains(t, html, "+0.0%")
+		assert.Contains(t, html, "sparkline-row-delta")
+		// renderChartArea returns a "no data" span when all series are all-zero,
+		// so no <svg> element — but the chart div wrapper is present.
+		assert.Contains(t, html, "sparkline-row-chart")
 	})
 
-	t.Run("two series normalized to percent share the Y-axis", func(t *testing.T) {
+	t.Run("zero-series row renders no-data badge and no SVG", func(t *testing.T) {
 		t.Parallel()
-		// Both series start at different absolute values but pct=0 at first label.
-		html := ui.RenderOverlayChart([]ui.Series{
-			series("a", "#f00", pts("2026-01-01", 500.0, "2026-01-02", 510.0)),
-			series("b", "#00f", pts("2026-01-01", 1.10, "2026-01-02", 1.21)),
-		}, defaultOpts())
-		// Both start at pct=0 so their first x,y coordinates should share the same y.
-		// Verify both polylines appear.
-		assert.Equal(t, 2, strings.Count(html, `<polyline`))
-		// The baseline label shows 0.00% at the baseline.
-		assert.Contains(t, html, "0.00%")
+		row := mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{})
+		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: []dto.MeChartPairRow{row}})
+
+		assert.Contains(t, html, "no data")
+		assert.Contains(t, html, "sparkline-row-delta-empty")
+		// Zero-series rows skip the chart div entirely.
+		assert.NotContains(t, html, "sparkline-row-chart")
+		assert.NotContains(t, html, "<svg")
 	})
 
-	t.Run("series with zero first price is dropped silently", func(t *testing.T) {
+	t.Run("XSS in pair label is escaped in data-pair and aria-label and label div", func(t *testing.T) {
 		t.Parallel()
-		html := ui.RenderOverlayChart([]ui.Series{
-			series("bad", "#f00", pts("2026-01-01", 0.0, "2026-01-02", 1.0)),
-			series("ok", "#00f", pts("2026-01-01", 1.0, "2026-01-02", 1.1)),
-		}, defaultOpts())
-		// Only one polyline: the valid series.
-		assert.Equal(t, 1, strings.Count(html, `<polyline`))
-		// Legend must only include the non-dropped series.
-		assert.Contains(t, html, "ok")
-		assert.NotContains(t, html, `>bad<`)
-	})
-
-	t.Run("union of labels is the X domain", func(t *testing.T) {
-		t.Parallel()
-		// Series A: labels [a, b]; Series B: labels [b, c] — union is [a, b, c].
-		html := ui.RenderOverlayChart([]ui.Series{
-			series("A", "#f00", []dto.ChartPointResponse{
-				{Label: "a", Price: 1.0},
-				{Label: "b", Price: 1.1},
-			}),
-			series("B", "#00f", []dto.ChartPointResponse{
-				{Label: "b", Price: 2.0},
-				{Label: "c", Price: 2.2},
-			}),
-		}, ui.OverlayOptions{Width: 200, Height: 100})
-		// With 3 X positions the second index x = 200/2 = 100.00.
-		// Series A has labels a and b → two coordinate pairs.
-		// Series B has labels b and c → two coordinate pairs.
-		// Verify both polylines exist.
-		assert.Equal(t, 2, strings.Count(html, `<polyline`))
-	})
-
-	t.Run("Y-axis labels show plus prefix for positive and minus for negative", func(t *testing.T) {
-		t.Parallel()
-		html := ui.RenderOverlayChart([]ui.Series{
-			series("x", "#f00", pts("2026-01-01", 1.0, "2026-01-02", 1.05)),
-		}, defaultOpts())
-		// With one series going +5%, the yMax label is positive.
-		assert.Contains(t, html, "+")
-	})
-
-	t.Run("Y-axis label format is two decimal places", func(t *testing.T) {
-		t.Parallel()
-		html := ui.RenderOverlayChart([]ui.Series{
-			series("x", "#f00", pts("2026-01-01", 1.0, "2026-01-02", 1.10)),
-		}, defaultOpts())
-		// 10% change → yMax label should contain "10.00%"
-		assert.Contains(t, html, "10.00%")
-	})
-
-	t.Run("legend contains one item per non-dropped series with escaped name", func(t *testing.T) {
-		t.Parallel()
-		html := ui.RenderOverlayChart([]ui.Series{
-			series("USD/EUR", "#f00", pts("2026-01-01", 1.0, "2026-01-02", 1.1)),
-			series("GBP/USD", "#00f", pts("2026-01-01", 1.2, "2026-01-02", 1.3)),
-		}, defaultOpts())
-		assert.Contains(t, html, "overlay-chart-legend")
-		assert.Contains(t, html, "USD/EUR")
-		assert.Contains(t, html, "GBP/USD")
-		assert.Equal(t, 2, strings.Count(html, "overlay-chart-legend-item"))
-	})
-
-	t.Run("XSS in series name is escaped in legend", func(t *testing.T) {
-		t.Parallel()
-		html := ui.RenderOverlayChart([]ui.Series{
-			series("<script>alert(1)</script>", "#f00", pts("2026-01-01", 1.0, "2026-01-02", 1.1)),
-		}, defaultOpts())
+		sr := dto.MeChartSeries{Kind: "BID", Color: ratepair.ColorBid, Latest: 0, Sparse: true}
+		row := mkRow(`<script>alert(1)</script>`, "fiat", nil, []dto.MeChartSeries{sr})
+		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: []dto.MeChartPairRow{row}})
 		assert.NotContains(t, html, "<script>")
 		assert.Contains(t, html, "&lt;script&gt;")
+		// Must be escaped in data-pair attribute and aria-label.
+		assert.Contains(t, html, `data-pair="&lt;script&gt;`)
+		assert.Contains(t, html, `aria-label="Open details for &lt;script&gt;`)
 	})
 
-	t.Run("viewBox uses Width and Height from options", func(t *testing.T) {
+	t.Run("list row does not emit sparkline-value-line", func(t *testing.T) {
 		t.Parallel()
-		html := ui.RenderOverlayChart([]ui.Series{
-			series("x", "#f00", pts("2026-01-01", 1.0, "2026-01-02", 1.1)),
-		}, ui.OverlayOptions{Width: 640, Height: 360})
-		assert.Contains(t, html, `viewBox="0 0 640 360"`)
-	})
-
-	t.Run("default viewBox is 320x180 when options are zero", func(t *testing.T) {
-		t.Parallel()
-		html := ui.RenderOverlayChart([]ui.Series{
-			series("x", "#f00", pts("2026-01-01", 1.0)),
-		}, ui.OverlayOptions{})
-		assert.Contains(t, html, `viewBox="0 0 320 180"`)
-	})
-
-	t.Run("SVG y-axis is inverted so gains render upward", func(t *testing.T) {
-		t.Parallel()
-		// Series goes from 1.0 to 2.0 — a 100% gain. The second point should have
-		// a smaller y-coordinate than the first (higher on screen = lower y in SVG).
-		// With Width=100, Height=100, xCount=2: x0=0, x1=100.
-		// pct at first point = 0, pct at second = 100.
-		// yRange with padding ≈ 100 * (1 + 0.1) = 110, so yMin ≈ -5, yMax ≈ 105.
-		// y(0%) is near bottom, y(100%) is near top.
-		// We just assert y of first > y of second (first is lower on screen).
-		html := ui.RenderOverlayChart([]ui.Series{
-			series("x", "#f00", pts("2026-01-01", 1.0, "2026-01-02", 2.0)),
-		}, ui.OverlayOptions{Width: 100, Height: 100})
-		// The polyline points attribute has two "x,y" pairs separated by space.
-		start := strings.Index(html, `points="`)
-		assert.Greater(t, start, 0)
-		rest := html[start+len(`points="`):]
-		end := strings.Index(rest, `"`)
-		assert.Greater(t, end, 0)
-		coordStr := rest[:end]
-		parts := strings.Fields(coordStr)
-		assert.Len(t, parts, 2)
-		var y0, y1 float64
-		_, err0 := strings.NewReader(parts[0]), (*strings.Reader)(nil)
-		_ = err0
-		// parse y from "x,y"
-		p0 := strings.Split(parts[0], ",")
-		p1 := strings.Split(parts[1], ",")
-		assert.Len(t, p0, 2)
-		assert.Len(t, p1, 2)
-		_, errY0 := strings.NewReader(p0[1]), (*strings.Reader)(nil)
-		_, errY1 := strings.NewReader(p1[1]), (*strings.Reader)(nil)
-		_ = errY0
-		_ = errY1
-		// Use sscanf-style parsing via fmt.Sscanf
-		_, _ = fmt.Sscanf(p0[1], "%f", &y0)
-		_, _ = fmt.Sscanf(p1[1], "%f", &y1)
-		assert.Greater(t, y0, y1, "y at 0%% (first point) must be greater than y at 100%% (second point) because SVG y is top-down")
+		bidPts := []dto.MeChartPoint{
+			mkPoint("2026-05-23T00:00:00Z", 480.0),
+			mkPoint("2026-05-27T00:00:00Z", 490.0),
+		}
+		askPts := []dto.MeChartPoint{
+			mkPoint("2026-05-23T00:00:00Z", 481.0),
+			mkPoint("2026-05-27T00:00:00Z", 491.0),
+		}
+		bid := mkSeries("BID", ratepair.ColorBid, 2.08, false, bidPts)
+		ask := mkSeries("ASK", ratepair.ColorAsk, 2.08, false, askPts)
+		row := mkRow("USD/KZT", "fiat", float64Ptr(0.21), []dto.MeChartSeries{bid, ask})
+		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: []dto.MeChartPairRow{row}})
+		assert.NotContains(t, html, "sparkline-value-line",
+			"per-series value text lives in the modal only; it must not appear in the list row")
 	})
 
 	t.Run("output contains no script tag", func(t *testing.T) {
 		t.Parallel()
-		html := ui.RenderOverlayChart([]ui.Series{
-			series("usd", "#f00", pts("2026-01-01", 1.0, "2026-01-02", 1.1)),
-		}, defaultOpts())
+		pts := []dto.MeChartPoint{
+			mkPoint("2026-05-23T00:00:00Z", 480.0),
+			mkPoint("2026-05-27T00:00:00Z", 490.0),
+		}
+		bid := mkSeries("BID", ratepair.ColorBid, 2.08, false, pts)
+		row := mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{bid})
+		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: []dto.MeChartPairRow{row}})
 		assert.NotContains(t, strings.ToLower(html), "<script")
 	})
 
-	t.Run("flat Y range forces minus-one-plus-one window", func(t *testing.T) {
+	t.Run("spread badge not present when SpreadPct is nil", func(t *testing.T) {
 		t.Parallel()
-		// All points at the same price → all percent values = 0 → flat range.
-		html := ui.RenderOverlayChart([]ui.Series{
-			series("x", "#f00", pts("2026-01-01", 1.0, "2026-01-02", 1.0)),
-		}, defaultOpts())
-		// Should render without panic and contain a polyline.
-		assert.Contains(t, html, `<polyline`)
+		bid := mkSeries("BID", ratepair.ColorBid, 1.0, false, []dto.MeChartPoint{
+			mkPoint("2026-05-23T00:00:00Z", 480.0),
+			mkPoint("2026-05-27T00:00:00Z", 485.0),
+		})
+		row := mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{bid})
+		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: []dto.MeChartPairRow{row}})
+		assert.NotContains(t, html, "Spread")
+	})
+
+	t.Run("positive delta renders with + prefix", func(t *testing.T) {
+		t.Parallel()
+		pts := []dto.MeChartPoint{
+			mkPoint("2026-05-23T00:00:00Z", 480.0),
+			mkPoint("2026-05-27T00:00:00Z", 500.0),
+		}
+		bid := mkSeries("BID", ratepair.ColorBid, 4.17, false, pts)
+		row := mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{bid})
+		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: []dto.MeChartPairRow{row}})
+		assert.Contains(t, html, "+4.17%")
+	})
+
+	t.Run("negative delta renders with minus sign", func(t *testing.T) {
+		t.Parallel()
+		pts := []dto.MeChartPoint{
+			mkPoint("2026-05-23T00:00:00Z", 500.0),
+			mkPoint("2026-05-27T00:00:00Z", 480.0),
+		}
+		bid := mkSeries("BID", ratepair.ColorBid, -4.0, false, pts)
+		row := mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{bid})
+		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: []dto.MeChartPairRow{row}})
+		assert.Contains(t, html, "-4.00%")
+	})
+
+	t.Run("multiple rows are all rendered", func(t *testing.T) {
+		t.Parallel()
+		pts1 := []dto.MeChartPoint{
+			mkPoint("2026-05-23T00:00:00Z", 480.0),
+			mkPoint("2026-05-27T00:00:00Z", 490.0),
+		}
+		pts2 := []dto.MeChartPoint{
+			mkPoint("2026-05-23T00:00:00Z", 100.0),
+			mkPoint("2026-05-27T00:00:00Z", 98.0),
+		}
+		ch := dto.MeChartResponse{
+			Window: "7d",
+			Pairs: []dto.MeChartPairRow{
+				mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{mkSeries("BID", ratepair.ColorBid, 2.08, false, pts1)}),
+				mkRow("GOLD/KZT", "metal", nil, []dto.MeChartSeries{mkSeries("BID", "#BA7517", -2.0, false, pts2)}),
+			},
+		}
+		html := ui.RenderSparklineList(ch)
+		assert.Equal(t, 2, strings.Count(html, `class="sparkline-row"`))
+		assert.Contains(t, html, "USD/KZT")
+		assert.Contains(t, html, "GOLD/KZT")
+	})
+
+	t.Run("dashed baseline appears in list row SVG (renderChartArea works)", func(t *testing.T) {
+		t.Parallel()
+		pts := []dto.MeChartPoint{
+			mkPoint("2026-05-23T00:00:00Z", -1.0),
+			mkPoint("2026-05-27T00:00:00Z", 2.0),
+		}
+		bid := mkSeries("BID", ratepair.ColorBid, 0.0, false, pts)
+		row := mkRow("EUR/USD", "fiat", nil, []dto.MeChartSeries{bid})
+		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: []dto.MeChartPairRow{row}})
+		require.NotEmpty(t, html)
+		// SVG is present and contains the dashed baseline.
+		assert.Contains(t, html, "<svg")
+		assert.Contains(t, html, "stroke-dasharray")
+	})
+
+	t.Run("color values appear in collapsed row delta color attribute", func(t *testing.T) {
+		t.Parallel()
+		pts := []dto.MeChartPoint{
+			mkPoint("2026-05-23T00:00:00Z", 100.0),
+			mkPoint("2026-05-27T00:00:00Z", 110.0),
+		}
+		bid := mkSeries("BID", "#BA7517", 10.0, false, pts)
+		row := mkRow("GOLD/KZT", "metal", nil, []dto.MeChartSeries{bid})
+		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: []dto.MeChartPairRow{row}})
+		// Delta uses ratepair.ColorDeltaUp for positive delta — not the series color.
+		assert.Contains(t, html, ratepair.ColorDeltaUp)
+	})
+
+	t.Run("quote in Color is still escaped when used in delta style attribute", func(t *testing.T) {
+		t.Parallel()
+		// Hostile color attempts to break out of style="color:..." in the delta div.
+		hostileColor := `#1D9E75" onload="x`
+		pts := []dto.MeChartPoint{
+			mkPoint("2026-05-23T00:00:00Z", 480.0),
+			mkPoint("2026-05-27T00:00:00Z", 490.0),
+		}
+		bid := mkSeries("BID", hostileColor, 2.0, false, pts)
+		row := mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{bid})
+		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: []dto.MeChartPairRow{row}})
+		// The series color is not used in the collapsed row (delta color comes from
+		// ratepair.ColorDeltaUp/Down). The hostile color must not appear verbatim.
+		assert.NotContains(t, html, `" onload="`, "raw injection payload must not appear in output")
+	})
+
+	t.Run("footer copy reads tap a row to see details", func(t *testing.T) {
+		t.Parallel()
+		bid := mkSeries("BID", ratepair.ColorBid, 0.0, false, []dto.MeChartPoint{
+			mkPoint("2026-05-23T00:00:00Z", 480.0),
+			mkPoint("2026-05-27T00:00:00Z", 485.0),
+		})
+		row := mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{bid})
+		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: []dto.MeChartPairRow{row}})
+		assert.Contains(t, html, "tap a row to see details")
+		assert.NotContains(t, html, "compare sources")
 	})
 }

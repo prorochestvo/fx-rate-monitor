@@ -326,8 +326,9 @@ func (r *RateUserEventRepository) RetainRateUserEvent(ctx context.Context, recor
 		sentAt = &s
 	}
 
-	// source_name became nullable in migration 202605.009. Empty string would
-	// violate the FK (no rate_source has name=''); send NULL instead.
+	// source_name is nullable and carries an FK to rate_sources(name). Empty
+	// string would violate the FK (no rate_source has name=''); send NULL when
+	// the event is not bound to a source.
 	sourceName := sourceNameForDB(record.SourceName)
 
 	var res sql.Result
@@ -478,8 +479,8 @@ const (
 	rateUserEventSentAtFieldName     = "sent_at"
 
 	// rateUserEventSqlSelect emits IFNULL(source_name, '') so callers can scan
-	// into a non-pointer string field; migration 202605.009 made the column
-	// nullable to support events created before a source was bound.
+	// into a non-pointer string field; source_name is nullable to support events
+	// that are not bound to a source.
 	rateUserEventSqlSelect = "SELECT\n" +
 		rateUserEventIdFieldName + ", " +
 		"IFNULL(" + rateUserEventSourceNameFieldName + ", '') AS " + rateUserEventSourceNameFieldName + ", " +
