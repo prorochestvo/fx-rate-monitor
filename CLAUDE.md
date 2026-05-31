@@ -102,7 +102,7 @@ operator tooling (LLM rule generation and source auditing).
 - `GET /api/me/subscriptions` — caller's own subscriptions enriched with latest rate values; authenticated via Telegram WebApp initData HMAC (`X-Telegram-Init-Data` header only; the signed payload must not be passed via query string because it would leak into access logs and Referer headers)
 - `GET /api/me/rates/chart` — sparkline-list chart data for the caller's subscribed pairs over the last 7 days; authenticated via Telegram WebApp initData HMAC (`X-Telegram-Init-Data` header only)
 - `GET /api/me/rates/history` — paginated rate-collection events for the calling user's subscribed sources matching a canonical pair label; authenticated via Telegram WebApp initData HMAC (`X-Telegram-Init-Data` header only). Query params: `pair` (required, e.g. `USD/KZT`), `page` (default 1), `limit` (default 20, max 100)
-- `GET /app/subscriptions.html` — Telegram Mini App HTML page (served by embedded static file server; no dedicated route needed)
+- `GET /tbot-miniapp/subscriptions.html` — Telegram Mini App HTML page (served by embedded static file server; no dedicated route needed)
 
 > Rule (re-)generation and seed auditing are operator-only tools, invoked
 > via the umbrella binary `cmd/doctor`:

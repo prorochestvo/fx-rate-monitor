@@ -710,7 +710,7 @@ func TestTelegramApi_sendMainMenu(t *testing.T) {
 	})
 	t.Run("keyboard contains Mini App WebApp button when webAppURL is set", func(t *testing.T) {
 		t.Parallel()
-		const wantURL = "https://example.com/app/subscriptions"
+		const wantURL = "https://example.com/tbot-miniapp/subscriptions.html"
 		client := &mockTelegramClient{}
 		h := newTelegramApiWithWebApp(client, &mockSubRepo{}, &mockSourceRepo{}, wantURL)
 

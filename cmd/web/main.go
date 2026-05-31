@@ -91,7 +91,7 @@ func main() {
 	}
 	// Telegram WebApp buttons reject non-HTTPS, IP literals, and localhost,
 	// so the DSN's host must resolve to a publicly reachable HTTPS host.
-	webAppURL := "https://" + strings.TrimPrefix(strings.TrimPrefix(dsnAPI.Addr(), "https://"), "http://") + "/app/subscriptions.html"
+	webAppURL := "https://" + strings.TrimPrefix(strings.TrimPrefix(dsnAPI.Addr(), "https://"), "http://") + "/tbot-miniapp/subscriptions.html"
 	dsnDB, err := dsninjector.Unmarshal(envDsnSqliteDB)
 	if err != nil {
 		log.Fatalf("settings: %s, %s", envDsnSqliteDB, err.Error())
