@@ -150,8 +150,13 @@ v1 surface:
 - `GET   /api/notifications/failed` — failed notifications
 - `GET   /api/errors/execution` — recent failed execution history
 - `GET   /api/stats` — global counters
+- `GET   /api/public/rates/chart` — paginated system-wide sparkline list; no authentication. Query params: `page` (default 1), `limit` (default 20, max 100)
 
-Static assets are served from `/` by the embedded FS (or `--static-dir`).
+Static assets are served from `/` by the embedded FS (or `--static-dir`). The
+site root (`/`) is the unified entry point: an inline dispatcher in
+`index.html` inspects `window.Telegram.WebApp.initData` and routes Telegram
+Mini App users to the per-user subscriptions view; visitors without initData
+get the public sparkline list. The operator dashboard lives at `/admin/`.
 
 ## Sources
 
@@ -243,6 +248,20 @@ checksum-validate binaries, pause cron wrappers, run `cmd/migrator`, swap
 the webapp binary, restart the unit, resume cron. The live systemd units are
 `configs/srv.{stage,prime}_monitor.service`. See `deploy/README.md` for the
 operator-facing summary, including the "Exit code & alerting" contract.
+
+### Post-deploy: BotFather Menu Button URL
+
+After any deploy that changes the public hostname, update the Mini App URL in
+BotFather to match the unified entry point:
+
+1. Open BotFather → `/mybots` → your bot → `Bot Settings` → `Menu Button`.
+2. Set the URL to `https://<host>/` (trailing slash required).
+
+The exact value the bot emits in its reply keyboard is logged at `cmd/web`
+startup as `settings: webAppURL=...`. Until BotFather is updated, users
+whose Mini App button was cached pointing at the old
+`/tbot-miniapp/subscriptions.html` path will receive a 404 — that file no
+longer exists in the embedded static FS.
 
 ## License
 

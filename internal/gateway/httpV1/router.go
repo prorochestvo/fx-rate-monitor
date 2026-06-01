@@ -28,9 +28,10 @@ func NewRouter(
 		return nil, err
 	}
 
-	// MeSubscriptions, MeRatesChart, and MeRatesHistory are registered before the
-	// /api/sources/... block. /me and /sources are distinct prefixes, so no
-	// ambiguity.
+	// PublicRatesChart, MeSubscriptions, MeRatesChart, and MeRatesHistory are
+	// registered before the /api/sources/... block. /public, /me, and /sources
+	// are distinct prefixes, so no ambiguity.
+	mux.HandleFunc("GET "+routes.PublicRatesChart, h.GetPublicRatesChart)
 	mux.HandleFunc("GET "+routes.MeSubscriptions, h.ListMeSubscriptions)
 	mux.HandleFunc("GET "+routes.MeRatesChart, h.GetMeRatesChart)
 	mux.HandleFunc("GET "+routes.MeRatesHistory, h.GetMeRatesHistory)

@@ -1,6 +1,7 @@
 // Package chart provides the application service that builds sparkline-list
-// charts and per-pair rate history from a user's subscriptions. It is consumed
-// by the /api/me/rates/chart and /api/me/rates/history handlers and is free of
+// charts and per-pair rate history from a user's subscriptions and the
+// system-wide public chart endpoint. It is consumed by the /api/me/rates/chart,
+// /api/me/rates/history, and /api/public/rates/chart handlers and is free of
 // HTTP and Telegram concerns.
 package chart
 
@@ -32,6 +33,12 @@ type SourcesLoader interface {
 	ObtainRateSourcesByNames(ctx context.Context, names []string) (map[string]domain.RateSource, error)
 }
 
+// PublicSourcesLoader enumerates all distinct active (name, base, quote, kind)
+// triples across the whole system. Satisfied by *repository.RateSourceRepository.
+type PublicSourcesLoader interface {
+	ObtainDistinctActivePairTriples(ctx context.Context) ([]domain.SourcePairKey, error)
+}
+
 // ValuesLoader loads time-series rate values for a bulk set of pairs.
 type ValuesLoader interface {
 	ObtainValuesForPairsSince(
@@ -44,6 +51,13 @@ type ValuesLoader interface {
 type MeChart struct {
 	// Pairs is the ordered list of sparkline rows. Never nil; empty when the
 	// user has no subscriptions.
+	Pairs []PairRow
+}
+
+// PublicChart is the result of ObtainPublicChart.
+type PublicChart struct {
+	// Pairs is one page of the system-wide sparkline list. Never nil; empty
+	// on an out-of-range page or when no active sources exist.
 	Pairs []PairRow
 }
 
@@ -94,22 +108,24 @@ type SparkPoint struct {
 }
 
 // Service builds sparkline charts and per-pair history from a user's
-// subscriptions. Construct with NewService; it has no mutable state and is
-// safe for concurrent use.
+// subscriptions, and the system-wide public sparkline list. Construct with
+// NewService; it has no mutable state and is safe for concurrent use.
 type Service struct {
-	subs    SubscriptionsLoader
-	sources SourcesLoader
-	values  ValuesLoader
-	history HistoryValuesLoader
-	now     func() time.Time
+	subs          SubscriptionsLoader
+	sources       SourcesLoader
+	values        ValuesLoader
+	history       HistoryValuesLoader
+	publicSources PublicSourcesLoader
+	now           func() time.Time
 }
 
 // NewService constructs a Service. now is injected for deterministic tests;
 // pass time.Now in production. history is the loader used by ObtainMeHistory;
 // the same *repository.RateValueRepository instance satisfies both ValuesLoader
-// and HistoryValuesLoader.
-func NewService(subs SubscriptionsLoader, sources SourcesLoader, values ValuesLoader, history HistoryValuesLoader, now func() time.Time) *Service {
-	return &Service{subs: subs, sources: sources, values: values, history: history, now: now}
+// and HistoryValuesLoader. publicSources is the loader used by ObtainPublicChart;
+// pass the same *repository.RateSourceRepository used for sources.
+func NewService(subs SubscriptionsLoader, sources SourcesLoader, values ValuesLoader, history HistoryValuesLoader, publicSources PublicSourcesLoader, now func() time.Time) *Service {
+	return &Service{subs: subs, sources: sources, values: values, history: history, publicSources: publicSources, now: now}
 }
 
 // ObtainMeChart loads the calling user's subscriptions, fetches the most
@@ -177,6 +193,79 @@ func (s *Service) ObtainMeChart(ctx context.Context, userID string) (*MeChart, e
 
 	// Dedupe to unique (base, quote, kind) triples.
 	uniquePairs := dedupePairTriples(allKeys)
+
+	rows, err := s.buildPairRows(ctx, allKeys, uniquePairs)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MeChart{Pairs: rows}, nil
+}
+
+// ObtainPublicChart enumerates every distinct (base, quote, kind) triple across
+// active sources, downsamples each into a 7-day sparkline, groups BID/ASK into
+// one PairRow per canonical pair, sorts via ratepair.Less, then slices to the
+// requested page. Returns the page and the unpaginated total of PairRows (the
+// post-grouping count; BID+ASK for the same canonical pair collapse to one row,
+// so total ≤ len(triples)). Returns a non-nil *PublicChart even when the result
+// is empty or the page is out of range.
+//
+// page and limit are both normalised internally: page < 1 defaults to 1, limit
+// < 1 defaults to 20, limit > 100 is clamped to 100.
+func (s *Service) ObtainPublicChart(ctx context.Context, page, limit int64) (*PublicChart, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	triples, err := s.publicSources.ObtainDistinctActivePairTriples(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(triples) == 0 {
+		return &PublicChart{Pairs: []PairRow{}}, 0, nil
+	}
+
+	uniquePairs := dedupePairTriples(triples)
+
+	rows, err := s.buildPairRows(ctx, triples, uniquePairs)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	total := int64(len(rows))
+	offset := (page - 1) * limit
+	if offset >= total {
+		return &PublicChart{Pairs: []PairRow{}}, total, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return &PublicChart{Pairs: rows[offset:end]}, total, nil
+}
+
+// buildPairRows runs the shared downsampling, BID/ASK grouping, and
+// sort pipeline used by both ObtainMeChart and ObtainPublicChart. allKeys is
+// the list of (source, base, quote, kind) query targets; uniquePairs is the
+// deduplicated set of (base, quote, kind) triples for which series should be
+// built. Returns a non-nil slice (possibly empty) sorted by ratepair.Less.
+//
+// The sort uses sort.SliceStable so that two PairRows with equal ratepair.Less
+// ordering remain in the order they were produced by the grouping loop. In
+// practice this is moot — ratepair.Less uses canonical pair as a tiebreaker —
+// but it makes page boundaries deterministic in the presence of any future
+// ties, which matters for ObtainPublicChart where the sorted slice is then
+// split into pages.
+func (s *Service) buildPairRows(ctx context.Context, allKeys []domain.SourcePairKey, uniquePairs []ratepair.Pair) ([]PairRow, error) {
+	if len(allKeys) == 0 {
+		return []PairRow{}, nil
+	}
 
 	now := s.now()
 	since := now.Add(-ratepair.ChartWindow)
@@ -259,17 +348,14 @@ func (s *Service) ObtainMeChart(ctx context.Context, userID string) (*MeChart, e
 		rows = append(rows, row)
 	}
 
-	sort.Slice(rows, func(i, j int) bool {
-		// Use the first series' kind for canonical sort; the label base is the
-		// BID-natural base (or inverted ASK base), suitable for category lookup.
-		baseI := labelBase(rows[i].Pair)
-		baseJ := labelBase(rows[j].Pair)
-		pairI := ratepair.Pair{Base: baseI, Quote: labelQuote(rows[i].Pair)}
-		pairJ := ratepair.Pair{Base: baseJ, Quote: labelQuote(rows[j].Pair)}
+	sort.SliceStable(rows, func(i, j int) bool {
+		// Use the BID-natural label base/quote for canonical sort.
+		pairI := ratepair.Pair{Base: labelBase(rows[i].Pair), Quote: labelQuote(rows[i].Pair)}
+		pairJ := ratepair.Pair{Base: labelBase(rows[j].Pair), Quote: labelQuote(rows[j].Pair)}
 		return ratepair.Less(pairI, pairJ)
 	})
 
-	return &MeChart{Pairs: rows}, nil
+	return rows, nil
 }
 
 // pairGroup accumulates BID and ASK series for one canonical currency pair

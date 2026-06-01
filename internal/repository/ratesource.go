@@ -103,6 +103,47 @@ func (r *RateSourceRepository) ObtainRateSourcesByNames(ctx context.Context, nam
 	return result, nil
 }
 
+// ObtainDistinctActivePairTriples returns one SourcePairKey per distinct
+// (name, base_currency, quote_currency, kind) combination across all active
+// sources. Always returns a non-nil slice on success.
+//
+// The SourceName field is populated so callers can pass the result directly to
+// ObtainValuesForPairsSince, which is keyed by source name.
+func (r *RateSourceRepository) ObtainDistinctActivePairTriples(ctx context.Context) ([]domain.SourcePairKey, error) {
+	tx, err := r.db.ReadOnlyTransaction(ctx)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewStackTraceError())
+	}
+	defer printRollbackError(tx)
+
+	query := "SELECT DISTINCT " +
+		rateSourceNameFieldName + ", " +
+		reteSourceBaseCurrencyFieldName + ", " +
+		reteSourceQuoteCurrencyFieldName + ", " +
+		rateSourceKindFieldName +
+		" FROM " + rateSourceTableName +
+		" WHERE " + rateSourceActiveFieldName + " = 1;"
+
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
+		return nil, errors.Join(err, fmt.Errorf("SQL: %s", query), internal.NewTraceError())
+	}
+	defer func(rows io.Closer) { err = errors.Join(err, rows.Close()) }(rows)
+
+	out := make([]domain.SourcePairKey, 0, 32)
+	for rows.Next() {
+		var k domain.SourcePairKey
+		if err = rows.Scan(&k.SourceName, &k.BaseCurrency, &k.QuoteCurrency, &k.Kind); err != nil {
+			return nil, errors.Join(err, internal.NewTraceError())
+		}
+		out = append(out, k)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
+	}
+	return out, nil
+}
+
 // ObtainAllRateSources returns all rate sources ordered by name descending.
 // Always returns a non-nil slice on success.
 func (r *RateSourceRepository) ObtainAllRateSources(ctx context.Context) ([]domain.RateSource, error) {

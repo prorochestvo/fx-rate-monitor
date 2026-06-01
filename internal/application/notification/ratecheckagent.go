@@ -145,6 +145,11 @@ func (a *RateCheckAgent) Run(ctx context.Context) error {
 				continue
 			}
 
+			// Capture the original LatestNotifiedRate before advancing it so the
+			// snapshot passed to foldIntoBuckets uses the pre-retain baseline.
+			// Delta must be currentValue - originalRate, not currentValue - currentValue.
+			originalRate := sub.LatestNotifiedRate
+
 			// Always retain every fired subscription so LatestNotifiedRate advances.
 			// This prevents re-firing on unchanged rates (highest-impact invariant).
 			// Retain is unconditional and separate from the bucket-fold logic below
@@ -164,44 +169,20 @@ func (a *RateCheckAgent) Run(ctx context.Context) error {
 				buckets = make(map[string]*dedupBucket)
 				userBuckets[sub.UserID] = buckets
 			}
-			b := buckets[key]
-			if b == nil {
-				// First source to contribute to this key: initialise the bucket.
-				b = &dedupBucket{
-					a: alert{
-						SourceName:    source.Name,
-						BaseCurrency:  source.BaseCurrency,
-						QuoteCurrency: source.QuoteCurrency,
-						CurrencyKind:  source.Kind,
-						CurrentPrice:  currentValue,
-						Delta:         delta,
-					},
-					triggers: make(map[domain.SubscriptionConditionType]string),
-				}
-				buckets[key] = b
-			} else {
-				// A bucket for this key already exists (possibly from a different
-				// source). Apply extremum selection: BID keeps the MAX price,
-				// ASK keeps the MIN price. Price and delta are replaced together
-				// so they always come from the same source (coherence invariant).
-				// Strict > (BID) / < (ASK): on equal prices the first-seen source wins.
-				switch source.Kind {
-				case domain.RateSourceKindBID:
-					if currentValue > b.a.CurrentPrice {
-						b.a.CurrentPrice = currentValue
-						b.a.Delta = delta
-						b.a.SourceName = source.Name
-					}
-				case domain.RateSourceKindASK:
-					if currentValue < b.a.CurrentPrice {
-						b.a.CurrentPrice = currentValue
-						b.a.Delta = delta
-						b.a.SourceName = source.Name
-					}
-				}
+
+			// Build the snapshot with the original rate so foldIntoBuckets computes
+			// delta = currentValue - originalRate (same as the pre-refactor inline block).
+			snap := SubscriptionSnapshot{
+				Subscription: domain.RateUserSubscription{LatestNotifiedRate: originalRate},
+				Source:       source,
+				CurrentPrice: currentValue,
 			}
+			foldIntoBuckets(buckets, snap)
+
 			// Trigger accumulation continues regardless of which source holds the
 			// winning price — we collect reason bits from all contributing sources.
+			// This is kept in the agent because the digest path has no triggers.
+			b := buckets[key]
 			b.triggers[sub.ConditionType] = collapseConditionValue(
 				b.triggers[sub.ConditionType],
 				sub.ConditionValue,

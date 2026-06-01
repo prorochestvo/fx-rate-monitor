@@ -1,84 +1,416 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>FX Rate Monitor</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://telegram.org; script-src 'self' https://telegram.org 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline';">
+  <title>FX Rates</title>
+  <!--
+    Load the Telegram WebApp SDK unconditionally so both dispatch arms work
+    from the same HTML. In a plain browser tab the SDK noops and leaves
+    window.Telegram.WebApp.initData empty, which routes to renderPublicSubscriptions.
+    Do not strip this tag — without it the Mini App arm of the dispatcher breaks.
+    CSP load-bearing origins: https://telegram.org is required for this script tag
+    and for the SDK's own connect-src requests.
+  -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #222; padding: 1rem; }
-    h1  { font-size: 1.5rem; margin-bottom: .5rem; }
-    h2  { font-size: 1.1rem; margin: 1.5rem 0 .5rem; color: #444; }
-    a   { color: #0070f3; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
-    th  { background: #f0f0f0; text-align: left; padding: .5rem .75rem; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; cursor: pointer; user-select: none; }
-    th:hover { background: #e4e4e4; }
-    td  { padding: .5rem .75rem; border-top: 1px solid #eee; font-size: .875rem; vertical-align: top; }
-    tr:hover td { background: #fafafa; }
-    .ok    { color: #16a34a; font-weight: 600; }
-    .err   { color: #dc2626; }
-    .inactive { color: #9ca3af; }
-    .stats-line { font-size: .95rem; color: #555; margin-bottom: 1rem; }
-    .breadcrumb { margin-bottom: 1rem; font-size: .9rem; }
-    .filters { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .75rem; }
-    .filters input, .filters select { padding: .3rem .6rem; border: 1px solid #ccc; border-radius: 4px; font-size: .85rem; }
-    .pagination { display: flex; gap: .4rem; margin-top: .75rem; }
-    .pagination button { padding: .3rem .8rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer; font-size: .85rem; }
-    .pagination button:disabled { opacity: .4; cursor: default; }
-    .toggle-btn { padding: .2rem .55rem; font-size: .75rem; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; background: #fff; }
-    .toggle-btn.active-on  { background: #dcfce7; color: #166534; border-color: #86efac; }
-    .toggle-btn.active-off { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
-    .error-msg { color: #dc2626; text-align: center; padding: 20px; }
-    #app { max-width: 1200px; margin: 0 auto; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--tg-theme-bg-color, #ffffff);
+      color: var(--tg-theme-text-color, #000000);
+      padding: 12px;
+      min-height: 100vh;
+    }
+    .badges { display: flex; flex-wrap: wrap; gap: 4px; }
+    .badge {
+      background: var(--tg-theme-button-color, #2196f3);
+      color: var(--tg-theme-button-text-color, #fff);
+      border-radius: 12px;
+      padding: 2px 8px;
+      font-size: 11px;
+    }
+    .error-msg { color: var(--tg-theme-destructive-text-color, #e53935); text-align: center; padding: 20px; }
+
+    .sparkline-list {
+      background: var(--tg-theme-secondary-bg-color, #f9f9f9);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .sparkline-header { margin-bottom: 14px; }
+    .sparkline-title {
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--tg-theme-text-color, #1a1a1a);
+    }
+    .sparkline-subtitle {
+      font-size: 12px;
+      color: var(--tg-theme-hint-color, #888);
+      margin-top: 2px;
+    }
+    .sparkline-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+      transition: background-color 120ms ease;
+      padding: 12px 8px;
+      border-bottom: 0.5px solid var(--tg-theme-hint-color, #888);
+      border-radius: 8px;
+    }
+    .sparkline-row-text {
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .sparkline-row-chart {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .sparkline-row-chart svg {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+    .sparkline-row:first-of-type {
+      border-top: 0.5px solid var(--tg-theme-hint-color, #888);
+    }
+    .sparkline-row:last-of-type { border-bottom: none; }
+    .sparkline-row:hover { background: var(--tg-theme-secondary-bg-color, #ececec); }
+    .sparkline-row:active,
+    .sparkline-row:focus-visible {
+      background: var(--tg-theme-secondary-bg-color, #ececec);
+      outline: 2px solid var(--tg-theme-button-color, #2196f3);
+      outline-offset: 0;
+    }
+    @media (hover: none) {
+      .sparkline-row:hover { background: transparent; }
+      .sparkline-row:active { background: var(--tg-theme-secondary-bg-color, #ececec); }
+    }
+    .sparkline-pair-label {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--tg-theme-text-color, #1a1a1a);
+      white-space: nowrap;
+    }
+    .sparkline-row-delta {
+      font-size: 12px;
+      font-family: ui-monospace, 'SF Mono', 'Menlo', monospace;
+      color: var(--tg-theme-hint-color, #888);
+      margin-top: 2px;
+    }
+    .sparkline-row-delta-empty { font-style: italic; }
+    /* sparkline-series-prefix color is set inline via role constants:
+       BID uses #1D9E75 (ratepair.ColorBid), ASK uses #378ADD (ratepair.ColorAsk).
+       Delta text colors are also inline: positive #3B6D11 (ratepair.ColorDeltaUp),
+       negative #A32D2D (ratepair.ColorDeltaDown). All four live in
+       internal/domain/ratepair/ratepair.go and are baked into app.wasm at build time.
+       These classes are emitted by renderValueLine / renderChartArea and now appear
+       only inside RenderPairModal's per-series blocks; the collapsed list-row layout
+       no longer uses them. */
+    .sparkline-series-prefix { font-weight: 600; }
+    .sparkline-value-line { display: flex; flex-wrap: wrap; gap: 4px; }
+    .sparkline-series-value {
+      font-size: 11px;
+      font-family: ui-monospace, 'SF Mono', 'Menlo', monospace;
+      color: var(--tg-theme-hint-color, #888);
+      white-space: nowrap;
+    }
+    .sparkline-value-sep { display: none; }
+    .sparkline-value-delta { font-weight: 500; }
+    .sparkline-no-data {
+      font-size: 11px;
+      font-style: italic;
+      color: var(--tg-theme-hint-color, #888);
+      flex: 1;
+      text-align: center;
+    }
+    .sparkline-footer {
+      font-size: 11px;
+      color: var(--tg-theme-hint-color, #888);
+      margin-top: 14px;
+      text-align: center;
+    }
+    .sparkline-empty,
+    .sparkline-error {
+      text-align: center;
+      padding: 60px 12px;
+      color: var(--tg-theme-hint-color, #888);
+      background: var(--tg-theme-secondary-bg-color, #f9f9f9);
+      border-radius: 10px;
+      margin-bottom: 12px;
+      font-size: 13px;
+    }
+    .sparkline-skeleton {
+      height: 200px;
+      border-radius: 10px;
+      margin-bottom: 12px;
+      background:
+        linear-gradient(90deg,
+          var(--tg-theme-secondary-bg-color, #f5f5f5) 0%,
+          var(--tg-theme-bg-color, #fff) 50%,
+          var(--tg-theme-secondary-bg-color, #f5f5f5) 100%);
+      background-size: 200% 100%;
+      animation: shimmer 1.4s infinite ease-in-out;
+    }
+    @keyframes shimmer {
+      0%   { background-position: 100% 0; }
+      100% { background-position: -100% 0; }
+    }
+
+    .me-pair-modal {
+      position: fixed; inset: 0; z-index: 1100;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .me-pair-modal-backdrop {
+      position: absolute; inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+    }
+    .me-pair-modal-card {
+      position: relative;
+      width: min(92vw, 480px);
+      max-height: 88vh;
+      overflow-y: auto;
+      background: var(--tg-theme-bg-color, #fff);
+      color: var(--tg-theme-text-color, #000);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.25);
+    }
+    .me-pair-modal-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .me-pair-modal-title { font-size: 17px; font-weight: 600; }
+    .me-pair-modal-close {
+      background: transparent;
+      color: var(--tg-theme-text-color, #000);
+      border: none;
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 4px 8px;
+    }
+    .me-pair-modal-body { display: flex; flex-direction: column; gap: 12px; }
+    .me-pair-modal-series { display: flex; flex-direction: column; gap: 6px; }
+    .me-pair-modal-spread {
+      font-size: 12px;
+      font-family: ui-monospace, 'SF Mono', 'Menlo', monospace;
+      color: var(--tg-theme-hint-color, #888);
+    }
+    .me-pair-modal-time {
+      font-size: 12px;
+      color: var(--tg-theme-hint-color, #888);
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      .me-pair-modal-card { animation: me-pair-modal-pop 140ms ease-out; }
+      @keyframes me-pair-modal-pop {
+        from { transform: translateY(8px); opacity: 0; }
+        to   { transform: none;            opacity: 1; }
+      }
+    }
+    .me-pair-modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 8px;
+    }
+    .me-pair-modal-history {
+      background: var(--tg-theme-button-color, #2196f3);
+      color: var(--tg-theme-button-text-color, #fff);
+      border: none;
+      border-radius: 6px;
+      padding: 8px 16px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .me-pair-history-back {
+      background: transparent;
+      color: var(--tg-theme-link-color, #2196f3);
+      border: none;
+      cursor: pointer;
+      font-size: 14px;
+      padding: 4px 8px;
+      margin-bottom: 12px;
+    }
+    .me-pair-history-entry {
+      padding: 10px 0;
+      border-bottom: 1px solid var(--tg-theme-hint-color, #ddd);
+    }
+    .me-pair-history-entry:last-child {
+      border-bottom: none;
+    }
+    .me-pair-history-head {
+      font-size: 12px;
+      color: var(--tg-theme-hint-color, #888);
+      margin-bottom: 4px;
+    }
+    .me-pair-history-bid,
+    .me-pair-history-ask {
+      font-family: ui-monospace, 'SF Mono', 'Menlo', monospace;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .me-pair-history-empty,
+    .me-pair-history-loading {
+      font-size: 13px;
+      color: var(--tg-theme-hint-color, #888);
+      padding: 24px 0;
+      text-align: center;
+    }
+    .me-pair-history-error {
+      font-size: 13px;
+      color: var(--tg-theme-destructive-text-color, #e53935);
+      padding: 24px 0;
+      text-align: center;
+    }
+    .me-pair-history-pagination {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--tg-theme-hint-color, #ddd);
+    }
+    .me-pair-history-prev,
+    .me-pair-history-next {
+      background: var(--tg-theme-button-color, #2196f3);
+      color: var(--tg-theme-button-text-color, #fff);
+      border: none;
+      border-radius: 6px;
+      padding: 10px 18px;
+      min-height: 44px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .me-pair-history-prev:disabled,
+    .me-pair-history-next:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+    .me-pair-history-page {
+      font-size: 13px;
+      color: var(--tg-theme-hint-color, #888);
+    }
+
+    /*
+     * Boot loader shown until WASM downloads and the dispatcher runs.
+     * All CSS is inline so it paints on first byte — no extra round-trip.
+     * Theme variables come from Telegram WebApp; fallbacks keep it usable in
+     * a regular browser tab during local dev.
+     */
+    .app-loader {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      background: var(--tg-theme-bg-color, #ffffff);
+      z-index: 1000;
+    }
+    .app-loader-disc {
+      position: relative;
+      width: 84px;
+      height: 84px;
+    }
+    .app-loader-arc {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      border: 3px solid transparent;
+    }
+    .app-loader-arc-outer {
+      border-top-color: var(--tg-theme-button-color, #2196f3);
+      border-right-color: var(--tg-theme-button-color, #2196f3);
+      animation: app-loader-spin 1s linear infinite;
+    }
+    .app-loader-arc-inner {
+      inset: 10px;
+      border-bottom-color: var(--tg-theme-hint-color, #888);
+      border-left-color: var(--tg-theme-hint-color, #888);
+      opacity: .55;
+      animation: app-loader-spin 1.4s linear reverse infinite;
+    }
+    .app-loader-mark {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 30px;
+      font-weight: 600;
+      line-height: 1;
+      color: var(--tg-theme-button-color, #2196f3);
+    }
+    .app-loader-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--tg-theme-text-color, #000);
+      letter-spacing: .3px;
+    }
+    .app-loader-subtitle {
+      font-size: 12px;
+      color: var(--tg-theme-hint-color, #888);
+    }
+    @keyframes app-loader-spin {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(360deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .app-loader-arc-outer,
+      .app-loader-arc-inner { animation-duration: 3s; }
+    }
   </style>
 </head>
 <body>
-<div id="app"><p>Loading…</p></div>
-
-<script src="/wasm_exec.js"></script>
-<script>
-'use strict';
-
-var wasmReady = new Promise(function(resolve, reject) {
-  var go = new Go();
-  WebAssembly.instantiateStreaming(fetch('/app.wasm'), go.importObject).then(function(result) {
-    go.run(result.instance);
-    resolve();
-  }).catch(function(err) {
-    console.error('WASM init failed (did you run make build?):', err);
-    reject(err);
-  });
-});
-
-window.addEventListener('hashchange', route);
-wasmReady.then(route).catch(function(err) {
-  document.getElementById('app').innerHTML =
-    '<p class="error-msg">Failed to load app. Did you run <code>make build</code>?</p>';
-});
-
-function route() {
-  var h = location.hash;
-  if (h.startsWith('#/sources/')) {
-    if (!window._wasm || typeof window._wasm.renderSourceDetail !== 'function') {
-      // WASM still loading; wasmReady.then(route) will re-fire once ready.
-      return;
-    }
-    window._wasm.renderSourceDetail(decodeURIComponent(h.slice('#/sources/'.length)));
-  } else if (h === '#/errors') {
-    if (!window._wasm || typeof window._wasm.renderErrors !== 'function') {
-      // WASM still loading; wasmReady.then(route) will re-fire once ready.
-      return;
-    }
-    window._wasm.renderErrors();
-  } else {
-    if (!window._wasm || typeof window._wasm.renderSources !== 'function') {
-      // WASM still loading; wasmReady.then(route) will re-fire once ready.
-      return;
-    }
-    window._wasm.renderSources();
-  }
-}
-</script>
+  <div id="app">
+    <div class="app-loader" role="status" aria-live="polite" aria-label="Loading FX Rate Monitor">
+      <div class="app-loader-disc" aria-hidden="true">
+        <div class="app-loader-arc app-loader-arc-outer"></div>
+        <div class="app-loader-arc app-loader-arc-inner"></div>
+        <span class="app-loader-mark">&#8644;</span>
+      </div>
+      <p class="app-loader-title">FX Rate Monitor</p>
+      <p class="app-loader-subtitle">Loading&#8230;</p>
+    </div>
+  </div>
+  <script src="/wasm_exec.js"></script>
+  <script>
+    var wasmReady = new Promise(function(resolve, reject) {
+      var go = new Go();
+      WebAssembly.instantiateStreaming(fetch('/app.wasm'), go.importObject)
+        .then(function(result) { go.run(result.instance); resolve(); })
+        .catch(function(err) {
+          console.error('WASM load failed (run make build?):', err);
+          reject(err);
+        });
+    });
+    wasmReady.then(function() {
+      var initData = '';
+      if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData) {
+        initData = window.Telegram.WebApp.initData;
+      }
+      if (initData) {
+        window._wasm.renderMeSubscriptions();
+      } else {
+        // Guest path: load the public sparkline list.
+        // Local-dev only: to reach the Mini App view from a normal browser tab,
+        // set window.Telegram = { WebApp: { initData: '<token>' } } in DevTools
+        // BEFORE the page loads. Do NOT use the ?initData= URL fallback in any
+        // environment where URLs end up in access logs or Referer headers —
+        // the signed payload is replayable for 24 hours.
+        console.info('[fx-rate-monitor] No Telegram context detected — rendering public view.');
+        window._wasm.renderPublicSubscriptions();
+      }
+    }).catch(function(err) {
+      document.getElementById('app').innerHTML =
+        '<p class="error-msg">Failed to load app. Did you run <code>make build</code>?</p>';
+    });
+  </script>
 </body>
 </html>

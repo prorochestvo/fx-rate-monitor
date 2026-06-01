@@ -102,7 +102,9 @@ operator tooling (LLM rule generation and source auditing).
 - `GET /api/me/subscriptions` — caller's own subscriptions enriched with latest rate values; authenticated via Telegram WebApp initData HMAC (`X-Telegram-Init-Data` header only; the signed payload must not be passed via query string because it would leak into access logs and Referer headers)
 - `GET /api/me/rates/chart` — sparkline-list chart data for the caller's subscribed pairs over the last 7 days; authenticated via Telegram WebApp initData HMAC (`X-Telegram-Init-Data` header only)
 - `GET /api/me/rates/history` — paginated rate-collection events for the calling user's subscribed sources matching a canonical pair label; authenticated via Telegram WebApp initData HMAC (`X-Telegram-Init-Data` header only). Query params: `pair` (required, e.g. `USD/KZT`), `page` (default 1), `limit` (default 20, max 100)
-- `GET /tbot-miniapp/subscriptions.html` — Telegram Mini App HTML page (served by embedded static file server; no dedicated route needed)
+- `GET /api/public/rates/chart` — paginated system-wide sparkline-list chart; no authentication. Query params: `page` (default 1), `limit` (default 20, max 100)
+- `GET /` — unified Mini App / guest landing page (served by embedded static file server). Dispatcher inline script checks `window.Telegram.WebApp.initData`: non-empty → `_wasm.renderMeSubscriptions()`, empty → `_wasm.renderPublicSubscriptions()`
+- `GET /admin/` — operator dashboard (served by embedded static file server, `cmd/web/static/admin/index.html`; no dedicated route needed)
 
 > Rule (re-)generation and seed auditing are operator-only tools, invoked
 > via the umbrella binary `cmd/doctor`:
@@ -214,10 +216,18 @@ step, not a startup-time step.
 
 ### Frontend
 
-The dashboard ships as static assets under `cmd/web/static/`, embedded into the `web`
-binary via `//go:embed static`. The WASM bundle is built from `cmd/wasm`
-(`GOOS=js GOARCH=wasm`) to `cmd/web/static/app.wasm` and shares the `internal/dto` wire
-types with the server. `make build` produces the bundle as part of the standard build.
+Static assets live under `cmd/web/static/`, embedded into the `web` binary via
+`//go:embed static`. The WASM bundle is built from `cmd/wasm` (`GOOS=js GOARCH=wasm`)
+to `cmd/web/static/app.wasm` and shares the `internal/dto` wire types with the server.
+`make build` produces the bundle as part of the standard build.
+
+Directory layout under `cmd/web/static/`:
+- `index.html` — unified Mini App / guest landing page (served at `/`)
+- `admin/index.html` — operator dashboard (served at `/admin/`)
+- `app.wasm` / `app.wasm.gz` — WASM bundle
+
+The `webAppURL` Telegram BotFather setting points to `https://<host>/` (trailing slash,
+no path suffix). Update it in BotFather whenever the host changes.
 
 ### Deployment
 

@@ -60,7 +60,7 @@ func TestRenderSparklineList(t *testing.T) {
 		assert.NotContains(t, html, "sparkline-row")
 	})
 
-	t.Run("two-series row renders pair label, Spread, and SVG with two polylines", func(t *testing.T) {
+	t.Run("two-series row renders pair label, spread glyph, and SVG with two polylines", func(t *testing.T) {
 		t.Parallel()
 		bidPts := []dto.MeChartPoint{
 			mkPoint("2026-05-23T00:00:00Z", 480.0),
@@ -80,9 +80,10 @@ func TestRenderSparklineList(t *testing.T) {
 		assert.Contains(t, html, `role="button"`)
 		assert.Contains(t, html, `tabindex="0"`)
 		assert.Contains(t, html, "USD/KZT")
-		// Text block: pair label + Spread line.
+		// Text block: pair label + spread glyph line.
 		assert.Contains(t, html, "sparkline-row-text")
-		assert.Contains(t, html, "Spread 0.29%")
+		assert.Contains(t, html, "↔ 0.29%")
+		assert.NotContains(t, html, "Spread 0.29%", "list row uses the ↔ glyph, not the word")
 		// No per-series value text or sparkline-value-line in the list.
 		assert.NotContains(t, html, ">B<")
 		assert.NotContains(t, html, ">A<")
@@ -194,7 +195,7 @@ func TestRenderSparklineList(t *testing.T) {
 		assert.NotContains(t, strings.ToLower(html), "<script")
 	})
 
-	t.Run("spread badge not present when SpreadPct is nil", func(t *testing.T) {
+	t.Run("spread glyph not present when SpreadPct is nil", func(t *testing.T) {
 		t.Parallel()
 		bid := mkSeries("BID", ratepair.ColorBid, 1.0, false, []dto.MeChartPoint{
 			mkPoint("2026-05-23T00:00:00Z", 480.0),
@@ -202,7 +203,7 @@ func TestRenderSparklineList(t *testing.T) {
 		})
 		row := mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{bid})
 		html := ui.RenderSparklineList(dto.MeChartResponse{Window: "7d", Pairs: []dto.MeChartPairRow{row}})
-		assert.NotContains(t, html, "Spread")
+		assert.NotContains(t, html, "↔")
 	})
 
 	t.Run("positive delta renders with + prefix", func(t *testing.T) {

@@ -44,6 +44,11 @@ const (
 	// ErrorsExecution returns the most recent failed execution history records.
 	ErrorsExecution = "/api/errors/execution"
 
+	// PublicRatesChart returns the paginated sparkline-list for all currency pairs
+	// across active sources over the last 7 days. No authentication required.
+	// Query params: page (default 1), limit (default 20, max 100).
+	PublicRatesChart = "/api/public/rates/chart"
+
 	// MeSubscriptions returns the calling user's own subscriptions enriched with the
 	// latest rate value per source. Authentication is via Telegram WebApp initData HMAC.
 	MeSubscriptions = "/api/me/subscriptions"

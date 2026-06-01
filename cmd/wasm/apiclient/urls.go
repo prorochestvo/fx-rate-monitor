@@ -70,6 +70,15 @@ func meProfileURL() string { return "/api/me/profile" }
 // No query parameters — the 7-day window is fixed server-side.
 func meRatesChartURL() string { return "/api/me/rates/chart" }
 
+// publicRatesChartURL returns the paginated public sparkline-list endpoint URL.
+// page is 1-based; limit is the page size (1–100).
+func publicRatesChartURL(page, limit int) string {
+	v := url.Values{}
+	v.Set("page", strconv.Itoa(page))
+	v.Set("limit", strconv.Itoa(limit))
+	return "/api/public/rates/chart?" + v.Encode()
+}
+
 // meRatesHistoryURL returns the paginated per-pair history endpoint URL.
 // pair should be upper-case canonical (e.g. "USD/KZT"); url.Values.Encode
 // percent-encodes the slash.

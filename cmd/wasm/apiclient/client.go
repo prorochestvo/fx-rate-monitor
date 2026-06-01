@@ -165,6 +165,21 @@ func (c *Client) MeRatesChart(ctx context.Context, initData string) (dto.MeChart
 	return out, nil
 }
 
+// PublicRatesChart fetches the paginated system-wide sparkline-list chart.
+// No authentication header is sent. page is 1-based; limit is the page size
+// (the server clamps to [1, 100]).
+func (c *Client) PublicRatesChart(ctx context.Context, page, limit int) (dto.PublicChartResponse, error) {
+	raw, err := c.fetcher.FetchJSON(ctx, "GET", publicRatesChartURL(page, limit), nil, nil)
+	if err != nil {
+		return dto.PublicChartResponse{}, err
+	}
+	var out dto.PublicChartResponse
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return dto.PublicChartResponse{}, fmt.Errorf("decode public rates chart: %w", err)
+	}
+	return out, nil
+}
+
 // MeRatesHistory fetches one page of per-pair rate-collection events for the
 // calling user. initData is the Telegram WebApp initData string; pair is a
 // canonical "BASE/QUOTE" label; page is 1-based; limit is bounded server-side

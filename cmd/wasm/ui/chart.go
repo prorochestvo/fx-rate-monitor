@@ -84,15 +84,19 @@ func renderSparklineRow(row dto.MeChartPairRow) string {
 }
 
 // renderCollapsedDelta returns the second line of a collapsed sparkline row:
-// "Spread X.XX%" for two-series rows, "Δ X.XX%" for single-series rows, or
-// "no data" when no series are present.
+// "↔ X.XX%" for two-series rows (the spread between BID and ASK), "Δ X.XX%"
+// for single-series rows (period change), or "no data" when no series are
+// present. Both indicators are single-glyph prefixes so the row keeps a
+// consistent visual rhythm — a font-style icon next to the value, never a
+// long word label.
 func renderCollapsedDelta(row dto.MeChartPairRow) string {
 	if len(row.Series) == 0 {
 		return `<div class="sparkline-row-delta sparkline-row-delta-empty">no data</div>`
 	}
 	if row.SpreadPct != nil && len(row.Series) >= 2 {
 		return fmt.Sprintf(
-			`<div class="sparkline-row-delta">Spread %s</div>`,
+			`<div class="sparkline-row-delta">%s %s</div>`,
+			spreadGlyph,
 			formatSpreadPct(*row.SpreadPct),
 		)
 	}
@@ -326,3 +330,9 @@ func formatSparklineDelta(v float64, sparse bool) string {
 func formatSpreadPct(v float64) string {
 	return strconv.FormatFloat(v, 'f', 2, 64) + "%"
 }
+
+// spreadGlyph is the single-character prefix used in both the list row and the
+// modal to denote bid/ask spread. The double-headed arrow ↔ (U+2194) renders
+// as a font glyph in every Telegram client we target and visually pairs with
+// the Δ used for single-series rows.
+const spreadGlyph = "↔"

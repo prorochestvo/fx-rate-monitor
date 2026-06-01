@@ -76,8 +76,6 @@ func RenderPairModal(state application.MeSubscriptionsState) string {
 		return ""
 	}
 
-	conditions := findConditionsForPair(state.Items, *state.OpenPair)
-
 	var b strings.Builder
 	fmt.Fprintf(&b,
 		`<div class="me-pair-modal" id="me-pair-modal" role="dialog" aria-modal="true" aria-labelledby="me-pair-modal-title" data-pair="%s">`,
@@ -99,7 +97,7 @@ func RenderPairModal(state application.MeSubscriptionsState) string {
 		if hasGrab {
 			grabTime = pt.Timestamp
 		}
-		b.WriteString(renderModalDetailBody(row, conditions, grabTime, hasGrab))
+		b.WriteString(renderModalDetailBody(row, grabTime, hasGrab))
 	}
 	b.WriteString(`</div>`) // me-pair-modal-body
 	b.WriteString(`</div>`) // me-pair-modal-card
@@ -109,9 +107,11 @@ func RenderPairModal(state application.MeSubscriptionsState) string {
 
 // renderModalDetailBody returns the text-only detail view rendered inside the
 // modal card when HistoryOpen is false. It contains per-series value lines,
-// an optional spread line, an optional last-grab line, condition badges, and
-// the History action button.
-func renderModalDetailBody(row dto.MeChartPairRow, conditions []string, lastGrab time.Time, hasGrab bool) string {
+// an optional spread line, an optional last-grab line, and the History action
+// button. Subscription-condition badges intentionally live elsewhere now:
+// per-pair conditions are managed from a dedicated screen, not surfaced inline
+// in the read-only detail modal.
+func renderModalDetailBody(row dto.MeChartPairRow, lastGrab time.Time, hasGrab bool) string {
 	var b strings.Builder
 
 	// One text block per direction (no SVG — the SVG lives on the list row).
@@ -126,7 +126,8 @@ func renderModalDetailBody(row dto.MeChartPairRow, conditions []string, lastGrab
 	// single-series row with a stray SpreadPct never renders a lone spread line.
 	if row.SpreadPct != nil && len(row.Series) >= 2 {
 		fmt.Fprintf(&b,
-			`<div class="me-pair-modal-spread">Spread %s</div>`,
+			`<div class="me-pair-modal-spread">%s %s</div>`,
+			spreadGlyph,
 			formatSpreadPct(*row.SpreadPct),
 		)
 	}
@@ -137,15 +138,6 @@ func renderModalDetailBody(row dto.MeChartPairRow, conditions []string, lastGrab
 			`<div class="me-pair-modal-time">Last grab: %s</div>`,
 			dom.Escape(fmtDate(lastGrab.Format(time.RFC3339))),
 		)
-	}
-
-	// Condition badges joined from state.Items by pair label.
-	if len(conditions) > 0 {
-		b.WriteString(`<div class="badges">`)
-		for _, c := range conditions {
-			fmt.Fprintf(&b, `<span class="badge">%s</span>`, dom.Escape(c))
-		}
-		b.WriteString(`</div>`)
 	}
 
 	// History action button at the bottom of the detail view.
@@ -182,23 +174,6 @@ func findChartRowByPair(chart *dto.MeChartResponse, pair string) (dto.MeChartPai
 		}
 	}
 	return dto.MeChartPairRow{}, false
-}
-
-// findConditionsForPair walks items, builds the canonical pair label
-// (BaseCurrency + "/" + QuoteCurrency), and returns all Conditions from rows
-// whose pair label matches pair. Rows whose pair label is empty are skipped.
-func findConditionsForPair(items []dto.MeSubscriptionRow, pair string) []string {
-	var out []string
-	for _, item := range items {
-		if item.BaseCurrency == "" || item.QuoteCurrency == "" {
-			continue
-		}
-		label := item.BaseCurrency + "/" + item.QuoteCurrency
-		if label == pair {
-			out = append(out, item.Conditions...)
-		}
-	}
-	return out
 }
 
 // latestPointAcrossSeries returns the MeChartPoint with the maximum Timestamp

@@ -97,7 +97,7 @@ func TestRenderPairModal(t *testing.T) {
 		assert.Contains(t, html, "sparkline-value-line")
 	})
 
-	t.Run("two-series pair renders two series blocks plus Spread line", func(t *testing.T) {
+	t.Run("two-series pair renders two series blocks plus spread glyph line", func(t *testing.T) {
 		t.Parallel()
 		bidPts := []dto.MeChartPoint{
 			mkPoint("2026-05-23T00:00:00Z", 480.0),
@@ -115,7 +115,8 @@ func TestRenderPairModal(t *testing.T) {
 
 		assert.Equal(t, 2, strings.Count(html, `class="me-pair-modal-series"`))
 		assert.Contains(t, html, "me-pair-modal-spread")
-		assert.Contains(t, html, "Spread 0.21%")
+		assert.Contains(t, html, "↔ 0.21%")
+		assert.NotContains(t, html, "Spread 0.21%", "modal uses the ↔ glyph consistent with the list row")
 		// Modal is text-only — no SVG.
 		assert.NotContains(t, html, "<svg")
 	})
@@ -219,8 +220,11 @@ func TestRenderPairModal(t *testing.T) {
 		assert.NotContains(t, html, "me-pair-modal-time")
 	})
 
-	t.Run("condition badges from matching MeSubscriptionRow render in modal", func(t *testing.T) {
+	t.Run("subscription condition badges are never rendered in the modal", func(t *testing.T) {
 		t.Parallel()
+		// Condition CRUD lives on a dedicated screen; the read-only detail
+		// modal must not surface the badges even when matching Items are
+		// supplied, otherwise the two surfaces drift and confuse users.
 		bid := mkSeries("BID", ratepair.ColorBid, 1.0, false, []dto.MeChartPoint{
 			mkPoint("2026-05-27T00:00:00Z", 487.0),
 		})
@@ -235,30 +239,8 @@ func TestRenderPairModal(t *testing.T) {
 		}
 		state := pairModalState("USD/KZT", []dto.MeChartPairRow{row}, items)
 		html := ui.RenderPairModal(state)
-
-		assert.Contains(t, html, `class="badges"`)
-		assert.Contains(t, html, `class="badge"`)
-		assert.Contains(t, html, "&gt;490")
-		assert.Contains(t, html, "&lt;500")
-	})
-
-	t.Run("no badges block when no matching MeSubscriptionRow", func(t *testing.T) {
-		t.Parallel()
-		bid := mkSeries("BID", ratepair.ColorBid, 1.0, false, []dto.MeChartPoint{
-			mkPoint("2026-05-27T00:00:00Z", 487.0),
-		})
-		row := mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{bid})
-		items := []dto.MeSubscriptionRow{
-			{
-				SourceName:    "src",
-				BaseCurrency:  "EUR",
-				QuoteCurrency: "KZT",
-				Conditions:    []string{">400"},
-			},
-		}
-		state := pairModalState("USD/KZT", []dto.MeChartPairRow{row}, items)
-		html := ui.RenderPairModal(state)
 		assert.NotContains(t, html, `class="badges"`)
+		assert.NotContains(t, html, `class="badge"`)
 	})
 
 	t.Run("XSS in pair label escaped in data-pair and title and aria-labelledby target", func(t *testing.T) {
@@ -287,27 +269,7 @@ func TestRenderPairModal(t *testing.T) {
 		html := ui.RenderPairModal(state)
 
 		assert.NotContains(t, html, "me-pair-modal-spread")
-		assert.NotContains(t, html, "Spread 0.21%")
-	})
-
-	t.Run("XSS in condition badge text escaped", func(t *testing.T) {
-		t.Parallel()
-		bid := mkSeries("BID", ratepair.ColorBid, 1.0, false, []dto.MeChartPoint{
-			mkPoint("2026-05-27T00:00:00Z", 487.0),
-		})
-		row := mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{bid})
-		items := []dto.MeSubscriptionRow{
-			{
-				BaseCurrency:  "USD",
-				QuoteCurrency: "KZT",
-				Conditions:    []string{`<img src=x onerror=alert(1)>`},
-			},
-		}
-		state := pairModalState("USD/KZT", []dto.MeChartPairRow{row}, items)
-		html := ui.RenderPairModal(state)
-
-		assert.NotContains(t, html, "<img src=x")
-		assert.Contains(t, html, "&lt;img src=x")
+		assert.NotContains(t, html, "↔ 0.21%")
 	})
 
 	t.Run("modal output contains no script tag", func(t *testing.T) {

@@ -77,3 +77,21 @@ type MeChartPoint struct {
 	Timestamp time.Time `json:"timestamp"`
 	Value     float64   `json:"value"`
 }
+
+// PublicChartResponse is the JSON envelope returned by GET /api/public/rates/chart.
+// Pairs reuses MeChartPairRow verbatim so both endpoints share the same wire
+// shape for chart rows. The pagination fields (Page, Limit, Total) are
+// intentionally absent from MeChartResponse to keep the two contracts independent.
+type PublicChartResponse struct {
+	// Window is a human-readable label for the chart's time range (e.g. "7 days").
+	Window string `json:"window"`
+	// Page is the 1-based page index returned.
+	Page int `json:"page"`
+	// Limit is the page size used for this response.
+	Limit int `json:"limit"`
+	// Total is the unpaginated count of PairRows (after BID+ASK grouping).
+	Total int64 `json:"total"`
+	// Pairs is the sparkline-list for this page. Never JSON null; empty array
+	// when no active sources exist or the page is out of range.
+	Pairs []MeChartPairRow `json:"pairs"`
+}

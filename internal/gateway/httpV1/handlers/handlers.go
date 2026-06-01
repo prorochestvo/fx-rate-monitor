@@ -24,8 +24,8 @@ import (
 // to the Mini App auth dependencies. botToken, meSubRepo, meSourceRepo, and
 // meRateValueRepo are required for ListMeSubscriptions; the remaining handlers
 // only need srvRate. meProfileRepo is required for UpsertMeProfile.
-// meChartSvc is required for GetMeRatesChart and may be nil if not wired
-// (returns 503 when nil).
+// meChartSvc is required for GetMeRatesChart and GetPublicRatesChart and may
+// be nil (returns 503 when nil).
 func NewHandler(
 	srvRate rateService,
 	botToken string,
@@ -45,6 +45,7 @@ func NewHandler(
 		meChartSvc:       meChartSvc,
 		validateInitData: tgwebapp.ValidateInitData,
 		nowFn:            time.Now,
+		logger:           log.Default(),
 	}
 	return h, nil
 }
@@ -64,6 +65,9 @@ type Handler struct {
 	validateInitData func(initData, botToken string, maxAge time.Duration, now time.Time) (int64, error)
 	// nowFn returns the current time. Injected for deterministic tests.
 	nowFn func() time.Time
+	// logger is used by internalError. Defaults to log.Default() at construction
+	// so tests can inject a per-test logger without touching the global writer.
+	logger *log.Logger
 }
 
 type rateService interface {
@@ -103,11 +107,12 @@ type meProfileRepository interface {
 	UpsertRateUserProfile(ctx context.Context, record *domain.RateUserProfile) error
 }
 
-// meChartService is the application service contract consumed by GetMeRatesChart
-// and GetMeRatesHistory. It is satisfied by *appchart.Service.
+// meChartService is the application service contract consumed by GetMeRatesChart,
+// GetMeRatesHistory, and GetPublicRatesChart. It is satisfied by *appchart.Service.
 type meChartService interface {
 	ObtainMeChart(ctx context.Context, userID string) (*appchart.MeChart, error)
 	ObtainMeHistory(ctx context.Context, userID, pair string, page, limit int64) (*appchart.MeHistoryResult, error)
+	ObtainPublicChart(ctx context.Context, page, limit int64) (*appchart.PublicChart, int64, error)
 }
 
 // Healthz reports whether the service can reach its dependencies. Returns
@@ -879,9 +884,82 @@ func (h *Handler) GetMeRatesHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GetPublicRatesChart returns the paginated sparkline-list chart for every
+// distinct active (base, quote, kind) triple in the system over the last 7 days.
+// No authentication is required.
+//
+// GET /api/public/rates/chart?page=N&limit=L
+//
+//   - 400 on non-integer limit.
+//   - 499 on ctx canceled / deadline exceeded.
+//   - 500 on service-layer failures.
+func (h *Handler) GetPublicRatesChart(w http.ResponseWriter, r *http.Request) {
+	if h.meChartSvc == nil {
+		http.Error(w, `{"error":"chart service unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	page := parsePage(r.URL.Query().Get("page"))
+	limit, err := parsePublicChartLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		publicErr := internal.NewPublicError("limit must be a number")
+		http.Error(w, `{"error":"`+publicErr.Details()+`"}`, http.StatusBadRequest)
+		return
+	}
+
+	ch, total, err := h.meChartSvc.ObtainPublicChart(r.Context(), page, limit)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			http.Error(w, `{"error":"request cancelled"}`, 499)
+			return
+		}
+		h.internalError(w, fmt.Errorf("GetPublicRatesChart: %w", err))
+		return
+	}
+
+	pairRows := make([]dto.MeChartPairRow, 0, len(ch.Pairs))
+	for _, row := range ch.Pairs {
+		seriesDTOs := make([]dto.MeChartSeries, 0, len(row.Series))
+		for _, sr := range row.Series {
+			s := dto.MeChartSeries{
+				Kind:     string(sr.Kind),
+				Color:    sr.Color,
+				Latest:   sr.Latest,
+				DeltaPct: sr.DeltaPct,
+				Sparse:   sr.Sparse,
+			}
+			if len(sr.Points) > 0 {
+				pts := make([]dto.MeChartPoint, 0, len(sr.Points))
+				for _, p := range sr.Points {
+					pts = append(pts, dto.MeChartPoint{
+						Timestamp: p.Timestamp,
+						Value:     p.Value,
+					})
+				}
+				s.Points = pts
+			}
+			seriesDTOs = append(seriesDTOs, s)
+		}
+		pairRows = append(pairRows, dto.MeChartPairRow{
+			Pair:      row.Pair,
+			Category:  string(row.Category),
+			SpreadPct: row.SpreadPct,
+			Series:    seriesDTOs,
+		})
+	}
+
+	writeJSON(w, dto.PublicChartResponse{
+		Window: "7 days",
+		Page:   int(page),
+		Limit:  int(limit),
+		Total:  total,
+		Pairs:  pairRows,
+	})
+}
+
 // internalError logs the underlying error with a trace and returns a generic 500 to the client.
 func (h *Handler) internalError(w http.ResponseWriter, err error) {
-	log.Print(errors.Join(err, internal.NewTraceError()))
+	h.logger.Print(errors.Join(err, internal.NewTraceError()))
 	http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
 }
 
@@ -903,23 +981,28 @@ func writeJSON(w http.ResponseWriter, v any) {
 	}
 }
 
+// parsePageMax caps the ?page= query parameter. Picked well above any
+// realistic dataset (1 << 30 ≈ 10^9 pages); paired with a 100-item limit it
+// keeps offset arithmetic strictly inside int64.
+const parsePageMax = int64(1) << 30
+
 // parsePage parses a "page" query string parameter, defaulting to 1 when
-// the value is missing, malformed, or non-positive. Parse failures are
-// logged so misconfigured callers can be diagnosed without surfacing 4xx.
+// the value is missing, malformed, or non-positive. Values above parsePageMax
+// are clamped to parsePageMax so the downstream offset arithmetic
+// (offset = (page - 1) * limit) cannot overflow int64 and produce a negative
+// OFFSET — which SQLite treats as no limit and fans into a full table scan.
+// Malformed values fall through silently because some callers are public
+// endpoints where fuzzed traffic would otherwise generate unbounded log noise.
 func parsePage(raw string) int64 {
 	if raw == "" {
 		return 1
 	}
 	page, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		log.Print(errors.Join(
-			fmt.Errorf("parse page %q: %w", raw, err),
-			internal.NewTraceError(),
-		))
+	if err != nil || page < 1 {
 		return 1
 	}
-	if page < 1 {
-		return 1
+	if page > parsePageMax {
+		return parsePageMax
 	}
 	return page
 }
@@ -990,6 +1073,32 @@ func parseHistoryLimit(raw string) (int64, error) {
 	}
 	if n > meHistoryMaxLimit {
 		n = meHistoryMaxLimit
+	}
+	return n, nil
+}
+
+const (
+	publicChartDefaultLimit = int64(20)
+	publicChartMaxLimit     = int64(100)
+)
+
+// parsePublicChartLimit parses the ?limit= query parameter for the public chart
+// endpoint. Default is 20; values < 1 are clamped to 20; values > 100 are
+// clamped to 100. Returns an error only when the value is present but non-integer,
+// matching the behaviour of parseHistoryLimit.
+func parsePublicChartLimit(raw string) (int64, error) {
+	if raw == "" {
+		return publicChartDefaultLimit, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if n < 1 {
+		n = publicChartDefaultLimit
+	}
+	if n > publicChartMaxLimit {
+		n = publicChartMaxLimit
 	}
 	return n, nil
 }

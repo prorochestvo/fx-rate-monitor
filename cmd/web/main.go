@@ -91,7 +91,12 @@ func main() {
 	}
 	// Telegram WebApp buttons reject non-HTTPS, IP literals, and localhost,
 	// so the DSN's host must resolve to a publicly reachable HTTPS host.
-	webAppURL := "https://" + strings.TrimPrefix(strings.TrimPrefix(dsnAPI.Addr(), "https://"), "http://") + "/tbot-miniapp/subscriptions.html"
+	// The trailing slash is required; the site root serves the unified dispatcher page.
+	webAppURL := "https://" + strings.TrimPrefix(strings.TrimPrefix(dsnAPI.Addr(), "https://"), "http://") + "/"
+	// Echo the resolved URL so operators can sanity-check that the BotFather
+	// Menu Button still points at the same origin after each deploy. The URL is
+	// not a secret; if it ever becomes one this line gets a redaction.
+	log.Printf("settings: webAppURL=%s (must match BotFather Menu Button URL)", webAppURL)
 	dsnDB, err := dsninjector.Unmarshal(envDsnSqliteDB)
 	if err != nil {
 		log.Fatalf("settings: %s, %s", envDsnSqliteDB, err.Error())
@@ -173,7 +178,8 @@ func main() {
 	}
 	// rateValueRepo satisfies both ValuesLoader (for ObtainMeChart) and
 	// HistoryValuesLoader (for ObtainMeHistory) — the same instance covers both.
-	chartSvc := appchart.NewService(subscriptionRepo, sourceRepo, rateValueRepo, rateValueRepo, time.Now)
+	// sourceRepo also satisfies PublicSourcesLoader (for ObtainPublicChart).
+	chartSvc := appchart.NewService(subscriptionRepo, sourceRepo, rateValueRepo, rateValueRepo, sourceRepo, time.Now)
 	mux, err := gateway.NewGateway(restAPI, botToken, subscriptionRepo, sourceRepo, rateValueRepo, profileRepo, chartSvc)
 	if err != nil {
 		log.Fatalf("services: mux api is failed, %s", err.Error())
@@ -229,7 +235,7 @@ func main() {
 		}
 		fileHandler.ServeHTTP(w, r)
 	}))
-	tbotAPI, err := service.NewTelegramApi(tbot, subscriptionRepo, sourceRepo, webAppURL)
+	tbotAPI, err := service.NewTelegramApi(tbot, subscriptionRepo, rateValueRepo, sourceRepo, profileRepo, webAppURL)
 	if err != nil {
 		log.Fatalf("services: telegram api is failed, %s", err.Error())
 		return

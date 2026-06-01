@@ -79,6 +79,11 @@ func main() {
 		return nil
 	}))
 
+	wasmObj.Set("renderPublicSubscriptions", js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		go runRenderPublicSubscriptions(client)
+		return nil
+	}))
+
 	js.Global().Set("_wasm", wasmObj)
 
 	select {} // keep the WASM runtime alive
@@ -806,6 +811,259 @@ func bindMeSubsHandlers(
 		if st.HistoryOpen {
 			page.CloseHistory()
 			redrawModal()
+			return
+		}
+		closeModal()
+	}))
+}
+
+// runRenderPublicSubscriptions is the entry point for the unauthenticated guest
+// landing page. It renders the skeleton immediately, then loads the first page of
+// the public sparkline chart in a background goroutine. No initData is read; no
+// profile upload is performed. Must be called from a goroutine — never from the
+// main goroutine.
+func runRenderPublicSubscriptions(client *apiclient.Client) {
+	screenCtx, cancelScreen := context.WithCancel(context.Background())
+	doc := js.Global().Get("document")
+	app := doc.Call("getElementById", "app")
+
+	scr := mountScreen()
+	scr.addRelease(cancelScreen)
+
+	page := application.NewPublicSubscriptionsPage(client)
+
+	// alive guards DOM writes from the chart-fetch goroutine against stale screens.
+	alive := true
+	scr.addRelease(func() { alive = false })
+
+	lockBodyScroll := func(lock bool) {
+		body := doc.Call("querySelector", "body")
+		if body.IsNull() || body.IsUndefined() {
+			return
+		}
+		style := body.Get("style")
+		if lock {
+			style.Set("overflow", "hidden")
+		} else {
+			style.Set("overflow", "")
+		}
+	}
+	scr.addRelease(func() { lockBodyScroll(false) })
+
+	app.Set("innerHTML", ui.RenderPublicSubscriptions(page.State()))
+
+	redrawChart := func() {
+		if !alive {
+			return
+		}
+		chartDiv := doc.Call("getElementById", "public-sparkline-chart")
+		if chartDiv.IsNull() || chartDiv.IsUndefined() {
+			return
+		}
+		chartDiv.Set("innerHTML", ui.RenderPublicSparklineSlot(page.State()))
+	}
+
+	redrawPagination := func() {
+		if !alive {
+			return
+		}
+		paginationDiv := doc.Call("getElementById", "public-pagination")
+		if paginationDiv.IsNull() || paginationDiv.IsUndefined() {
+			return
+		}
+		paginationDiv.Set("innerHTML", ui.RenderPublicPagination(page.State()))
+	}
+
+	// Load the first page in a background goroutine so the skeleton is visible
+	// immediately. screenCtx cancels the fetch when the user navigates away.
+	go func() {
+		fetchCtx, fetchCancel := context.WithTimeout(screenCtx, 15*time.Second)
+		defer fetchCancel()
+		if err := page.LoadPage(fetchCtx, 1); err != nil {
+			js.Global().Get("console").Call("warn", "public chart fetch:", err.Error())
+		}
+		redrawChart()
+		redrawPagination()
+	}()
+
+	bindPublicSubsHandlers(screenCtx, doc, page, scr, &alive, lockBodyScroll)
+}
+
+// bindPublicSubsHandlers wires all event handlers for the public subscriptions screen.
+//
+// Row click / keydown: a delegated handler on #public-sparkline-chart walks up to
+// the nearest .sparkline-row via Element.closest, reads its data-pair attribute,
+// and calls OpenPairModal followed by a modal slot redraw.
+//
+// Modal close: a delegated click handler on #public-pair-modal-slot closes the
+// modal on clicks to #public-pair-modal-close or #public-pair-modal-backdrop.
+//
+// Pagination: a delegated click handler on #public-pagination reads data-section
+// and data-page to load the target page.
+//
+// Escape: a document-level keydown listener closes the modal.
+//
+// ctx is the screen-lifetime context; alive is a pointer into
+// runRenderPublicSubscriptions's alive bool; lockBodyScroll prevents iOS scroll bleed.
+func bindPublicSubsHandlers(
+	ctx context.Context,
+	doc js.Value,
+	page *application.PublicSubscriptionsPage,
+	scr *screen,
+	alive *bool,
+	lockBodyScroll func(bool),
+) {
+	redrawModal := func() {
+		if !*alive {
+			return
+		}
+		slot := doc.Call("getElementById", "public-pair-modal-slot")
+		if slot.IsNull() || slot.IsUndefined() {
+			return
+		}
+		slot.Set("innerHTML", ui.RenderPublicPairModal(page.State()))
+	}
+
+	redrawChart := func() {
+		if !*alive {
+			return
+		}
+		chartDiv := doc.Call("getElementById", "public-sparkline-chart")
+		if chartDiv.IsNull() || chartDiv.IsUndefined() {
+			return
+		}
+		chartDiv.Set("innerHTML", ui.RenderPublicSparklineSlot(page.State()))
+	}
+
+	redrawPagination := func() {
+		if !*alive {
+			return
+		}
+		paginationDiv := doc.Call("getElementById", "public-pagination")
+		if paginationDiv.IsNull() || paginationDiv.IsUndefined() {
+			return
+		}
+		paginationDiv.Set("innerHTML", ui.RenderPublicPagination(page.State()))
+	}
+
+	openModal := func(pair string) {
+		page.OpenPairModal(pair)
+		lockBodyScroll(true)
+		redrawModal()
+	}
+
+	closeModal := func() {
+		page.ClosePairModal()
+		lockBodyScroll(false)
+		redrawModal()
+	}
+
+	// Delegated click on the chart container: open modal for the nearest .sparkline-row.
+	chartDiv := doc.Call("getElementById", "public-sparkline-chart")
+	if !chartDiv.IsNull() && !chartDiv.IsUndefined() {
+		scr.addRelease(dom.On(chartDiv, "click", func(ev js.Value) {
+			target := ev.Get("target")
+			if target.IsNull() || target.IsUndefined() {
+				return
+			}
+			row := target.Call("closest", ".sparkline-row")
+			if row.IsNull() || row.IsUndefined() {
+				return
+			}
+			dataset := row.Get("dataset")
+			if dataset.IsNull() || dataset.IsUndefined() {
+				return
+			}
+			pairAttr := dataset.Get("pair")
+			if pairAttr.IsUndefined() {
+				return
+			}
+			openModal(pairAttr.String())
+		}))
+
+		// Keyboard handler: Enter or Space on a focused .sparkline-row opens the modal.
+		scr.addRelease(dom.On(chartDiv, "keydown", func(ev js.Value) {
+			key := ev.Get("key").String()
+			if key != "Enter" && key != " " {
+				return
+			}
+			target := ev.Get("target")
+			if target.IsNull() || target.IsUndefined() {
+				return
+			}
+			row := target.Call("closest", ".sparkline-row")
+			if row.IsNull() || row.IsUndefined() {
+				return
+			}
+			dataset := row.Get("dataset")
+			if dataset.IsNull() || dataset.IsUndefined() {
+				return
+			}
+			pairAttr := dataset.Get("pair")
+			if pairAttr.IsUndefined() {
+				return
+			}
+			openModal(pairAttr.String())
+		}))
+	}
+
+	// Delegated click on the modal slot: close on backdrop or close-button.
+	modalSlot := doc.Call("getElementById", "public-pair-modal-slot")
+	if !modalSlot.IsNull() && !modalSlot.IsUndefined() {
+		scr.addRelease(dom.On(modalSlot, "click", func(ev js.Value) {
+			target := ev.Get("target")
+			if target.IsNull() || target.IsUndefined() {
+				return
+			}
+			id := target.Get("id").String()
+			switch id {
+			case "public-pair-modal-close", "public-pair-modal-backdrop":
+				closeModal()
+			}
+		}))
+	}
+
+	// Delegated click on pagination: load the target page.
+	paginationDiv := doc.Call("getElementById", "public-pagination")
+	if !paginationDiv.IsNull() && !paginationDiv.IsUndefined() {
+		scr.addRelease(dom.On(paginationDiv, "click", func(ev js.Value) {
+			target := ev.Get("target")
+			if target.IsNull() || target.IsUndefined() {
+				return
+			}
+			dataset := target.Get("dataset")
+			if dataset.IsNull() || dataset.IsUndefined() {
+				return
+			}
+			pageAttr := dataset.Get("page")
+			if pageAttr.IsUndefined() {
+				return
+			}
+			pageNum, err := strconv.Atoi(pageAttr.String())
+			if err != nil || pageNum < 1 {
+				return
+			}
+			go func() {
+				fetchCtx, fetchCancel := context.WithTimeout(ctx, 15*time.Second)
+				defer fetchCancel()
+				if err := page.LoadPage(fetchCtx, pageNum); err != nil {
+					js.Global().Get("console").Call("warn", "public chart page load:", err.Error())
+				}
+				redrawChart()
+				redrawPagination()
+				// Auto-close any open modal after a page change — the row may no
+				// longer appear in the new page.
+				redrawModal()
+			}()
+		}))
+	}
+
+	// Document-level Escape handler: closes the modal when open.
+	scr.addRelease(dom.On(doc, "keydown", func(ev js.Value) {
+		if ev.Get("key").String() != "Escape" {
+			return
+		}
+		if page.State().OpenPair == nil {
 			return
 		}
 		closeModal()

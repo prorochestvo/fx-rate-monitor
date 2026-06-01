@@ -210,6 +210,26 @@ func TestMeRatesHistoryURL(t *testing.T) {
 	})
 }
 
+func TestPublicRatesChartURL(t *testing.T) {
+	t.Parallel()
+
+	t.Run("encodes page and limit as query params", func(t *testing.T) {
+		t.Parallel()
+		path, q := parseQuery(t, publicRatesChartURL(2, 50))
+		assert.Equal(t, "/api/public/rates/chart", path)
+		assert.Equal(t, "2", q.Get("page"))
+		assert.Equal(t, "50", q.Get("limit"))
+	})
+
+	t.Run("page 1 limit 20 are encoded correctly", func(t *testing.T) {
+		t.Parallel()
+		path, q := parseQuery(t, publicRatesChartURL(1, 20))
+		assert.Equal(t, "/api/public/rates/chart", path)
+		assert.Equal(t, "1", q.Get("page"))
+		assert.Equal(t, "20", q.Get("limit"))
+	})
+}
+
 func TestMeSubscriptionsHeaders(t *testing.T) {
 	t.Parallel()
 

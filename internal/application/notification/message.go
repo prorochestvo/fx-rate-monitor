@@ -45,6 +45,8 @@ const (
 // BaseCurrency and QuoteCurrency are passed through html.EscapeString in pairLabel
 // before insertion into the HTML <pre> block, so free-text or odd source codes
 // cannot break or inject HTML.
+// SourceName is stored pre-escaped (html.EscapeString applied at assignment in foldIntoBuckets);
+// if it is ever rendered directly into HTML output it must not be escaped a second time.
 type alert struct {
 	SourceName    string
 	BaseCurrency  string                // e.g. "USD"

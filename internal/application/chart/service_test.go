@@ -16,6 +16,7 @@ var _ chart.SubscriptionsLoader = (*fakeSubs)(nil)
 var _ chart.SourcesLoader = (*fakeSources)(nil)
 var _ chart.ValuesLoader = (*fakeValues)(nil)
 var _ chart.HistoryValuesLoader = (*fakeHistoryValues)(nil)
+var _ chart.PublicSourcesLoader = (*fakePublicSources)(nil)
 
 type fakeSubs struct {
 	subs []domain.RateUserSubscription
@@ -63,6 +64,15 @@ func (f *fakeHistoryValues) ObtainHistoryForPairsPaged(_ context.Context, _ []do
 	return f.rows, f.total, f.err
 }
 
+type fakePublicSources struct {
+	keys []domain.SourcePairKey
+	err  error
+}
+
+func (f *fakePublicSources) ObtainDistinctActivePairTriples(_ context.Context) ([]domain.SourcePairKey, error) {
+	return f.keys, f.err
+}
+
 // fixedNow pins the clock to a known time so bucket arithmetic is deterministic.
 var fixedNow = time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
 
@@ -72,6 +82,7 @@ func newService(subs []domain.RateUserSubscription, sources map[string]domain.Ra
 		&fakeSources{sources: sources},
 		&fakeValues{values: values},
 		&fakeHistoryValues{},
+		&fakePublicSources{},
 		func() time.Time { return fixedNow },
 	)
 }
@@ -88,6 +99,7 @@ func newServiceWithHistory(
 		&fakeSources{sources: sources},
 		&fakeValues{},
 		&fakeHistoryValues{rows: histRows, total: histTotal, err: histErr},
+		&fakePublicSources{},
 		func() time.Time { return fixedNow },
 	)
 }
@@ -111,6 +123,7 @@ func TestService_ObtainMeChart(t *testing.T) {
 			&fakeSources{},
 			&fakeValues{},
 			&fakeHistoryValues{},
+			&fakePublicSources{},
 			func() time.Time { return fixedNow },
 		)
 		_, err := svc.ObtainMeChart(t.Context(), "user1")
@@ -124,6 +137,7 @@ func TestService_ObtainMeChart(t *testing.T) {
 			&fakeSources{err: errFake},
 			&fakeValues{},
 			&fakeHistoryValues{},
+			&fakePublicSources{},
 			func() time.Time { return fixedNow },
 		)
 		_, err := svc.ObtainMeChart(t.Context(), "user1")
@@ -139,6 +153,7 @@ func TestService_ObtainMeChart(t *testing.T) {
 			}},
 			&fakeValues{err: errFake},
 			&fakeHistoryValues{},
+			&fakePublicSources{},
 			func() time.Time { return fixedNow },
 		)
 		_, err := svc.ObtainMeChart(t.Context(), "user1")
@@ -162,6 +177,7 @@ func TestService_ObtainMeChart(t *testing.T) {
 				{SourceName: "src", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 500, Timestamp: ts11},
 			}},
 			&fakeHistoryValues{},
+			&fakePublicSources{},
 			func() time.Time { return fixedNow },
 		)
 		result, err := svc.ObtainMeChart(t.Context(), "u")
@@ -292,6 +308,7 @@ func TestService_ObtainMeChart(t *testing.T) {
 				{SourceName: "src", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 450, Timestamp: ts},
 			}},
 			&fakeHistoryValues{},
+			&fakePublicSources{},
 			func() time.Time { return fixedNow },
 		)
 		result, err := svc.ObtainMeChart(t.Context(), "u")
@@ -546,3 +563,116 @@ func TestService_ObtainMeChart(t *testing.T) {
 }
 
 var errFake = assert.AnError
+
+func newPublicService(keys []domain.SourcePairKey, values []domain.RateValue) *chart.Service {
+	return chart.NewService(
+		&fakeSubs{},
+		&fakeSources{},
+		&fakeValues{values: values},
+		&fakeHistoryValues{},
+		&fakePublicSources{keys: keys},
+		func() time.Time { return fixedNow },
+	)
+}
+
+func TestService_ObtainPublicChart(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty system returns zero pairs", func(t *testing.T) {
+		t.Parallel()
+		svc := newPublicService(nil, nil)
+		ch, total, err := svc.ObtainPublicChart(t.Context(), 1, 20)
+		require.NoError(t, err)
+		require.NotNil(t, ch)
+		assert.Empty(t, ch.Pairs)
+		assert.EqualValues(t, 0, total)
+	})
+
+	t.Run("single pair returns one row", func(t *testing.T) {
+		t.Parallel()
+		keys := []domain.SourcePairKey{
+			{SourceName: "src", BaseCurrency: "USD", QuoteCurrency: "KZT", Kind: domain.RateSourceKindBID},
+		}
+		svc := newPublicService(keys, nil)
+		ch, total, err := svc.ObtainPublicChart(t.Context(), 1, 20)
+		require.NoError(t, err)
+		require.NotNil(t, ch)
+		require.Len(t, ch.Pairs, 1)
+		assert.EqualValues(t, 1, total)
+		assert.Equal(t, "USD/KZT", ch.Pairs[0].Pair)
+	})
+
+	t.Run("pagination slices correctly", func(t *testing.T) {
+		t.Parallel()
+		// 3 distinct pairs, page size 1, page 2 → returns second pair.
+		keys := []domain.SourcePairKey{
+			{SourceName: "src-eur", BaseCurrency: "EUR", QuoteCurrency: "KZT", Kind: domain.RateSourceKindBID},
+			{SourceName: "src-usd", BaseCurrency: "USD", QuoteCurrency: "KZT", Kind: domain.RateSourceKindBID},
+			{SourceName: "src-rub", BaseCurrency: "RUB", QuoteCurrency: "KZT", Kind: domain.RateSourceKindBID},
+		}
+		svc := newPublicService(keys, nil)
+		ch, total, err := svc.ObtainPublicChart(t.Context(), 2, 1)
+		require.NoError(t, err)
+		require.NotNil(t, ch)
+		require.Len(t, ch.Pairs, 1, "page 2 with limit 1 must return exactly one row")
+		assert.EqualValues(t, 3, total, "total must be the unpaginated count")
+	})
+
+	t.Run("ordering is deterministic across pages", func(t *testing.T) {
+		t.Parallel()
+		keys := []domain.SourcePairKey{
+			{SourceName: "src-usd", BaseCurrency: "USD", QuoteCurrency: "KZT", Kind: domain.RateSourceKindBID},
+			{SourceName: "src-eur", BaseCurrency: "EUR", QuoteCurrency: "KZT", Kind: domain.RateSourceKindBID},
+		}
+		svc := newPublicService(keys, nil)
+
+		// Page 1 + page 2 (limit 1) must produce non-overlapping, consistently ordered results.
+		ch1, _, err := svc.ObtainPublicChart(t.Context(), 1, 1)
+		require.NoError(t, err)
+		ch2, _, err := svc.ObtainPublicChart(t.Context(), 2, 1)
+		require.NoError(t, err)
+		require.Len(t, ch1.Pairs, 1)
+		require.Len(t, ch2.Pairs, 1)
+		assert.NotEqual(t, ch1.Pairs[0].Pair, ch2.Pairs[0].Pair, "page 1 and page 2 must not return the same pair")
+	})
+
+	t.Run("total is unpaginated count", func(t *testing.T) {
+		t.Parallel()
+		// BID + ASK for the same pair collapse to ONE row, so total = 1 not 2.
+		keys := []domain.SourcePairKey{
+			{SourceName: "src-bid", BaseCurrency: "USD", QuoteCurrency: "KZT", Kind: domain.RateSourceKindBID},
+			{SourceName: "src-ask", BaseCurrency: "USD", QuoteCurrency: "KZT", Kind: domain.RateSourceKindASK},
+		}
+		svc := newPublicService(keys, nil)
+		_, total, err := svc.ObtainPublicChart(t.Context(), 1, 20)
+		require.NoError(t, err)
+		assert.EqualValues(t, 1, total, "BID+ASK for the same pair must collapse to one row in the total")
+	})
+
+	t.Run("public sources loader error propagates", func(t *testing.T) {
+		t.Parallel()
+		svc := chart.NewService(
+			&fakeSubs{},
+			&fakeSources{},
+			&fakeValues{},
+			&fakeHistoryValues{},
+			&fakePublicSources{err: errFake},
+			func() time.Time { return fixedNow },
+		)
+		_, _, err := svc.ObtainPublicChart(t.Context(), 1, 20)
+		require.Error(t, err)
+	})
+
+	t.Run("out-of-range page returns empty pairs but correct total", func(t *testing.T) {
+		t.Parallel()
+		keys := []domain.SourcePairKey{
+			{SourceName: "src", BaseCurrency: "USD", QuoteCurrency: "KZT", Kind: domain.RateSourceKindBID},
+		}
+		svc := newPublicService(keys, nil)
+		ch, total, err := svc.ObtainPublicChart(t.Context(), 999, 20)
+		require.NoError(t, err)
+		require.NotNil(t, ch)
+		assert.Empty(t, ch.Pairs)
+		assert.EqualValues(t, 1, total)
+	})
+}

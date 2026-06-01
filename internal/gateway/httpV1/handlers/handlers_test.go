@@ -1325,9 +1325,11 @@ func TestHandler_UpsertMeProfile(t *testing.T) {
 
 // mockMeChartService is a test double for meChartService.
 type mockMeChartService struct {
-	chart   *appchart.MeChart
-	history *appchart.MeHistoryResult
-	err     error
+	chart       *appchart.MeChart
+	history     *appchart.MeHistoryResult
+	publicChart *appchart.PublicChart
+	publicTotal int64
+	err         error
 }
 
 func (m *mockMeChartService) ObtainMeChart(_ context.Context, _ string) (*appchart.MeChart, error) {
@@ -1336,6 +1338,10 @@ func (m *mockMeChartService) ObtainMeChart(_ context.Context, _ string) (*appcha
 
 func (m *mockMeChartService) ObtainMeHistory(_ context.Context, _, _ string, _, _ int64) (*appchart.MeHistoryResult, error) {
 	return m.history, m.err
+}
+
+func (m *mockMeChartService) ObtainPublicChart(_ context.Context, _, _ int64) (*appchart.PublicChart, int64, error) {
+	return m.publicChart, m.publicTotal, m.err
 }
 
 func TestGetMeRatesChart(t *testing.T) {
@@ -1757,26 +1763,20 @@ func TestHandler_GetMeRatesHistory(t *testing.T) {
 	})
 
 	t.Run("X-Telegram-Init-Data is not echoed in any log line", func(t *testing.T) {
-		// No t.Parallel: this subtest mutates the global log.SetOutput and
-		// would race against concurrent log.Print calls from other subtests.
+		t.Parallel()
 		secretInitData := "secret-init-data-payload-must-not-leak"
 
+		// Inject a per-test logger to capture log output without touching the
+		// global log.SetOutput (which would race with concurrent parallel subtests
+		// that also call internalError).
 		var logBuf strings.Builder
-		// Redirect standard logger output to our buffer for this test.
-		// We capture the log output by temporarily redirecting the default logger.
-		origFlags := log.Flags()
-		origOutput := log.Writer()
-		defer func() {
-			log.SetFlags(origFlags)
-			log.SetOutput(origOutput)
-		}()
-		log.SetOutput(&logBuf)
-		log.SetFlags(0)
+		testLogger := log.New(&logBuf, "", 0)
 
 		svc := &mockMeChartService{err: errors.New("deliberate service error to exercise the log path")}
 		h, err := NewHandler(&mockRateService{}, "token", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{}, &mockMeProfileRepo{}, svc)
 		require.NoError(t, err)
 		h.validateInitData = alwaysValidateInitData(42)
+		h.logger = testLogger
 
 		req := httptest.NewRequest(http.MethodGet, "/api/me/rates/history?pair=USD/KZT", nil)
 		req.Header.Set("X-Telegram-Init-Data", secretInitData)
@@ -1784,5 +1784,181 @@ func TestHandler_GetMeRatesHistory(t *testing.T) {
 		h.GetMeRatesHistory(rr, req)
 
 		assert.NotContains(t, logBuf.String(), secretInitData, "handler must not log the X-Telegram-Init-Data value")
+	})
+}
+
+func TestGetPublicRatesChart(t *testing.T) {
+	t.Parallel()
+
+	t.Run("happy path returns paginated rows", func(t *testing.T) {
+		t.Parallel()
+
+		pc := &appchart.PublicChart{
+			Pairs: []appchart.PairRow{
+				{Pair: "USD/KZT", Series: []appchart.SeriesRow{{Kind: "BID", Color: "#1D9E75"}}},
+				{Pair: "EUR/KZT", Series: []appchart.SeriesRow{{Kind: "BID", Color: "#1D9E75"}}},
+			},
+		}
+		svc := &mockMeChartService{publicChart: pc, publicTotal: 2}
+		h, err := NewHandler(&mockRateService{}, "", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{}, &mockMeProfileRepo{}, svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.GetPublicRatesChart(rr, httptest.NewRequest(http.MethodGet, "/api/public/rates/chart", nil))
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+		var resp dto.PublicChartResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+		assert.Equal(t, "7 days", resp.Window)
+		assert.EqualValues(t, 1, resp.Page)
+		assert.EqualValues(t, 20, resp.Limit)
+		assert.EqualValues(t, 2, resp.Total)
+		assert.Len(t, resp.Pairs, 2)
+	})
+
+	t.Run("page greater than 1 advances offset", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockMeChartService{
+			publicChart: &appchart.PublicChart{Pairs: []appchart.PairRow{{Pair: "USD/KZT"}}},
+			publicTotal: 25,
+		}
+		h, err := NewHandler(&mockRateService{}, "", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{}, &mockMeProfileRepo{}, svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.GetPublicRatesChart(rr, httptest.NewRequest(http.MethodGet, "/api/public/rates/chart?page=2", nil))
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		var resp dto.PublicChartResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+		assert.EqualValues(t, 2, resp.Page)
+	})
+
+	t.Run("limit cap clamps to 100", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockMeChartService{
+			publicChart: &appchart.PublicChart{Pairs: []appchart.PairRow{}},
+			publicTotal: 0,
+		}
+		h, err := NewHandler(&mockRateService{}, "", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{}, &mockMeProfileRepo{}, svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.GetPublicRatesChart(rr, httptest.NewRequest(http.MethodGet, "/api/public/rates/chart?limit=999", nil))
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		var resp dto.PublicChartResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+		// The service mock ignores the limit; the handler must have passed 100 (clamped).
+		assert.EqualValues(t, 100, resp.Limit)
+	})
+
+	t.Run("zero limit falls back to default 20", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockMeChartService{
+			publicChart: &appchart.PublicChart{Pairs: []appchart.PairRow{}},
+			publicTotal: 0,
+		}
+		h, err := NewHandler(&mockRateService{}, "", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{}, &mockMeProfileRepo{}, svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.GetPublicRatesChart(rr, httptest.NewRequest(http.MethodGet, "/api/public/rates/chart?limit=0", nil))
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		var resp dto.PublicChartResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+		assert.EqualValues(t, 20, resp.Limit)
+	})
+
+	t.Run("negative limit falls back to default 20", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockMeChartService{
+			publicChart: &appchart.PublicChart{Pairs: []appchart.PairRow{}},
+			publicTotal: 0,
+		}
+		h, err := NewHandler(&mockRateService{}, "", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{}, &mockMeProfileRepo{}, svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.GetPublicRatesChart(rr, httptest.NewRequest(http.MethodGet, "/api/public/rates/chart?limit=-5", nil))
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		var resp dto.PublicChartResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+		assert.EqualValues(t, 20, resp.Limit)
+	})
+
+	t.Run("page overflow is clamped before reaching the service", func(t *testing.T) {
+		t.Parallel()
+
+		// parsePage clamps at 1<<30 so (page-1)*limit cannot overflow int64
+		// into a negative SQLite OFFSET (which would force a full scan).
+		svc := &mockMeChartService{
+			publicChart: &appchart.PublicChart{Pairs: []appchart.PairRow{}},
+			publicTotal: 0,
+		}
+		h, err := NewHandler(&mockRateService{}, "", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{}, &mockMeProfileRepo{}, svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.GetPublicRatesChart(rr, httptest.NewRequest(http.MethodGet, "/api/public/rates/chart?page=9223372036854775807", nil))
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		var resp dto.PublicChartResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+		assert.EqualValues(t, int64(1)<<30, resp.Page, "page must be clamped to the parser maximum")
+	})
+
+	t.Run("non-integer limit returns 400 with PublicError text", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockMeChartService{}
+		h, err := NewHandler(&mockRateService{}, "", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{}, &mockMeProfileRepo{}, svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.GetPublicRatesChart(rr, httptest.NewRequest(http.MethodGet, "/api/public/rates/chart?limit=abc", nil))
+
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+		// The response body must contain the exact PublicError text, not the fallback.
+		publicErr := internal.NewPublicError("limit must be a number")
+		assert.Contains(t, rr.Body.String(), publicErr.Details())
+	})
+
+	t.Run("service returns context.Canceled returns 499", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockMeChartService{err: context.Canceled}
+		h, err := NewHandler(&mockRateService{}, "", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{}, &mockMeProfileRepo{}, svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.GetPublicRatesChart(rr, httptest.NewRequest(http.MethodGet, "/api/public/rates/chart", nil))
+
+		require.Equal(t, 499, rr.Code)
+		assert.Contains(t, rr.Body.String(), "request cancelled")
+	})
+
+	t.Run("service returns plain error returns 500 with fallback message", func(t *testing.T) {
+		t.Parallel()
+
+		svc := &mockMeChartService{err: errors.New("db dead")}
+		h, err := NewHandler(&mockRateService{}, "", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{}, &mockMeProfileRepo{}, svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.GetPublicRatesChart(rr, httptest.NewRequest(http.MethodGet, "/api/public/rates/chart", nil))
+
+		require.Equal(t, http.StatusInternalServerError, rr.Code)
+		// http.Error appends a trailing newline; lock in the exact wire format
+		// so a future refactor of internalError can't quietly drift the body.
+		const errFallbackMessage = `{"error":"internal error"}` + "\n"
+		assert.Equal(t, errFallbackMessage, rr.Body.String())
 	})
 }
