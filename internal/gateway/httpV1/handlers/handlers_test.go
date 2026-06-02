@@ -1330,13 +1330,20 @@ type mockMeChartService struct {
 	publicChart *appchart.PublicChart
 	publicTotal int64
 	err         error
+	// received captures the last arguments passed to ObtainMeHistory so
+	// subtests can assert forwarding without a shared-state race. Each
+	// subtest that needs to inspect these must use its own mock instance.
+	received struct {
+		sourceTitle string
+	}
 }
 
 func (m *mockMeChartService) ObtainMeChart(_ context.Context, _ string) (*appchart.MeChart, error) {
 	return m.chart, m.err
 }
 
-func (m *mockMeChartService) ObtainMeHistory(_ context.Context, _, _ string, _, _ int64) (*appchart.MeHistoryResult, error) {
+func (m *mockMeChartService) ObtainMeHistory(_ context.Context, _, _, sourceTitle string, _, _ int64) (*appchart.MeHistoryResult, error) {
+	m.received.sourceTitle = sourceTitle
 	return m.history, m.err
 }
 
@@ -1614,7 +1621,7 @@ func TestHandler_GetMeRatesHistory(t *testing.T) {
 			Pair:  "USD/KZT",
 			Total: 1,
 			Items: []appchart.MeHistoryRowResult{
-				{SourceName: "src", SourceTitle: "Test", Timestamp: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC), Bid: &bidVal},
+				{SourceTitle: "Test", Timestamp: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC), Bid: &bidVal},
 			},
 		}}
 		h := newH(t, svc)
@@ -1784,6 +1791,45 @@ func TestHandler_GetMeRatesHistory(t *testing.T) {
 		h.GetMeRatesHistory(rr, req)
 
 		assert.NotContains(t, logBuf.String(), secretInitData, "handler must not log the X-Telegram-Init-Data value")
+	})
+
+	t.Run("forwards source_title to service", func(t *testing.T) {
+		t.Parallel()
+		svc := &mockMeChartService{history: emptyHistoryResult}
+		h := newH(t, svc)
+		req := httptest.NewRequest(http.MethodGet, "/api/me/rates/history?pair=USD/KZT&source_title=Kaspi", nil)
+		req.Header.Set("X-Telegram-Init-Data", "valid")
+		rr := httptest.NewRecorder()
+		h.GetMeRatesHistory(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "Kaspi", svc.received.sourceTitle)
+	})
+
+	t.Run("omits source_title when query param absent", func(t *testing.T) {
+		t.Parallel()
+		svc := &mockMeChartService{history: emptyHistoryResult}
+		h := newH(t, svc)
+		req := httptest.NewRequest(http.MethodGet, "/api/me/rates/history?pair=USD/KZT", nil)
+		req.Header.Set("X-Telegram-Init-Data", "valid")
+		rr := httptest.NewRecorder()
+		h.GetMeRatesHistory(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "", svc.received.sourceTitle)
+	})
+
+	t.Run("trims whitespace around source_title", func(t *testing.T) {
+		t.Parallel()
+		svc := &mockMeChartService{history: emptyHistoryResult}
+		h := newH(t, svc)
+		req := httptest.NewRequest(http.MethodGet, "/api/me/rates/history?pair=USD/KZT&source_title=+Kaspi+", nil)
+		req.Header.Set("X-Telegram-Init-Data", "valid")
+		rr := httptest.NewRecorder()
+		h.GetMeRatesHistory(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "Kaspi", svc.received.sourceTitle)
 	})
 }
 

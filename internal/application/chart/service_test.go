@@ -55,13 +55,14 @@ func (f *fakeValues) ObtainValuesForPairsSince(_ context.Context, _ []domain.Sou
 }
 
 type fakeHistoryValues struct {
-	rows  []domain.RateValue
-	total int64
-	err   error
+	rows         []domain.RateValue
+	total        int64
+	groupedTotal int64
+	err          error
 }
 
-func (f *fakeHistoryValues) ObtainHistoryForPairsPaged(_ context.Context, _ []domain.SourcePairKey, _, _ int64) ([]domain.RateValue, int64, error) {
-	return f.rows, f.total, f.err
+func (f *fakeHistoryValues) ObtainHistoryForPairsPaged(_ context.Context, _ []domain.SourcePairKey, _, _ int64) ([]domain.RateValue, int64, int64, error) {
+	return f.rows, f.total, f.groupedTotal, f.err
 }
 
 type fakePublicSources struct {
@@ -94,11 +95,33 @@ func newServiceWithHistory(
 	histTotal int64,
 	histErr error,
 ) *chart.Service {
+	// groupedTotal mirrors histTotal for existing subtests: single-source,
+	// single-direction data produces equal row-level and grouped-title counts.
 	return chart.NewService(
 		&fakeSubs{subs: subs},
 		&fakeSources{sources: sources},
 		&fakeValues{},
-		&fakeHistoryValues{rows: histRows, total: histTotal, err: histErr},
+		&fakeHistoryValues{rows: histRows, total: histTotal, groupedTotal: histTotal, err: histErr},
+		&fakePublicSources{},
+		func() time.Time { return fixedNow },
+	)
+}
+
+// newServiceWithHistoryGrouped is like newServiceWithHistory but lets the caller
+// specify rowTotal and groupedTotal independently. Use this for subtests where
+// BID/ASK sibling sources share a title so rowTotal != groupedTotal.
+func newServiceWithHistoryGrouped(
+	subs []domain.RateUserSubscription,
+	sources map[string]domain.RateSource,
+	histRows []domain.RateValue,
+	rowTotal, groupedTotal int64,
+	histErr error,
+) *chart.Service {
+	return chart.NewService(
+		&fakeSubs{subs: subs},
+		&fakeSources{sources: sources},
+		&fakeValues{},
+		&fakeHistoryValues{rows: histRows, total: rowTotal, groupedTotal: groupedTotal, err: histErr},
 		&fakePublicSources{},
 		func() time.Time { return fixedNow },
 	)

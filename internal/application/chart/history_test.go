@@ -55,7 +55,7 @@ func TestService_ObtainMeHistory(t *testing.T) {
 	t.Run("no subscriptions returns empty page and total zero", func(t *testing.T) {
 		t.Parallel()
 		svc := newServiceWithHistory(nil, nil, nil, 0, nil)
-		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", 1, 20)
+		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", "", 1, 20)
 		require.NoError(t, err)
 		require.NotNil(t, res)
 		assert.EqualValues(t, 0, res.Total)
@@ -69,7 +69,7 @@ func TestService_ObtainMeHistory(t *testing.T) {
 		sources := map[string]domain.RateSource{"src-eur": eurKztBidSrc}
 		svc := newServiceWithHistory(subs, sources, nil, 0, nil)
 
-		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", 1, 20)
+		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", "", 1, 20)
 		require.NoError(t, err)
 		assert.EqualValues(t, 0, res.Total)
 		assert.Empty(t, res.Items)
@@ -85,7 +85,7 @@ func TestService_ObtainMeHistory(t *testing.T) {
 		}
 		svc := newServiceWithHistory(subs, sources, histRows, 2, nil)
 
-		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", 1, 20)
+		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", "", 1, 20)
 		require.NoError(t, err)
 		require.EqualValues(t, 2, res.Total)
 		require.Len(t, res.Items, 2)
@@ -109,7 +109,7 @@ func TestService_ObtainMeHistory(t *testing.T) {
 		}
 		svc := newServiceWithHistory(subs, sources, histRows, 3, nil)
 
-		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", 1, 20)
+		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", "", 1, 20)
 		require.NoError(t, err)
 		require.Len(t, res.Items, 3)
 		// BID at base is newest.
@@ -127,7 +127,7 @@ func TestService_ObtainMeHistory(t *testing.T) {
 		}
 		svc := newServiceWithHistory(subs, sources, histRows, 1, nil)
 
-		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", 1, 20)
+		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", "", 1, 20)
 		require.NoError(t, err)
 		require.Len(t, res.Items, 1)
 		// Only one row in the chain: delta must be nil.
@@ -155,7 +155,7 @@ func TestService_ObtainMeHistory(t *testing.T) {
 		}
 		svc := newServiceWithHistory(subs, sources, histRows, 3, nil)
 
-		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", 1, 20)
+		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", "", 1, 20)
 		require.NoError(t, err)
 		require.Len(t, res.Items, 3)
 
@@ -182,7 +182,7 @@ func TestService_ObtainMeHistory(t *testing.T) {
 		}
 		svc := newServiceWithHistory(subs, sources, histRows, 5, nil)
 
-		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", 2, 2)
+		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", "", 2, 2)
 		require.NoError(t, err)
 		assert.EqualValues(t, 5, res.Total)
 		assert.Len(t, res.Items, 2)
@@ -200,8 +200,162 @@ func TestService_ObtainMeHistory(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		_, err := svc.ObtainMeHistory(ctx, "user1", "USD/KZT", 1, 20)
+		_, err := svc.ObtainMeHistory(ctx, "user1", "USD/KZT", "", 1, 20)
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, context.Canceled))
+	})
+
+	t.Run("filters by source_title yields rows from that provider only", func(t *testing.T) {
+		t.Parallel()
+		subs := []domain.RateUserSubscription{subFor("src-bid"), subFor("src-ask")}
+		sources := map[string]domain.RateSource{
+			"src-bid": usdKztBidSrc,
+			"src-ask": usdKztAskSrc,
+		}
+		// The service pre-filters matchingKeys to src-bid (whose title is "USD/KZT BID")
+		// before calling the repo, so the fake only needs to return src-bid rows.
+		bidOnlyRows := []domain.RateValue{
+			{SourceName: "src-bid", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 490, Timestamp: base},
+		}
+		svc2 := newServiceWithHistory(subs, sources, bidOnlyRows, 1, nil)
+		res, err := svc2.ObtainMeHistory(t.Context(), "user1", "USD/KZT", "USD/KZT BID", 1, 20)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, res.Total)
+		require.Len(t, res.Items, 1)
+		assert.Equal(t, "USD/KZT BID", res.Items[0].SourceTitle)
+		// Ensure src-ask title is absent.
+		for _, item := range res.Items {
+			assert.NotEqual(t, "USD/KZT ASK", item.SourceTitle)
+		}
+	})
+
+	t.Run("empty source_title returns all rows (regression)", func(t *testing.T) {
+		t.Parallel()
+		subs := []domain.RateUserSubscription{subFor("src-bid"), subFor("src-ask")}
+		sources := map[string]domain.RateSource{
+			"src-bid": usdKztBidSrc,
+			"src-ask": usdKztAskSrc,
+		}
+		histRows := []domain.RateValue{
+			{SourceName: "src-bid", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 490, Timestamp: base},
+			{SourceName: "src-ask", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 492, Timestamp: base.Add(-30 * time.Second)},
+		}
+		svc := newServiceWithHistory(subs, sources, histRows, 2, nil)
+		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", "", 1, 20)
+		require.NoError(t, err)
+		assert.EqualValues(t, 2, res.Total)
+		assert.Len(t, res.Items, 2)
+	})
+
+	t.Run("unknown source_title returns empty result and total zero", func(t *testing.T) {
+		t.Parallel()
+		subs := []domain.RateUserSubscription{subFor("src-bid")}
+		sources := map[string]domain.RateSource{"src-bid": usdKztBidSrc}
+		svc := newServiceWithHistory(subs, sources, nil, 0, nil)
+		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", "No Such Provider", 1, 20)
+		require.NoError(t, err)
+		assert.EqualValues(t, 0, res.Total)
+		assert.Empty(t, res.Items)
+	})
+
+	t.Run("filter respects pagination when source_title matches multiple rows", func(t *testing.T) {
+		t.Parallel()
+		subs := []domain.RateUserSubscription{subFor("src-bid")}
+		sources := map[string]domain.RateSource{"src-bid": usdKztBidSrc}
+		// Simulate page 2, limit 1, total 3 for the filtered provider title.
+		histRows := []domain.RateValue{
+			{SourceName: "src-bid", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 488, Timestamp: base.Add(-time.Minute)},
+		}
+		svc := newServiceWithHistory(subs, sources, histRows, 3, nil)
+		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", "USD/KZT BID", 2, 1)
+		require.NoError(t, err)
+		assert.EqualValues(t, 3, res.Total)
+		assert.Len(t, res.Items, 1)
+	})
+
+	t.Run("two sibling sources at one timestamp collapse to one row", func(t *testing.T) {
+		t.Parallel()
+		// BID and ASK sources share the same Title. One rate_values row each at the
+		// same timestamp. The service must return exactly one MeHistoryRowResult
+		// with both Bid and Ask populated and Total=1.
+		sharedTitle := "Center Credit Bank (FX)"
+		bidSrc := domain.RateSource{
+			Name:          "ccb-bid",
+			Title:         sharedTitle,
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			Kind:          domain.RateSourceKindBID,
+			Active:        true,
+		}
+		askSrc := domain.RateSource{
+			Name:          "ccb-ask",
+			Title:         sharedTitle,
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			Kind:          domain.RateSourceKindASK,
+			Active:        true,
+		}
+		subs := []domain.RateUserSubscription{subFor("ccb-bid"), subFor("ccb-ask")}
+		sources := map[string]domain.RateSource{
+			"ccb-bid": bidSrc,
+			"ccb-ask": askSrc,
+		}
+		histRows := []domain.RateValue{
+			{SourceName: "ccb-bid", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 487, Timestamp: base},
+			{SourceName: "ccb-ask", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 489, Timestamp: base},
+		}
+		// groupedTotal=1: two raw rows at the same (title, timestamp) tuple.
+		svc := newServiceWithHistoryGrouped(subs, sources, histRows, 2, 1, nil)
+
+		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", "", 1, 20)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, res.Total)
+		require.Len(t, res.Items, 1)
+		assert.Equal(t, sharedTitle, res.Items[0].SourceTitle)
+		require.NotNil(t, res.Items[0].Bid)
+		require.NotNil(t, res.Items[0].Ask)
+		assert.Equal(t, 487.0, *res.Items[0].Bid)
+		assert.Equal(t, 489.0, *res.Items[0].Ask)
+	})
+
+	t.Run("Total counts distinct (title, timestamp) tuples not raw rows", func(t *testing.T) {
+		t.Parallel()
+		// Two timestamps × (BID + ASK) = 4 raw rate_values rows for the same provider.
+		// groupedTotal = 2 (two distinct (title, timestamp) tuples).
+		sharedTitle := "Center Credit Bank (FX)"
+		bidSrc := domain.RateSource{
+			Name:          "ccb2-bid",
+			Title:         sharedTitle,
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			Kind:          domain.RateSourceKindBID,
+			Active:        true,
+		}
+		askSrc := domain.RateSource{
+			Name:          "ccb2-ask",
+			Title:         sharedTitle,
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			Kind:          domain.RateSourceKindASK,
+			Active:        true,
+		}
+		subs := []domain.RateUserSubscription{subFor("ccb2-bid"), subFor("ccb2-ask")}
+		sources := map[string]domain.RateSource{
+			"ccb2-bid": bidSrc,
+			"ccb2-ask": askSrc,
+		}
+		histRows := []domain.RateValue{
+			{SourceName: "ccb2-bid", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 487, Timestamp: base},
+			{SourceName: "ccb2-ask", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 489, Timestamp: base},
+			{SourceName: "ccb2-bid", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 486, Timestamp: base.Add(-time.Minute)},
+			{SourceName: "ccb2-ask", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 488, Timestamp: base.Add(-time.Minute)},
+		}
+		// rowTotal=4, groupedTotal=2.
+		svc := newServiceWithHistoryGrouped(subs, sources, histRows, 4, 2, nil)
+
+		res, err := svc.ObtainMeHistory(t.Context(), "user1", "USD/KZT", "", 1, 20)
+		require.NoError(t, err)
+		assert.EqualValues(t, 2, res.Total)
+		assert.Len(t, res.Items, 2)
 	})
 }

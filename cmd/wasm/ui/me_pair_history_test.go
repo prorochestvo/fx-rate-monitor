@@ -31,9 +31,8 @@ func historyState(page, limit int, total int64, items []dto.MeHistoryRow, loadin
 }
 
 // bidRow builds a MeHistoryRow with only Bid set.
-func bidRow(sourceName, title string, ts time.Time, bid float64, bidDelta *float64) dto.MeHistoryRow {
+func bidRow(title string, ts time.Time, bid float64, bidDelta *float64) dto.MeHistoryRow {
 	return dto.MeHistoryRow{
-		SourceName:  sourceName,
 		SourceTitle: title,
 		Timestamp:   ts,
 		Bid:         &bid,
@@ -42,9 +41,8 @@ func bidRow(sourceName, title string, ts time.Time, bid float64, bidDelta *float
 }
 
 // askRow builds a MeHistoryRow with only Ask set.
-func askRow(sourceName, title string, ts time.Time, ask float64, askDelta *float64) dto.MeHistoryRow {
+func askRow(title string, ts time.Time, ask float64, askDelta *float64) dto.MeHistoryRow {
 	return dto.MeHistoryRow{
-		SourceName:  sourceName,
 		SourceTitle: title,
 		Timestamp:   ts,
 		Ask:         &ask,
@@ -53,9 +51,8 @@ func askRow(sourceName, title string, ts time.Time, ask float64, askDelta *float
 }
 
 // bidAskRow builds a MeHistoryRow with both Bid and Ask set.
-func bidAskRow(sourceName, title string, ts time.Time, bid, ask float64, bidDelta, askDelta *float64) dto.MeHistoryRow {
+func bidAskRow(title string, ts time.Time, bid, ask float64, bidDelta, askDelta *float64) dto.MeHistoryRow {
 	return dto.MeHistoryRow{
-		SourceName:  sourceName,
 		SourceTitle: title,
 		Timestamp:   ts,
 		Bid:         &bid,
@@ -76,7 +73,20 @@ func TestRenderPairHistory(t *testing.T) {
 		html := ui.RenderPairHistory(state)
 
 		assert.Contains(t, html, "me-pair-history-empty")
-		assert.Contains(t, html, "No history yet")
+		assert.Contains(t, html, "No history yet.")
+		assert.NotContains(t, html, "me-pair-history-entry")
+	})
+
+	t.Run("empty items with active filter renders filter-specific empty state", func(t *testing.T) {
+		t.Parallel()
+		state := historyState(1, 20, 0, nil, false, nil)
+		state.KnownSources = map[string]struct{}{"Kaspi": {}, "Halyk Bank": {}}
+		state.SelectedSourceTitle = "Kaspi"
+		html := ui.RenderPairHistory(state)
+
+		assert.Contains(t, html, "me-pair-history-empty")
+		assert.Contains(t, html, "No history for this source.")
+		assert.NotContains(t, html, "No history yet.")
 		assert.NotContains(t, html, "me-pair-history-entry")
 	})
 
@@ -117,7 +127,7 @@ func TestRenderPairHistory(t *testing.T) {
 	t.Run("single-direction entry renders BID only", func(t *testing.T) {
 		t.Parallel()
 		ts := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
-		items := []dto.MeHistoryRow{bidRow("kkb", "Kaspi", ts, 487.5, nil)}
+		items := []dto.MeHistoryRow{bidRow("Kaspi", ts, 487.5, nil)}
 		state := historyState(1, 20, 1, items, false, nil)
 		html := ui.RenderPairHistory(state)
 
@@ -130,7 +140,7 @@ func TestRenderPairHistory(t *testing.T) {
 	t.Run("single-direction entry renders ASK only", func(t *testing.T) {
 		t.Parallel()
 		ts := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
-		items := []dto.MeHistoryRow{askRow("kkb", "Kaspi", ts, 489.0, nil)}
+		items := []dto.MeHistoryRow{askRow("Kaspi", ts, 489.0, nil)}
 		state := historyState(1, 20, 1, items, false, nil)
 		html := ui.RenderPairHistory(state)
 
@@ -143,7 +153,7 @@ func TestRenderPairHistory(t *testing.T) {
 	t.Run("two-direction entry renders BID and ASK", func(t *testing.T) {
 		t.Parallel()
 		ts := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
-		items := []dto.MeHistoryRow{bidAskRow("kkb", "Kaspi", ts, 487.5, 489.0, nil, nil)}
+		items := []dto.MeHistoryRow{bidAskRow("Kaspi", ts, 487.5, 489.0, nil, nil)}
 		state := historyState(1, 20, 1, items, false, nil)
 		html := ui.RenderPairHistory(state)
 
@@ -158,7 +168,7 @@ func TestRenderPairHistory(t *testing.T) {
 	t.Run("nil delta renders em-dash", func(t *testing.T) {
 		t.Parallel()
 		ts := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
-		items := []dto.MeHistoryRow{bidRow("kkb", "Kaspi", ts, 487.5, nil)}
+		items := []dto.MeHistoryRow{bidRow("Kaspi", ts, 487.5, nil)}
 		state := historyState(1, 20, 1, items, false, nil)
 		html := ui.RenderPairHistory(state)
 
@@ -173,7 +183,7 @@ func TestRenderPairHistory(t *testing.T) {
 		t.Parallel()
 		ts := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
 		delta := 1.23
-		items := []dto.MeHistoryRow{bidRow("kkb", "Kaspi", ts, 487.5, &delta)}
+		items := []dto.MeHistoryRow{bidRow("Kaspi", ts, 487.5, &delta)}
 		state := historyState(1, 20, 1, items, false, nil)
 		html := ui.RenderPairHistory(state)
 
@@ -186,7 +196,7 @@ func TestRenderPairHistory(t *testing.T) {
 		t.Parallel()
 		ts := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
 		delta := -0.75
-		items := []dto.MeHistoryRow{bidRow("kkb", "Kaspi", ts, 487.5, &delta)}
+		items := []dto.MeHistoryRow{bidRow("Kaspi", ts, 487.5, &delta)}
 		state := historyState(1, 20, 1, items, false, nil)
 		html := ui.RenderPairHistory(state)
 
@@ -198,7 +208,7 @@ func TestRenderPairHistory(t *testing.T) {
 	t.Run("pagination prev disabled on page 1", func(t *testing.T) {
 		t.Parallel()
 		ts := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
-		items := []dto.MeHistoryRow{bidRow("kkb", "Kaspi", ts, 487.5, nil)}
+		items := []dto.MeHistoryRow{bidRow("Kaspi", ts, 487.5, nil)}
 		state := historyState(1, 20, 100, items, false, nil)
 		html := ui.RenderPairHistory(state)
 
@@ -214,7 +224,7 @@ func TestRenderPairHistory(t *testing.T) {
 	t.Run("pagination next disabled on last page", func(t *testing.T) {
 		t.Parallel()
 		ts := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
-		items := []dto.MeHistoryRow{bidRow("kkb", "Kaspi", ts, 487.5, nil)}
+		items := []dto.MeHistoryRow{bidRow("Kaspi", ts, 487.5, nil)}
 		// Page 5, limit 20, total 100 — page*limit == total, so at end.
 		state := historyState(5, 20, 100, items, false, nil)
 		html := ui.RenderPairHistory(state)
@@ -232,7 +242,7 @@ func TestRenderPairHistory(t *testing.T) {
 		t.Parallel()
 		ts := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
 		hostile := `<script>alert(1)</script>`
-		items := []dto.MeHistoryRow{bidRow("src", hostile, ts, 487.5, nil)}
+		items := []dto.MeHistoryRow{bidRow(hostile, ts, 487.5, nil)}
 		state := historyState(1, 20, 1, items, false, nil)
 		html := ui.RenderPairHistory(state)
 
@@ -240,34 +250,113 @@ func TestRenderPairHistory(t *testing.T) {
 		assert.Contains(t, html, "&lt;script&gt;")
 	})
 
-	t.Run("XSS in source name is escaped", func(t *testing.T) {
-		t.Parallel()
-		ts := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
-		hostile := `"><img src=x onerror=alert(1)>`
-		items := []dto.MeHistoryRow{bidRow(hostile, "Kaspi", ts, 487.5, nil)}
-		state := historyState(1, 20, 1, items, false, nil)
-		html := ui.RenderPairHistory(state)
-
-		// The source name is in me-pair-history-head; img must not appear.
-		assert.NotContains(t, html, "<img src=x")
-	})
-
 	t.Run("no script tag in output", func(t *testing.T) {
 		t.Parallel()
 		ts := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
 		items := []dto.MeHistoryRow{
-			bidAskRow("kkb", "Kaspi", ts, 487.5, 489.0, float64PtrH(1.0), float64PtrH(-0.5)),
+			bidAskRow("Kaspi", ts, 487.5, 489.0, float64PtrH(1.0), float64PtrH(-0.5)),
 		}
 		state := historyState(2, 20, 100, items, false, nil)
 		html := ui.RenderPairHistory(state)
 		assert.NotContains(t, strings.ToLower(html), "<script")
 	})
 
-	t.Run("back button is present", func(t *testing.T) {
+	t.Run("back button has been removed", func(t *testing.T) {
 		t.Parallel()
 		state := historyState(1, 20, 0, nil, false, nil)
 		html := ui.RenderPairHistory(state)
-		assert.Contains(t, html, `id="me-pair-history-back"`)
+		assert.NotContains(t, html, `id="me-pair-history-back"`)
+		// A stable history-view marker must still be present.
+		assert.Contains(t, html, "me-pair-history-empty")
+	})
+
+	t.Run("chip row hidden when KnownSources has zero entries", func(t *testing.T) {
+		t.Parallel()
+		state := historyState(1, 20, 0, nil, false, nil)
+		html := ui.RenderPairHistory(state)
+		assert.NotContains(t, html, "me-pair-history-source-filter")
+	})
+
+	t.Run("chip row hidden when KnownSources has one entry", func(t *testing.T) {
+		t.Parallel()
+		state := historyState(1, 20, 0, nil, false, nil)
+		state.KnownSources = map[string]struct{}{"Kaspi": {}}
+		html := ui.RenderPairHistory(state)
+		assert.NotContains(t, html, "me-pair-history-source-filter")
+	})
+
+	t.Run("chip row renders one chip per known source plus All", func(t *testing.T) {
+		t.Parallel()
+		state := historyState(1, 20, 0, nil, false, nil)
+		// Keys are titles; sorted: "Halyk Bank" < "Kaspi".
+		state.KnownSources = map[string]struct{}{"Halyk Bank": {}, "Kaspi": {}}
+		html := ui.RenderPairHistory(state)
+		assert.Contains(t, html, "me-pair-history-source-filter")
+		// All chip.
+		assert.Contains(t, html, `id="me-pair-history-source-all"`)
+		// Source chips: data-source and text are both the title.
+		assert.Contains(t, html, `data-source="Halyk Bank"`)
+		assert.Contains(t, html, "Halyk Bank")
+		assert.Contains(t, html, `data-source="Kaspi"`)
+		assert.Contains(t, html, "Kaspi")
+	})
+
+	t.Run("active chip carries the active class for selected source", func(t *testing.T) {
+		t.Parallel()
+		state := historyState(1, 20, 0, nil, false, nil)
+		state.KnownSources = map[string]struct{}{"Halyk Bank": {}, "Kaspi": {}}
+		state.SelectedSourceTitle = "Kaspi"
+		html := ui.RenderPairHistory(state)
+		assert.Contains(t, html, `data-source="Kaspi"`)
+		// The Kaspi chip must carry the active class.
+		assert.Contains(t, html, "me-pair-history-source-chip-active")
+		// Verify the active class is NOT on the All chip. The template emits
+		// class= before id=, so the assertion must match that attribute order.
+		assert.NotContains(t, html, `class="me-pair-history-source-chip me-pair-history-source-chip-active" id="me-pair-history-source-all"`)
+	})
+
+	t.Run("All chip is active when SelectedSourceTitle is empty", func(t *testing.T) {
+		t.Parallel()
+		state := historyState(1, 20, 0, nil, false, nil)
+		state.KnownSources = map[string]struct{}{"Halyk Bank": {}, "Kaspi": {}}
+		state.SelectedSourceTitle = ""
+		html := ui.RenderPairHistory(state)
+		// The All chip must carry the active class.
+		assert.Contains(t, html, `id="me-pair-history-source-all"`)
+		assert.Contains(t, html, "me-pair-history-source-chip-active")
+	})
+
+	t.Run("chip text is HTML-escaped", func(t *testing.T) {
+		t.Parallel()
+		state := historyState(1, 20, 0, nil, false, nil)
+		hostile := `<script>evil()</script>`
+		// hostile title is the key; second title is benign so chip count >= 2.
+		state.KnownSources = map[string]struct{}{hostile: {}, "Halyk Bank": {}}
+		html := ui.RenderPairHistory(state)
+		assert.NotContains(t, html, "<script>", "raw script tag must not appear in output")
+		assert.Contains(t, html, "&lt;script&gt;", "script tag must be HTML-escaped")
+	})
+
+	t.Run("chip data-source is HTML-escaped", func(t *testing.T) {
+		t.Parallel()
+		state := historyState(1, 20, 0, nil, false, nil)
+		hostile := `"><img src=x onerror=alert(1)>`
+		// hostile is the title used as both key and data-source attribute.
+		state.KnownSources = map[string]struct{}{hostile: {}, "Halyk Bank": {}}
+		html := ui.RenderPairHistory(state)
+		assert.NotContains(t, html, `<img src=x`, "hostile title must not appear unescaped in data-source")
+	})
+
+	t.Run("ampersand in chip title is HTML-escaped in both attribute and text", func(t *testing.T) {
+		t.Parallel()
+		// Locks in the HTML-entity round-trip: the browser converts &amp; back to &
+		// when reading dataset.source, so the title round-trips correctly to Go.
+		state := historyState(1, 20, 0, nil, false, nil)
+		state.KnownSources = map[string]struct{}{"AT&T Bank": {}, "Halyk Bank": {}}
+		html := ui.RenderPairHistory(state)
+		assert.Contains(t, html, "AT&amp;T Bank", "ampersand must be HTML-entity-encoded in output")
+		assert.NotContains(t, html, `data-source="AT&T Bank"`, "raw ampersand must not appear in data-source attribute")
+		assert.Contains(t, html, `data-source="AT&amp;T Bank"`, "ampersand must be escaped in data-source attribute")
 	})
 }
 

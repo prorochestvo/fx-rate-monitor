@@ -88,7 +88,7 @@ func TestRateRepository_TransactionErrors(t *testing.T) {
 	t.Run("ObtainHistoryForPairsPaged propagates transaction error", func(t *testing.T) {
 		t.Parallel()
 		pairs := []domain.SourcePairKey{{SourceName: "src", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
-		_, _, err := newBrokenRepo(t).ObtainHistoryForPairsPaged(t.Context(), pairs, 10, 0)
+		_, _, _, err := newBrokenRepo(t).ObtainHistoryForPairsPaged(t.Context(), pairs, 10, 0)
 		require.Error(t, err)
 	})
 }
@@ -536,10 +536,11 @@ func TestRateValueRepository_ObtainHistoryForPairsPaged(t *testing.T) {
 		r, err := NewRateValueRepository(stubSQLiteDB(t))
 		require.NoError(t, err)
 
-		rows, total, err := r.ObtainHistoryForPairsPaged(t.Context(), nil, 20, 0)
+		rows, total, groupedTotal, err := r.ObtainHistoryForPairsPaged(t.Context(), nil, 20, 0)
 		require.NoError(t, err)
 		require.Empty(t, rows)
 		require.EqualValues(t, 0, total)
+		require.EqualValues(t, 0, groupedTotal)
 	})
 
 	t.Run("single source single direction returns rows newest first", func(t *testing.T) {
@@ -553,9 +554,10 @@ func TestRateValueRepository_ObtainHistoryForPairsPaged(t *testing.T) {
 		seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-single", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 300}, base)
 
 		pairs := []domain.SourcePairKey{{SourceName: "hist-single", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
-		rows, total, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 20, 0)
+		rows, total, groupedTotal, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 20, 0)
 		require.NoError(t, err)
 		require.EqualValues(t, 3, total)
+		require.EqualValues(t, 3, groupedTotal)
 		require.Len(t, rows, 3)
 		// Newest first.
 		require.Equal(t, 300.0, rows[0].Price)
@@ -577,7 +579,7 @@ func TestRateValueRepository_ObtainHistoryForPairsPaged(t *testing.T) {
 			{SourceName: "hist-src-a", BaseCurrency: "USD", QuoteCurrency: "KZT"},
 			{SourceName: "hist-src-b", BaseCurrency: "USD", QuoteCurrency: "KZT"},
 		}
-		rows, total, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 20, 0)
+		rows, total, _, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 20, 0)
 		require.NoError(t, err)
 		require.EqualValues(t, 3, total)
 		require.Len(t, rows, 3)
@@ -598,7 +600,7 @@ func TestRateValueRepository_ObtainHistoryForPairsPaged(t *testing.T) {
 		}
 
 		pairs := []domain.SourcePairKey{{SourceName: "hist-limit", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
-		rows, total, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 2, 0)
+		rows, total, _, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 2, 0)
 		require.NoError(t, err)
 		require.EqualValues(t, 5, total)
 		require.Len(t, rows, 2)
@@ -616,7 +618,7 @@ func TestRateValueRepository_ObtainHistoryForPairsPaged(t *testing.T) {
 
 		pairs := []domain.SourcePairKey{{SourceName: "hist-offset", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
 		// Newest row is price=5; offset=2 skips the two newest, so first returned is price=3.
-		rows, total, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 10, 2)
+		rows, total, _, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 10, 2)
 		require.NoError(t, err)
 		require.EqualValues(t, 5, total)
 		require.Len(t, rows, 3)
@@ -634,7 +636,7 @@ func TestRateValueRepository_ObtainHistoryForPairsPaged(t *testing.T) {
 		}
 
 		pairs := []domain.SourcePairKey{{SourceName: "hist-total", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
-		_, total, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 3, 0)
+		_, total, _, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 3, 0)
 		require.NoError(t, err)
 		require.EqualValues(t, 10, total)
 	})
@@ -650,7 +652,7 @@ func TestRateValueRepository_ObtainHistoryForPairsPaged(t *testing.T) {
 		rv2 := seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-tie", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 20}, sameTS)
 
 		pairs := []domain.SourcePairKey{{SourceName: "hist-tie", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
-		rows, total, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 20, 0)
+		rows, total, _, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 20, 0)
 		require.NoError(t, err)
 		require.EqualValues(t, 2, total)
 		require.Len(t, rows, 2)
@@ -659,5 +661,85 @@ func TestRateValueRepository_ObtainHistoryForPairsPaged(t *testing.T) {
 		require.True(t, rv2.ID > rv1.ID, "pre-condition: rv2.ID must be greater for this test to be meaningful")
 		require.Equal(t, rv2.ID, rows[0].ID)
 		require.Equal(t, rv1.ID, rows[1].ID)
+	})
+
+	// seedSourceWithTitle creates a rate_source with a specific title instead of
+	// the default "test fixture <name>" produced by stubSQLiteDB.
+	seedSourceWithTitle := func(t *testing.T, sqlDB db, name, title, kind string) {
+		t.Helper()
+		sr, srErr := NewRateSourceRepository(sqlDB)
+		require.NoError(t, srErr)
+		require.NoError(t, sr.RetainRateSource(t.Context(), &domain.RateSource{
+			Name:          name,
+			Title:         title,
+			BaseCurrency:  "USD",
+			QuoteCurrency: "KZT",
+			URL:           "https://example.invalid/" + name,
+			Interval:      "10m",
+			Kind:          domain.RateSourceKind(kind),
+			Active:        true,
+		}))
+	}
+
+	t.Run("single source two timestamps counted as grouped total 2", func(t *testing.T) {
+		t.Parallel()
+		sqlDB := stubSQLiteDB(t)
+		seedSourceWithTitle(t, sqlDB, "hist-gt-single", "Center Credit Bank (FX)", "BID")
+		r, err := NewRateValueRepository(sqlDB)
+		require.NoError(t, err)
+
+		base := time.Now().UTC().Truncate(time.Second)
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-gt-single", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 100}, base.Add(-time.Minute))
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-gt-single", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 200}, base)
+
+		pairs := []domain.SourcePairKey{{SourceName: "hist-gt-single", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
+		_, rowTotal, groupedTotal, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 20, 0)
+		require.NoError(t, err)
+		require.EqualValues(t, 2, rowTotal)
+		require.EqualValues(t, 2, groupedTotal)
+	})
+
+	t.Run("sibling BID+ASK sources at same timestamp count as grouped total 1", func(t *testing.T) {
+		t.Parallel()
+		sqlDB := stubSQLiteDB(t)
+		// Two sources share the same title; their rows at the same timestamp are
+		// one distinct (title, timestamp) tuple in the grouped count.
+		seedSourceWithTitle(t, sqlDB, "hist-gt-bid", "Center Credit Bank (FX)", "BID")
+		seedSourceWithTitle(t, sqlDB, "hist-gt-ask", "Center Credit Bank (FX)", "ASK")
+		r, err := NewRateValueRepository(sqlDB)
+		require.NoError(t, err)
+
+		sameTS := time.Now().UTC().Truncate(time.Second)
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-gt-bid", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 487}, sameTS)
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-gt-ask", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 489}, sameTS)
+
+		pairs := []domain.SourcePairKey{
+			{SourceName: "hist-gt-bid", BaseCurrency: "USD", QuoteCurrency: "KZT"},
+			{SourceName: "hist-gt-ask", BaseCurrency: "USD", QuoteCurrency: "KZT"},
+		}
+		_, rowTotal, groupedTotal, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 20, 0)
+		require.NoError(t, err)
+		require.EqualValues(t, 2, rowTotal, "two raw rate_values rows")
+		require.EqualValues(t, 1, groupedTotal, "BID+ASK at same timestamp under same title count as 1")
+	})
+
+	t.Run("title containing literal pipe is counted correctly", func(t *testing.T) {
+		t.Parallel()
+		// Locks in the pipe-delimiter behaviour: a title that itself contains '|'
+		// must not corrupt the COUNT(DISTINCT ...) result for two distinct timestamps.
+		sqlDB := stubSQLiteDB(t)
+		seedSourceWithTitle(t, sqlDB, "hist-gt-pipe", "AT|T Bank", "BID")
+		r, err := NewRateValueRepository(sqlDB)
+		require.NoError(t, err)
+
+		base := time.Now().UTC().Truncate(time.Second)
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-gt-pipe", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 100}, base.Add(-time.Minute))
+		seedWithTimestamp(t, r, domain.RateValue{SourceName: "hist-gt-pipe", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 200}, base)
+
+		pairs := []domain.SourcePairKey{{SourceName: "hist-gt-pipe", BaseCurrency: "USD", QuoteCurrency: "KZT"}}
+		_, rowTotal, groupedTotal, err := r.ObtainHistoryForPairsPaged(t.Context(), pairs, 20, 0)
+		require.NoError(t, err)
+		require.EqualValues(t, 2, rowTotal)
+		require.EqualValues(t, 2, groupedTotal, "two distinct timestamps must count as 2 even when title contains '|'")
 	})
 }

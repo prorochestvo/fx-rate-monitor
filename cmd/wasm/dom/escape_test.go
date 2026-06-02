@@ -45,9 +45,9 @@ func TestEscape(t *testing.T) {
 			want:  "say &quot;hello&quot;",
 		},
 		{
-			name:  "single quote is not escaped",
+			name:  "single quote is escaped to &#39;",
 			input: "it's fine",
-			want:  "it's fine",
+			want:  "it&#39;s fine",
 		},
 		{
 			name:  "XSS script tag",
@@ -70,9 +70,9 @@ func TestEscape(t *testing.T) {
 			want:  "&amp;amp;",
 		},
 		{
-			name:  "combination with single quote preserved",
+			name:  "combination with single quote escaped",
 			input: `He said "it's a <trap>" & left`,
-			want:  "He said &quot;it's a &lt;trap&gt;&quot; &amp; left",
+			want:  "He said &quot;it&#39;s a &lt;trap&gt;&quot; &amp; left",
 		},
 	}
 

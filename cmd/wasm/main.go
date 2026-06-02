@@ -646,12 +646,15 @@ func runRenderMeSubscriptions(client *apiclient.Client) {
 // focused row open the modal via the same path so keyboard users are covered.
 //
 // Modal close: a delegated click handler on #me-pair-modal-slot checks the target
-// ID; clicks on #me-pair-modal-close or #me-pair-modal-backdrop call ClosePairModal
-// and redraw. Content-area clicks are ignored.
+// ID. Clicks on #me-pair-modal-close branch on HistoryOpen: when history is open
+// the click calls CloseHistory (one press); otherwise it calls ClosePairModal.
+// Clicks on #me-pair-modal-backdrop always call ClosePairModal unconditionally
+// (fast escape hatch). Content-area clicks are ignored.
 //
-// History navigation: clicks on #me-pair-modal-history, #me-pair-history-back,
-// #me-pair-history-prev, and #me-pair-history-next are handled inside the same
-// delegated listener on #me-pair-modal-slot.
+// History navigation: clicks on #me-pair-modal-history, #me-pair-history-prev,
+// #me-pair-history-next, #me-pair-history-source-all, and elements matching
+// .me-pair-history-source-chip are handled inside the same delegated listener
+// on #me-pair-modal-slot.
 //
 // Escape: a document-level keydown listener closes the history view first (one press),
 // then closes the modal (second press) when both are open.
@@ -754,7 +757,14 @@ func bindMeSubsHandlers(
 			}
 			id := target.Get("id").String()
 			switch id {
-			case "me-pair-modal-close", "me-pair-modal-backdrop":
+			case "me-pair-modal-close":
+				if page.State().HistoryOpen {
+					page.CloseHistory()
+					redrawModal()
+				} else {
+					closeModal()
+				}
+			case "me-pair-modal-backdrop":
 				closeModal()
 			case "me-pair-modal-history":
 				// Open the history view: fetch page 1 in a goroutine and redraw.
@@ -766,9 +776,6 @@ func bindMeSubsHandlers(
 					}
 					redrawModal()
 				}()
-			case "me-pair-history-back":
-				page.CloseHistory()
-				redrawModal()
 			case "me-pair-history-prev":
 				go func() {
 					fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -789,6 +796,21 @@ func bindMeSubsHandlers(
 				}()
 				// Clicks inside .me-pair-modal-card are ignored — content-area
 				// interaction must not close the overlay.
+			default:
+				// Handle source-filter chip clicks via closest() to cover child nodes.
+				chip := target.Call("closest", ".me-pair-history-source-chip")
+				if chip.IsNull() || chip.IsUndefined() {
+					return
+				}
+				title := chip.Get("dataset").Get("source").String()
+				go func() {
+					fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+					defer cancel()
+					if err := page.SetHistorySourceTitle(fetchCtx, title); err != nil {
+						js.Global().Get("console").Call("warn", "history source filter:", err.Error())
+					}
+					redrawModal()
+				}()
 			}
 		}))
 	}

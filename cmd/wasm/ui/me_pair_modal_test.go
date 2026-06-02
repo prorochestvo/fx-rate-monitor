@@ -169,8 +169,8 @@ func TestRenderPairModal(t *testing.T) {
 		}
 		html := ui.RenderPairModal(state)
 
-		// History body is present.
-		assert.Contains(t, html, `id="me-pair-history-back"`)
+		// History body is present (use a stable marker that survives back-button removal).
+		assert.Contains(t, html, "me-pair-history-pagination")
 		// Detail-only elements are absent.
 		assert.NotContains(t, html, `id="me-pair-modal-history"`)
 		assert.NotContains(t, html, "me-pair-modal-series")

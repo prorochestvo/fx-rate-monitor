@@ -496,10 +496,10 @@ func TestClient_MeRatesHistory(t *testing.T) {
 
 	t.Run("happy path decodes history response", func(t *testing.T) {
 		t.Parallel()
-		body := `{"pair":"USD/KZT","page":1,"limit":20,"total":1,"items":[{"source_name":"src","source_title":"Test","timestamp":"2026-05-30T12:00:00Z","bid":490.0}]}`
+		body := `{"pair":"USD/KZT","page":1,"limit":20,"total":1,"items":[{"source_title":"Test","timestamp":"2026-05-30T12:00:00Z","bid":490.0}]}`
 		f := &fakeFetcher{jsonResponse: []byte(body)}
 		c := apiclient.New(f)
-		resp, err := c.MeRatesHistory(t.Context(), "init", "USD/KZT", 1, 20)
+		resp, err := c.MeRatesHistory(t.Context(), "init", "USD/KZT", "", 1, 20)
 		require.NoError(t, err)
 		assert.Equal(t, "USD/KZT", resp.Pair)
 		assert.EqualValues(t, 1, resp.Total)
@@ -513,7 +513,7 @@ func TestClient_MeRatesHistory(t *testing.T) {
 		const initData = "query_id=AAH&user=%7B%22id%22%3A123%7D"
 		f := &fakeFetcher{jsonResponse: []byte(`{"pair":"USD/KZT","page":1,"limit":20,"total":0,"items":[]}`)}
 		c := apiclient.New(f)
-		_, err := c.MeRatesHistory(t.Context(), initData, "USD/KZT", 1, 20)
+		_, err := c.MeRatesHistory(t.Context(), initData, "USD/KZT", "", 1, 20)
 		require.NoError(t, err)
 		assert.Equal(t, initData, f.lastHeaders["X-Telegram-Init-Data"])
 	})
@@ -522,7 +522,7 @@ func TestClient_MeRatesHistory(t *testing.T) {
 		t.Parallel()
 		f := &fakeFetcher{jsonErr: errors.New("http 401")}
 		c := apiclient.New(f)
-		_, err := c.MeRatesHistory(t.Context(), "bad", "USD/KZT", 1, 20)
+		_, err := c.MeRatesHistory(t.Context(), "bad", "USD/KZT", "", 1, 20)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "http 401")
 	})
@@ -531,7 +531,7 @@ func TestClient_MeRatesHistory(t *testing.T) {
 		t.Parallel()
 		f := &fakeFetcher{jsonResponse: []byte(`not-json`)}
 		c := apiclient.New(f)
-		_, err := c.MeRatesHistory(t.Context(), "tok", "USD/KZT", 1, 20)
+		_, err := c.MeRatesHistory(t.Context(), "tok", "USD/KZT", "", 1, 20)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "decode me rates history")
 	})
@@ -540,7 +540,16 @@ func TestClient_MeRatesHistory(t *testing.T) {
 		t.Parallel()
 		f := &fakeFetcher{jsonErr: errors.New("http 500")}
 		c := apiclient.New(f)
-		_, err := c.MeRatesHistory(t.Context(), "tok", "USD/KZT", 1, 20)
+		_, err := c.MeRatesHistory(t.Context(), "tok", "USD/KZT", "", 1, 20)
 		require.Error(t, err)
+	})
+
+	t.Run("forwards source_title to URL", func(t *testing.T) {
+		t.Parallel()
+		f := &fakeFetcher{jsonResponse: []byte(`{"pair":"USD/KZT","page":1,"limit":20,"total":0,"items":[]}`)}
+		c := apiclient.New(f)
+		_, err := c.MeRatesHistory(t.Context(), "tok", "USD/KZT", "Kaspi", 1, 20)
+		require.NoError(t, err)
+		assert.Contains(t, f.lastURL, "source_title=Kaspi", "source_title must be present in the request URL")
 	})
 }

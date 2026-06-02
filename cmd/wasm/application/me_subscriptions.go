@@ -65,6 +65,22 @@ type MeSubscriptionsState struct {
 	HistoryLoading bool
 	// HistoryError is the most recent non-nil history fetch error. Nil on success.
 	HistoryError error
+
+	// SelectedSourceTitle is the provider title currently used as a history filter.
+	// An empty string means no filter (all sources). Set by SetHistorySourceTitle;
+	// reset to "" when OpenHistory or OpenPairModal is called.
+	SelectedSourceTitle string
+	// KnownSources is the set of provider titles seen in history items during the
+	// current OpenPair session. The key is the title string; the value is always
+	// struct{}{}. Accumulated across pagination pages; reset to nil on
+	// ClosePairModal or a new OpenPairModal call. Callers must not mutate the map:
+	// State returns a value copy of the struct so the map header is copied but the
+	// backing map is shared — mutations would corrupt controller state.
+	//
+	// The map may be stale if the user un-subscribes from a source in another
+	// browser tab mid-session; chips disappear only after the modal is
+	// closed and re-opened.
+	KnownSources map[string]struct{}
 }
 
 // MeSubscriptionsPage is the page controller for the Telegram Mini App
@@ -109,9 +125,16 @@ func (p *MeSubscriptionsPage) LoadInitial(ctx context.Context) error {
 // OpenPairModal sets the open modal to the given canonical pair label.
 // The pair value is copied so that callers cannot mutate state through a shared
 // backing pointer after the call returns.
+//
+// SelectedSourceTitle and KnownSources are zeroed defensively so that opening a
+// different pair (without an explicit ClosePairModal call between them) always
+// starts with a clean filter state. This is redundant with ClosePairModal's
+// reset on a normal close-then-open cycle, but cheap insurance.
 func (p *MeSubscriptionsPage) OpenPairModal(pair string) {
 	cp := pair
 	p.state.OpenPair = &cp
+	p.state.SelectedSourceTitle = ""
+	p.state.KnownSources = nil
 }
 
 // ClosePairModal clears the open modal and resets all history state except
@@ -123,16 +146,22 @@ func (p *MeSubscriptionsPage) ClosePairModal() {
 	p.state.HistoryPage = 0
 	p.state.HistoryTotal = 0
 	p.state.HistoryError = nil
+	p.state.SelectedSourceTitle = ""
+	p.state.KnownSources = nil
 	// HistoryLoading is left; it will be cleared by the inflight goroutine.
 }
 
 // OpenHistory switches the modal body to the history view for the currently
 // open pair and triggers a load of page 1. No-op when OpenPair is nil.
+// SelectedSourceTitle and KnownSources are zeroed so each open-history click
+// starts unfiltered, even if a previous session left a filter active.
 func (p *MeSubscriptionsPage) OpenHistory(ctx context.Context) error {
 	if p.state.OpenPair == nil {
 		return nil
 	}
 	p.state.HistoryOpen = true
+	p.state.SelectedSourceTitle = ""
+	p.state.KnownSources = map[string]struct{}{}
 	return p.LoadHistory(ctx, 1)
 }
 
@@ -144,17 +173,21 @@ func (p *MeSubscriptionsPage) CloseHistory() {
 }
 
 // LoadHistory fetches one page of history rows for the currently open pair.
-// page is 1-based. The state's HistoryPage, HistoryItems, and HistoryTotal are
-// updated on success; HistoryError is set on failure. No-op (returns nil) when
-// OpenPair is nil.
+// page is 1-based. The state's HistoryPage, HistoryItems, HistoryTotal, and
+// KnownSources are updated on success; HistoryError is set on failure. No-op
+// (returns nil) when OpenPair is nil.
 //
 // HistoryLoading is set to true synchronously before the fetch and reset to
 // false when the fetch returns, regardless of outcome.
 //
-// The target pair is snapshotted before the HTTP call. If the modal is closed
-// or switched to a different pair while the fetch is in flight, the stale
-// result is silently dropped — state is not overwritten with data for the
-// wrong pair.
+// Both the target pair and SelectedSourceTitle are snapshotted before the HTTP
+// call. If the modal is closed, switched to a different pair, or the source
+// filter changes while the fetch is in flight, the stale result is silently
+// dropped — state is not overwritten with data for the wrong pair or filter.
+//
+// After a successful fetch, each response item's SourceTitle is merged into
+// KnownSources as a key, growing the set monotonically across pagination within
+// the same OpenPair session.
 //
 // A 401 response sets AuthFailure=true and resets the modal to a clean state
 // so the next mount starts fresh.
@@ -166,10 +199,11 @@ func (p *MeSubscriptionsPage) LoadHistory(ctx context.Context, page int) error {
 		p.state.HistoryLimit = MeHistoryDefaultLimit
 	}
 	targetPair := *p.state.OpenPair
+	targetSourceTitle := p.state.SelectedSourceTitle
 	p.state.HistoryLoading = true
 	defer func() { p.state.HistoryLoading = false }()
 
-	resp, err := p.client.MeRatesHistory(ctx, p.initData, targetPair, page, p.state.HistoryLimit)
+	resp, err := p.client.MeRatesHistory(ctx, p.initData, targetPair, targetSourceTitle, page, p.state.HistoryLimit)
 	if err != nil {
 		if strings.Contains(err.Error(), AuthFailureSentinel) {
 			p.state.AuthFailure = true
@@ -178,18 +212,31 @@ func (p *MeSubscriptionsPage) LoadHistory(ctx context.Context, page int) error {
 			p.state.HistoryItems = nil
 			p.state.HistoryPage = 0
 			p.state.HistoryTotal = 0
+			p.state.SelectedSourceTitle = ""
+			p.state.KnownSources = nil
 		}
 		p.state.HistoryError = err
 		return err
 	}
-	// Discard stale result when the modal was closed or switched mid-fetch.
-	if p.state.OpenPair == nil || *p.state.OpenPair != targetPair {
+	// Discard stale result when the modal was closed, switched to a different
+	// pair, or the source filter changed while the fetch was in flight.
+	if p.state.OpenPair == nil || *p.state.OpenPair != targetPair || p.state.SelectedSourceTitle != targetSourceTitle {
 		return nil
 	}
 	p.state.HistoryError = nil
 	p.state.HistoryPage = page
 	p.state.HistoryItems = resp.Items
 	p.state.HistoryTotal = resp.Total
+
+	// Accumulate provider titles seen in this page into KnownSources.
+	if p.state.KnownSources == nil {
+		p.state.KnownSources = make(map[string]struct{}, len(resp.Items))
+	}
+	for _, item := range resp.Items {
+		if item.SourceTitle != "" {
+			p.state.KnownSources[item.SourceTitle] = struct{}{}
+		}
+	}
 	return nil
 }
 
@@ -212,6 +259,22 @@ func (p *MeSubscriptionsPage) HistoryPrevPage(ctx context.Context) error {
 		return nil
 	}
 	return p.LoadHistory(ctx, p.state.HistoryPage-1)
+}
+
+// SetHistorySourceTitle sets the active provider-title filter for the history
+// view and reloads page 1 of history with the new filter applied. No-op when
+// OpenPair is nil (history not open). sourceTitle is the human-readable provider
+// title (rate_sources.title); empty string means no filter (all sources).
+//
+// HistoryLoading is set to true synchronously on entry via LoadHistory so the
+// caller can re-render to show the loading skeleton before the network round-trip.
+func (p *MeSubscriptionsPage) SetHistorySourceTitle(ctx context.Context, sourceTitle string) error {
+	if p.state.OpenPair == nil {
+		return nil
+	}
+	p.state.SelectedSourceTitle = sourceTitle
+	p.state.HistoryPage = 1
+	return p.LoadHistory(ctx, 1)
 }
 
 // LoadSparklineChart fetches the sparkline-list chart from /api/me/rates/chart

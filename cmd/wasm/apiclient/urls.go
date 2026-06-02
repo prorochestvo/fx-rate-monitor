@@ -81,11 +81,15 @@ func publicRatesChartURL(page, limit int) string {
 
 // meRatesHistoryURL returns the paginated per-pair history endpoint URL.
 // pair should be upper-case canonical (e.g. "USD/KZT"); url.Values.Encode
-// percent-encodes the slash.
-func meRatesHistoryURL(pair string, page, limit int) string {
+// percent-encodes the slash. When sourceTitle is non-empty, the source_title
+// query parameter is added; otherwise it is omitted entirely.
+func meRatesHistoryURL(pair, sourceTitle string, page, limit int) string {
 	v := url.Values{}
 	v.Set("pair", pair)
 	v.Set("page", strconv.Itoa(page))
 	v.Set("limit", strconv.Itoa(limit))
+	if sourceTitle != "" {
+		v.Set("source_title", sourceTitle)
+	}
 	return "/api/me/rates/history?" + v.Encode()
 }

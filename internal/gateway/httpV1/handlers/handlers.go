@@ -111,7 +111,7 @@ type meProfileRepository interface {
 // GetMeRatesHistory, and GetPublicRatesChart. It is satisfied by *appchart.Service.
 type meChartService interface {
 	ObtainMeChart(ctx context.Context, userID string) (*appchart.MeChart, error)
-	ObtainMeHistory(ctx context.Context, userID, pair string, page, limit int64) (*appchart.MeHistoryResult, error)
+	ObtainMeHistory(ctx context.Context, userID, pair, sourceTitle string, page, limit int64) (*appchart.MeHistoryResult, error)
 	ObtainPublicChart(ctx context.Context, page, limit int64) (*appchart.PublicChart, int64, error)
 }
 
@@ -815,8 +815,14 @@ func (h *Handler) GetMeRatesChart(w http.ResponseWriter, r *http.Request) {
 // GetMeRatesHistory returns paginated rate-collection events for the calling
 // user's subscribed sources that match the given canonical pair label.
 //
-// GET /api/me/rates/history?pair=<canonical>&page=<n>&limit=<n>
+// GET /api/me/rates/history?pair=<canonical>&page=<n>&limit=<n>&source_title=<title>
 // Auth: X-Telegram-Init-Data header only.
+//
+// source_title is an optional filter. When present, only rows from providers
+// whose title matches source_title exactly are included and Total reflects the
+// filtered grouped count. An unknown source_title (not matching any provider
+// title in the user's subscriptions for this pair) returns 200 with empty Items
+// and Total=0; the handler does not return 400 for unknown source titles.
 //
 //   - 400 on missing or empty pair.
 //   - 400 on non-integer limit.
@@ -844,6 +850,8 @@ func (h *Handler) GetMeRatesHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sourceTitle := strings.TrimSpace(r.URL.Query().Get("source_title"))
+
 	page := parsePage(r.URL.Query().Get("page"))
 	limit, err := parseHistoryLimit(r.URL.Query().Get("limit"))
 	if err != nil {
@@ -852,7 +860,7 @@ func (h *Handler) GetMeRatesHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tgUserID := strconv.FormatInt(userID, 10)
-	result, err := h.meChartSvc.ObtainMeHistory(r.Context(), tgUserID, pair, page, limit)
+	result, err := h.meChartSvc.ObtainMeHistory(r.Context(), tgUserID, pair, sourceTitle, page, limit)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			http.Error(w, `{"error":"request cancelled"}`, 499)
@@ -865,7 +873,6 @@ func (h *Handler) GetMeRatesHistory(w http.ResponseWriter, r *http.Request) {
 	items := make([]dto.MeHistoryRow, 0, len(result.Items))
 	for _, row := range result.Items {
 		items = append(items, dto.MeHistoryRow{
-			SourceName:  row.SourceName,
 			SourceTitle: row.SourceTitle,
 			Timestamp:   row.Timestamp,
 			Bid:         row.Bid,

@@ -182,7 +182,7 @@ func TestMeRatesHistoryURL(t *testing.T) {
 
 	t.Run("canonical pair with slash is percent-encoded", func(t *testing.T) {
 		t.Parallel()
-		raw := meRatesHistoryURL("USD/KZT", 1, 20)
+		raw := meRatesHistoryURL("USD/KZT", "", 1, 20)
 		// url.Values.Encode encodes "/" as "%2F" in query values.
 		assert.Contains(t, raw, "pair=USD%2FKZT")
 		_, q := parseQuery(t, raw)
@@ -193,7 +193,7 @@ func TestMeRatesHistoryURL(t *testing.T) {
 
 	t.Run("page and limit are emitted correctly", func(t *testing.T) {
 		t.Parallel()
-		path, q := parseQuery(t, meRatesHistoryURL("EUR/KZT", 3, 50))
+		path, q := parseQuery(t, meRatesHistoryURL("EUR/KZT", "", 3, 50))
 		assert.Equal(t, "/api/me/rates/history", path)
 		assert.Equal(t, "3", q.Get("page"))
 		assert.Equal(t, "50", q.Get("limit"))
@@ -202,9 +202,32 @@ func TestMeRatesHistoryURL(t *testing.T) {
 	t.Run("unicode hostile pair label is url-encoded by url.Values", func(t *testing.T) {
 		t.Parallel()
 		hostile := "A<B>/C&D"
-		raw := meRatesHistoryURL(hostile, 1, 20)
+		raw := meRatesHistoryURL(hostile, "", 1, 20)
 		_, q := parseQuery(t, raw)
 		assert.Equal(t, hostile, q.Get("pair"), "url.Values.Encode must round-trip the label")
+		assert.NotContains(t, raw, "<", "< must be percent-encoded in the raw URL")
+		assert.NotContains(t, raw, ">", "> must be percent-encoded in the raw URL")
+	})
+
+	t.Run("omits source_title when empty", func(t *testing.T) {
+		t.Parallel()
+		raw := meRatesHistoryURL("USD/KZT", "", 1, 20)
+		assert.NotContains(t, raw, "source_title", "source_title must be absent when sourceTitle is empty")
+	})
+
+	t.Run("includes source_title when non-empty", func(t *testing.T) {
+		t.Parallel()
+		raw := meRatesHistoryURL("USD/KZT", "Kaspi", 1, 20)
+		_, q := parseQuery(t, raw)
+		assert.Equal(t, "Kaspi", q.Get("source_title"))
+	})
+
+	t.Run("percent-encodes hostile source_title", func(t *testing.T) {
+		t.Parallel()
+		hostile := `"><img src=x onerror=alert(1)>`
+		raw := meRatesHistoryURL("USD/KZT", hostile, 1, 20)
+		_, q := parseQuery(t, raw)
+		assert.Equal(t, hostile, q.Get("source_title"), "url.Values.Encode must round-trip the value")
 		assert.NotContains(t, raw, "<", "< must be percent-encoded in the raw URL")
 		assert.NotContains(t, raw, ">", "> must be percent-encoded in the raw URL")
 	})

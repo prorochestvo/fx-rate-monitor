@@ -182,10 +182,11 @@ func (c *Client) PublicRatesChart(ctx context.Context, page, limit int) (dto.Pub
 
 // MeRatesHistory fetches one page of per-pair rate-collection events for the
 // calling user. initData is the Telegram WebApp initData string; pair is a
-// canonical "BASE/QUOTE" label; page is 1-based; limit is bounded server-side
-// at 100. Returns the parsed JSON envelope.
-func (c *Client) MeRatesHistory(ctx context.Context, initData, pair string, page, limit int) (dto.MeHistoryResponse, error) {
-	raw, err := c.fetcher.FetchJSON(ctx, "GET", meRatesHistoryURL(pair, page, limit), nil, meSubscriptionsHeaders(initData))
+// canonical "BASE/QUOTE" label; sourceTitle is an optional provider-title filter
+// (empty string omits the query parameter); page is 1-based; limit is bounded
+// server-side at 100. Returns the parsed JSON envelope.
+func (c *Client) MeRatesHistory(ctx context.Context, initData, pair, sourceTitle string, page, limit int) (dto.MeHistoryResponse, error) {
+	raw, err := c.fetcher.FetchJSON(ctx, "GET", meRatesHistoryURL(pair, sourceTitle, page, limit), nil, meSubscriptionsHeaders(initData))
 	if err != nil {
 		return dto.MeHistoryResponse{}, err
 	}

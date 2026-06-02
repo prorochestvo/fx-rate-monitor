@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -233,6 +234,23 @@ func TestMeSubscriptionsPage_ClosePairModal(t *testing.T) {
 		// HistoryLimit must survive the close so re-open reuses the same page size.
 		assert.Equal(t, application.MeHistoryDefaultLimit, st.HistoryLimit)
 	})
+
+	t.Run("clears SelectedSourceTitle and KnownSources", func(t *testing.T) {
+		t.Parallel()
+		histBody := meHistoryResponse("USD/KZT", 1, 20, 1, sampleHistoryItems())
+		f := &meSubsFakeFetcher{
+			urlResponses: map[string][]byte{"/api/me/rates/history": histBody},
+		}
+		page := newMePage(f, "tok")
+		page.OpenPairModal("USD/KZT")
+		require.NoError(t, page.OpenHistory(t.Context()))
+		require.NoError(t, page.SetHistorySourceTitle(t.Context(), "Kaspi"))
+
+		page.ClosePairModal()
+		st := page.State()
+		assert.Equal(t, "", st.SelectedSourceTitle, "SelectedSourceTitle must be empty after ClosePairModal")
+		assert.Nil(t, st.KnownSources, "KnownSources must be nil after ClosePairModal")
+	})
 }
 
 // meChartResponse encodes a MeChartResponse to JSON for use as fake fetch payload.
@@ -385,8 +403,8 @@ func sampleHistoryItems() []dto.MeHistoryRow {
 	bid1 := 487.50
 	bid2 := 488.00
 	return []dto.MeHistoryRow{
-		{SourceName: "kkb", SourceTitle: "Kaspi", Timestamp: time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC), Bid: &bid1},
-		{SourceName: "kkb", SourceTitle: "Kaspi", Timestamp: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), Bid: &bid2},
+		{SourceTitle: "Kaspi", Timestamp: time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC), Bid: &bid1},
+		{SourceTitle: "Kaspi", Timestamp: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), Bid: &bid2},
 	}
 }
 
@@ -450,6 +468,41 @@ func TestMeSubscriptionsPage_OpenHistory(t *testing.T) {
 		err := page.OpenHistory(t.Context())
 		require.Error(t, err)
 		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("clears SelectedSourceTitle and KnownSources on open", func(t *testing.T) {
+		t.Parallel()
+		// First open: response has Kaspi and Halyk Bank.
+		firstItems := []dto.MeHistoryRow{
+			{SourceTitle: "Kaspi", Timestamp: time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)},
+			{SourceTitle: "Halyk Bank", Timestamp: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)},
+		}
+		firstBody := meHistoryResponse("USD/KZT", 1, 20, 2, firstItems)
+		// Second open: response has only Kaspi (Halyk Bank is gone).
+		secondItems := []dto.MeHistoryRow{
+			{SourceTitle: "Kaspi", Timestamp: time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)},
+		}
+		secondBody := meHistoryResponse("USD/KZT", 1, 20, 1, secondItems)
+
+		f := &meSubsFakeFetcher{
+			urlResponses: map[string][]byte{"/api/me/rates/history": firstBody},
+		}
+		page := newMePage(f, "tok")
+		page.OpenPairModal("USD/KZT")
+		// First open populates both provider titles.
+		require.NoError(t, page.OpenHistory(t.Context()))
+		require.NoError(t, page.SetHistorySourceTitle(t.Context(), "Kaspi"))
+		require.Equal(t, "Kaspi", page.State().SelectedSourceTitle)
+		require.Contains(t, page.State().KnownSources, "Halyk Bank", "Halyk Bank must be in KnownSources after first load")
+
+		// Re-open history: SelectedSourceTitle is cleared; KnownSources is reset and
+		// only contains titles seen in the second fetch (Kaspi only, no Halyk Bank).
+		f.urlResponses["/api/me/rates/history"] = secondBody
+		require.NoError(t, page.OpenHistory(t.Context()))
+		st := page.State()
+		assert.Equal(t, "", st.SelectedSourceTitle, "SelectedSourceTitle must be cleared on OpenHistory")
+		assert.NotContains(t, st.KnownSources, "Halyk Bank", "Halyk Bank must not be in KnownSources after reset (was not in second fetch)")
+		assert.Contains(t, st.KnownSources, "Kaspi", "Kaspi must be present (it was in the second fetch)")
 	})
 }
 
@@ -594,6 +647,31 @@ func TestMeSubscriptionsPage_LoadHistory(t *testing.T) {
 		assert.False(t, st.HistoryLoading)
 	})
 
+	t.Run("401 path clears SelectedSourceTitle and KnownSources", func(t *testing.T) {
+		t.Parallel()
+		// First load succeeds and populates filter state.
+		successBody := meHistoryResponse("USD/KZT", 1, 20, 1, sampleHistoryItems())
+		f := &meSubsFakeFetcher{
+			urlResponses: map[string][]byte{"/api/me/rates/history": successBody},
+		}
+		page := newMePage(f, "tok")
+		page.OpenPairModal("USD/KZT")
+		require.NoError(t, page.OpenHistory(t.Context()))
+		require.NoError(t, page.SetHistorySourceTitle(t.Context(), "Kaspi"))
+		require.Equal(t, "Kaspi", page.State().SelectedSourceTitle)
+		require.NotEmpty(t, page.State().KnownSources)
+
+		// Subsequent load returns 401.
+		delete(f.urlResponses, "/api/me/rates/history")
+		f.urlErr = map[string]error{"/api/me/rates/history": errors.New("http 401 unauthorized")}
+		err := page.LoadHistory(t.Context(), 2)
+		require.Error(t, err)
+
+		st := page.State()
+		assert.Equal(t, "", st.SelectedSourceTitle, "SelectedSourceTitle must be cleared on 401")
+		assert.Nil(t, st.KnownSources, "KnownSources must be nil on 401")
+	})
+
 	t.Run("stale result is dropped when OpenPair changed mid-fetch", func(t *testing.T) {
 		// The fake is synchronous, so we simulate "mid-fetch pair switch" by having
 		// LoadHistory succeed, then immediately overwriting OpenPair before the
@@ -659,6 +737,176 @@ func TestMeSubscriptionsPage_LoadHistory(t *testing.T) {
 		require.NoError(t, page.LoadHistory(t.Context(), 2))
 		assert.Equal(t, callsBefore, f.callCount, "no fetch when OpenPair is nil")
 		assert.Equal(t, 0, page.State().HistoryPage, "page must not advance after no-op")
+	})
+
+	t.Run("drops stale fetch when SelectedSourceTitle changes mid-flight", func(t *testing.T) {
+		// Channel-gated fake: the first FetchJSON call blocks until the test
+		// sends on release, so we can mutate SelectedSourceTitle between the snapshot
+		// and the write-back to verify the stale guard fires.
+		t.Parallel()
+
+		items := sampleHistoryItems()
+		kaspiJSON := meHistoryResponse("USD/KZT", 1, 20, int64(len(items)), items)
+		emptyJSON := meHistoryResponse("USD/KZT", 1, 20, 0, nil)
+
+		bf := newGatedFetcher(kaspiJSON, emptyJSON)
+		c2 := apiclient.New(bf)
+		page2 := application.NewMeSubscriptionsPage(c2, "tok", 10)
+		page2.OpenPairModal("USD/KZT")
+
+		// Start a SetHistorySourceTitle("Kaspi") fetch; the fake blocks immediately.
+		done := make(chan error, 1)
+		go func() {
+			done <- page2.SetHistorySourceTitle(t.Context(), "Kaspi")
+		}()
+
+		// Wait until the first fetch is blocked inside the fake.
+		<-bf.started
+
+		// Switch the filter to "" (simulates the user clicking "All" while the
+		// request is still in flight). OpenHistory resets SelectedSourceTitle.
+		require.NoError(t, page2.OpenHistory(t.Context()))
+		// page2.SelectedSourceTitle is now "" and items are from the emptyJSON response.
+
+		// Unblock the first (stale) fetch.
+		bf.release <- struct{}{}
+		require.NoError(t, <-done)
+
+		// The stale guard must have dropped the "Kaspi" response because
+		// SelectedSourceTitle changed to "" while the fetch was in flight.
+		st := page2.State()
+		assert.Equal(t, "", st.SelectedSourceTitle)
+		assert.Empty(t, st.HistoryItems, "stale items from Kaspi must not overwrite the empty state from OpenHistory")
+	})
+
+	t.Run("successful fetch populates KnownSources with provider titles", func(t *testing.T) {
+		t.Parallel()
+		bid1 := 487.0
+		items := []dto.MeHistoryRow{
+			{SourceTitle: "Kaspi", Timestamp: time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC), Bid: &bid1},
+			{SourceTitle: "Halyk Bank", Timestamp: time.Date(2026, 1, 2, 11, 0, 0, 0, time.UTC), Bid: &bid1},
+		}
+		histBody := meHistoryResponse("USD/KZT", 1, 20, int64(len(items)), items)
+		f := &meSubsFakeFetcher{
+			urlResponses: map[string][]byte{"/api/me/rates/history": histBody},
+		}
+		page := newMePage(f, "tok")
+		page.OpenPairModal("USD/KZT")
+		require.NoError(t, page.LoadHistory(t.Context(), 1))
+
+		st := page.State()
+		require.NotNil(t, st.KnownSources)
+		_, hasKaspi := st.KnownSources["Kaspi"]
+		assert.True(t, hasKaspi, "Kaspi must be a key in KnownSources")
+		_, hasHalyk := st.KnownSources["Halyk Bank"]
+		assert.True(t, hasHalyk, "Halyk Bank must be a key in KnownSources")
+	})
+}
+
+// gatedFetcher is a test-only Fetcher. The first FetchJSON call signals started
+// and then blocks until the test sends on release. Subsequent calls return the
+// fallback response immediately.
+type gatedFetcher struct {
+	// firstResponse is returned by the first (blocked) FetchJSON call.
+	firstResponse []byte
+	// fallback is returned by subsequent FetchJSON calls.
+	fallback []byte
+	// started is closed after the first FetchJSON enters the blocking wait.
+	started chan struct{}
+	// release must be sent on to unblock the first FetchJSON.
+	release chan struct{}
+	// calls counts FetchJSON invocations; atomic because the gated goroutine and
+	// the main test goroutine both read/write it concurrently.
+	calls atomic.Int32
+}
+
+var _ apiclient.Fetcher = (*gatedFetcher)(nil)
+
+func newGatedFetcher(firstResponse, fallback []byte) *gatedFetcher {
+	return &gatedFetcher{
+		firstResponse: firstResponse,
+		fallback:      fallback,
+		started:       make(chan struct{}),
+		release:       make(chan struct{}, 1),
+	}
+}
+
+func (f *gatedFetcher) FetchJSON(_ context.Context, _, _ string, _ any, _ map[string]string) ([]byte, error) {
+	n := f.calls.Add(1)
+	if n == 1 {
+		close(f.started)
+		<-f.release
+		return f.firstResponse, nil
+	}
+	return f.fallback, nil
+}
+
+func (f *gatedFetcher) FetchNoContent(_ context.Context, _, _ string, _ any, _ map[string]string) error {
+	return nil
+}
+
+func TestMeSubscriptionsPage_SetHistorySourceTitle(t *testing.T) {
+	t.Parallel()
+
+	t.Run("sets SelectedSourceTitle and reloads page 1", func(t *testing.T) {
+		t.Parallel()
+		items := sampleHistoryItems()
+		histBody := meHistoryResponse("USD/KZT", 1, 20, int64(len(items)), items)
+		f := &meSubsFakeFetcher{
+			urlResponses: map[string][]byte{"/api/me/rates/history": histBody},
+		}
+		page := newMePage(f, "tok")
+		page.OpenPairModal("USD/KZT")
+		require.NoError(t, page.OpenHistory(t.Context()))
+		// Advance to page 2 so we can verify SetHistorySourceTitle resets to 1.
+		f.urlResponses["/api/me/rates/history"] = meHistoryResponse("USD/KZT", 2, 20, 50, items)
+		require.NoError(t, page.LoadHistory(t.Context(), 2))
+		assert.Equal(t, 2, page.State().HistoryPage)
+
+		// SetHistorySourceTitle must reset to page 1.
+		f.urlResponses["/api/me/rates/history"] = meHistoryResponse("USD/KZT", 1, 20, int64(len(items)), items)
+		require.NoError(t, page.SetHistorySourceTitle(t.Context(), "Kaspi"))
+
+		st := page.State()
+		assert.Equal(t, "Kaspi", st.SelectedSourceTitle)
+		assert.Equal(t, 1, st.HistoryPage, "SetHistorySourceTitle must reset HistoryPage to 1")
+	})
+
+	t.Run("forwards source title to apiclient URL", func(t *testing.T) {
+		t.Parallel()
+		histBody := meHistoryResponse("USD/KZT", 1, 20, 0, nil)
+		f := &meSubsFakeFetcher{
+			urlResponses: map[string][]byte{"/api/me/rates/history": histBody},
+		}
+		page := newMePage(f, "tok")
+		page.OpenPairModal("USD/KZT")
+		require.NoError(t, page.OpenHistory(t.Context()))
+
+		require.NoError(t, page.SetHistorySourceTitle(t.Context(), "Kaspi"))
+		assert.Contains(t, f.lastURL, "source_title=Kaspi", "source_title must appear in the request URL")
+	})
+
+	t.Run("resets HistoryPage to 1", func(t *testing.T) {
+		t.Parallel()
+		histBody := meHistoryResponse("USD/KZT", 1, 20, 50, sampleHistoryItems())
+		f := &meSubsFakeFetcher{
+			urlResponses: map[string][]byte{"/api/me/rates/history": histBody},
+		}
+		page := newMePage(f, "tok")
+		page.OpenPairModal("USD/KZT")
+		require.NoError(t, page.LoadHistory(t.Context(), 3))
+		require.Equal(t, 3, page.State().HistoryPage)
+
+		require.NoError(t, page.SetHistorySourceTitle(t.Context(), "Halyk Bank"))
+		assert.Equal(t, 1, page.State().HistoryPage)
+	})
+
+	t.Run("no-op when OpenPair is nil", func(t *testing.T) {
+		t.Parallel()
+		f := &meSubsFakeFetcher{}
+		page := newMePage(f, "tok")
+		require.NoError(t, page.SetHistorySourceTitle(t.Context(), "Kaspi"))
+		assert.Equal(t, 0, f.callCount, "no fetch must be issued when OpenPair is nil")
 	})
 }
 

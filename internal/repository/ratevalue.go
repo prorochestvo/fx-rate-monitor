@@ -286,10 +286,20 @@ func (r *RateValueRepository) RemoveRateValue(ctx context.Context, record *domai
 // a page of one canonical pair's events across every source the caller is
 // subscribed to for that pair.
 //
-// Returns rows AND the total row count (without limit) so the handler can
-// compute pagination metadata in one round-trip.
+// All three queries (COUNT(*), SELECT page, COUNT(DISTINCT title+timestamp))
+// run inside a single ReadOnlyTransaction, guaranteeing a consistent snapshot:
+// a collector write between two separate reads would make rowTotal disagree
+// with groupedTotal; keeping them in one transaction prevents that.
 //
-// Empty pairs is a fast no-op (returns empty slice and total=0).
+// Returns:
+//   - rows: the paginated rate_values for this page.
+//   - rowTotal: the un-paginated row count (one count per rate_values row).
+//   - groupedTotal: the count of distinct (rate_sources.title || '|' || timestamp)
+//     tuples. Two sibling BID/ASK sources sharing the same provider title at the
+//     same scrape moment count as one. Use this as the pagination total shown to
+//     the user; rowTotal is for internal diagnostics only.
+//
+// Empty pairs is a fast no-op (returns empty slice and totals=0).
 //
 // NOTE: SQLite's expression-tree limit is ~1000 terms by default. Each pair
 // tuple contributes 3 terms. A user with ~333+ unique source subscriptions on
@@ -299,14 +309,14 @@ func (r *RateValueRepository) ObtainHistoryForPairsPaged(
 	ctx context.Context,
 	pairs []domain.SourcePairKey,
 	limit, offset int64,
-) ([]domain.RateValue, int64, error) {
+) (rows []domain.RateValue, rowTotal int64, groupedTotal int64, err error) {
 	if len(pairs) == 0 {
-		return []domain.RateValue{}, 0, nil
+		return []domain.RateValue{}, 0, 0, nil
 	}
 
-	tx, err := r.db.ReadOnlyTransaction(ctx)
-	if err != nil {
-		return nil, 0, errors.Join(err, internal.NewStackTraceError())
+	tx, txErr := r.db.ReadOnlyTransaction(ctx)
+	if txErr != nil {
+		return nil, 0, 0, errors.Join(txErr, internal.NewStackTraceError())
 	}
 	defer printRollbackError(tx)
 
@@ -316,49 +326,58 @@ func (r *RateValueRepository) ObtainHistoryForPairsPaged(
 		tuples = append(tuples, "(?, ?, ?)")
 		args = append(args, p.SourceName, p.BaseCurrency, p.QuoteCurrency)
 	}
+	// inClause is used in queries that reference rate_values alone; column names
+	// are unambiguous there. The JOIN query below uses the rv-prefixed variant.
 	inClause := "(" +
 		rateValueSourceNameFieldName + ", " +
 		rateValueBaseCurrencyFieldName + ", " +
 		rateValueQuoteCurrencyFieldName + ") IN (" +
 		strings.Join(tuples, ", ") + ")"
+	// inClauseJoin qualifies every column with the rv alias so the JOIN query
+	// does not produce "ambiguous column name" when rate_sources shares column
+	// names with rate_values (source_name, base_currency, quote_currency).
+	inClauseJoin := "(" +
+		"rv." + rateValueSourceNameFieldName + ", " +
+		"rv." + rateValueBaseCurrencyFieldName + ", " +
+		"rv." + rateValueQuoteCurrencyFieldName + ") IN (" +
+		strings.Join(tuples, ", ") + ")"
 
-	// COUNT(*) over the full WHERE so the caller can paginate.
+	// Query 1: row-level COUNT(*) for the full WHERE.
 	countQuery := "SELECT COUNT(*) FROM " + rateValueTableName + " WHERE " + inClause + ";"
-	var total int64
-	if err = tx.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, errors.Join(err, fmt.Errorf("SQL: %s", countQuery), internal.NewTraceError())
+	if scanErr := tx.QueryRowContext(ctx, countQuery, args...).Scan(&rowTotal); scanErr != nil {
+		return nil, 0, 0, errors.Join(scanErr, fmt.Errorf("SQL: %s", countQuery), internal.NewTraceError())
 	}
 
-	if total == 0 {
-		return []domain.RateValue{}, 0, nil
+	if rowTotal == 0 {
+		return []domain.RateValue{}, 0, 0, nil
 	}
 
-	// Paginated SELECT over the same WHERE, newest first.
+	// Query 2: paginated SELECT, newest first.
 	selectArgs := make([]any, 0, len(args)+2)
 	selectArgs = append(selectArgs, args...)
 	selectArgs = append(selectArgs, limit, offset)
-	query := rateValueSqlSelect + "\nWHERE " + inClause +
+	pageQuery := rateValueSqlSelect + "\nWHERE " + inClause +
 		" ORDER BY " + rateValueTimestampFieldName + " DESC, " + rateValueIdFieldName + " DESC" +
 		" LIMIT ? OFFSET ?;"
 
-	rows, err := tx.QueryContext(ctx, query, selectArgs...)
-	if err != nil {
-		return nil, 0, errors.Join(err, fmt.Errorf("SQL: %s", query), internal.NewTraceError())
+	sqlRows, queryErr := tx.QueryContext(ctx, pageQuery, selectArgs...)
+	if queryErr != nil {
+		return nil, 0, 0, errors.Join(queryErr, fmt.Errorf("SQL: %s", pageQuery), internal.NewTraceError())
 	}
-	defer func() { err = errors.Join(err, rows.Close()) }()
+	defer func() { err = errors.Join(err, sqlRows.Close()) }()
 
 	result := make([]domain.RateValue, 0, limit)
-	for rows.Next() {
+	for sqlRows.Next() {
 		var item domain.RateValue
 		var timestamp string
-		if scanErr := rows.Scan(
+		if scanErr := sqlRows.Scan(
 			&item.ID, &item.SourceName, &item.BaseCurrency, &item.QuoteCurrency, &item.Price, &timestamp,
 		); scanErr != nil {
-			return nil, 0, errors.Join(scanErr, internal.NewTraceError())
+			return nil, 0, 0, errors.Join(scanErr, internal.NewTraceError())
 		}
 		parsed, parseErr := time.Parse(time.RFC3339, timestamp)
 		if parseErr != nil {
-			return nil, 0, errors.Join(
+			return nil, 0, 0, errors.Join(
 				fmt.Errorf("rate %s has invalid timestamp %s: %w", item.ID, timestamp, parseErr),
 				internal.NewTraceError(),
 			)
@@ -366,10 +385,27 @@ func (r *RateValueRepository) ObtainHistoryForPairsPaged(
 		item.Timestamp = parsed
 		result = append(result, item)
 	}
-	if iterErr := rows.Err(); iterErr != nil {
-		return nil, 0, errors.Join(iterErr, internal.NewTraceError())
+	if iterErr := sqlRows.Err(); iterErr != nil {
+		return nil, 0, 0, errors.Join(iterErr, internal.NewTraceError())
 	}
-	return result, total, nil
+
+	// Query 3: grouped count of distinct (title, timestamp) tuples. Runs inside
+	// the same read-only transaction as the row queries to guarantee a consistent
+	// snapshot. The pipe-delimited concatenation is used because SQLite's
+	// COUNT(DISTINCT) only accepts a single expression; '|' is safe as long as
+	// provider titles do not contain '|' — see plans/015-history-group-by-provider.md
+	// Assumption 2.
+	groupedQuery := "SELECT COUNT(DISTINCT " +
+		"rs." + rateSourceTitleFieldName + " || '|' || rv." + rateValueTimestampFieldName +
+		") FROM " + rateValueTableName + " rv" +
+		" JOIN " + rateSourceTableName + " rs ON rs." + rateSourceNameFieldName + " = rv." + rateValueSourceNameFieldName +
+		" WHERE " + inClauseJoin + ";"
+
+	if scanErr := tx.QueryRowContext(ctx, groupedQuery, args...).Scan(&groupedTotal); scanErr != nil {
+		return nil, 0, 0, errors.Join(scanErr, fmt.Errorf("SQL: %s", groupedQuery), internal.NewTraceError())
+	}
+
+	return result, rowTotal, groupedTotal, nil
 }
 
 // ObtainValuesForPairsSince returns rate_value rows matching any of the given

@@ -20,11 +20,11 @@ type MeHistoryResponse struct {
 // MeHistoryRow is one rate-collection event for the requested pair.
 // Bid and Ask are pointers so a one-direction source emits exactly the
 // direction it owns. BidDeltaPct / AskDeltaPct are nil for the first
-// observation in their (source, direction) chain within the window.
+// observation in their (title, direction) chain within the window.
 type MeHistoryRow struct {
-	// SourceName is the internal name of the source that produced this row.
-	SourceName string `json:"source_name"`
-	// SourceTitle is the human-readable title of the source.
+	// SourceTitle is the human-readable provider title (e.g. "Center Credit Bank (FX)").
+	// This is the grouping key: BID and ASK rows from sibling sources sharing the
+	// same title and timestamp are collapsed into one MeHistoryRow.
 	SourceTitle string `json:"source_title"`
 	// Timestamp is when the collector scraped this value.
 	Timestamp time.Time `json:"timestamp"`
@@ -33,10 +33,10 @@ type MeHistoryRow struct {
 	// Ask is the ASK price; nil when the source only tracks BID.
 	Ask *float64 `json:"ask,omitempty"`
 	// BidDeltaPct is the percent change from the previous BID observation in
-	// this (source, direction) chain within the page. Nil for the first row.
+	// this (title, direction) chain within the page. Nil for the first row.
 	BidDeltaPct *float64 `json:"bid_delta_pct,omitempty"`
 	// AskDeltaPct is the percent change from the previous ASK observation in
-	// this (source, direction) chain within the page. Nil for the first row.
+	// this (title, direction) chain within the page. Nil for the first row.
 	AskDeltaPct *float64 `json:"ask_delta_pct,omitempty"`
 }
 

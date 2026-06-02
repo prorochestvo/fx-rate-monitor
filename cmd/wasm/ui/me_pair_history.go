@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -19,11 +20,14 @@ const historyGenericErrorMsg = "Could not load history. Try again."
 // state.HistoryOpen is true; the caller is responsible for those guards.
 //
 // Layout:
-//   - Back button (id="me-pair-history-back") returning to the detail view.
 //   - Either: loading skeleton (HistoryLoading), error block
 //     (HistoryError != nil), empty-state ("No history yet"), or the
 //     entries list.
 //   - Pagination row at the bottom (prev / page indicator / next).
+//
+// The "back to detail" action is handled by the modal header X
+// (id="me-pair-modal-close"), which branches on HistoryOpen in the
+// delegated click handler. The inline back button has been removed.
 //
 // Each history entry renders as:
 //
@@ -38,7 +42,7 @@ const historyGenericErrorMsg = "Could not load history. Try again."
 func RenderPairHistory(state application.MeSubscriptionsState) string {
 	var b strings.Builder
 
-	b.WriteString(`<button class="me-pair-history-back" id="me-pair-history-back" type="button">&#8592; Back</button>`)
+	b.WriteString(renderHistorySourceFilter(state))
 
 	switch {
 	case state.HistoryLoading:
@@ -50,7 +54,11 @@ func RenderPairHistory(state application.MeSubscriptionsState) string {
 		}
 		fmt.Fprintf(&b, `<div class="me-pair-history-error">%s</div>`, msg)
 	case len(state.HistoryItems) == 0:
-		b.WriteString(`<div class="me-pair-history-empty">No history yet.</div>`)
+		emptyMsg := "No history yet."
+		if state.SelectedSourceTitle != "" {
+			emptyMsg = "No history for this source."
+		}
+		fmt.Fprintf(&b, `<div class="me-pair-history-empty">%s</div>`, emptyMsg)
 	default:
 		b.WriteString(`<div class="me-pair-history-list">`)
 		for _, row := range state.HistoryItems {
@@ -111,6 +119,55 @@ func renderHistoryDelta(delta *float64) string {
 		sign,
 		*delta,
 	)
+}
+
+// renderHistorySourceFilter returns the source-filter chip row for the history
+// view, or an empty string when KnownSources has fewer than two entries (a
+// single-source filter is visual noise with no utility). The "All" chip always
+// appears first; source chips follow sorted by provider title for deterministic
+// rendering across redraws. The chip matching SelectedSourceTitle carries the
+// me-pair-history-source-chip-active class. Both data-source attribute values
+// and chip text are the provider title, HTML-escaped via dom.Escape.
+func renderHistorySourceFilter(state application.MeSubscriptionsState) string {
+	if len(state.KnownSources) < 2 {
+		return ""
+	}
+
+	// Sort titles for deterministic rendering.
+	titles := make([]string, 0, len(state.KnownSources))
+	for t := range state.KnownSources {
+		titles = append(titles, t)
+	}
+	sort.Strings(titles)
+
+	var b strings.Builder
+	b.WriteString(`<div class="me-pair-history-source-filter">`)
+
+	// "All" chip.
+	allActive := ""
+	if state.SelectedSourceTitle == "" {
+		allActive = " me-pair-history-source-chip-active"
+	}
+	fmt.Fprintf(&b,
+		`<button class="me-pair-history-source-chip%s" id="me-pair-history-source-all" data-source="" type="button">All</button>`,
+		allActive,
+	)
+
+	for _, title := range titles {
+		active := ""
+		if state.SelectedSourceTitle == title {
+			active = " me-pair-history-source-chip-active"
+		}
+		fmt.Fprintf(&b,
+			`<button class="me-pair-history-source-chip%s" data-source="%s" type="button">%s</button>`,
+			active,
+			dom.Escape(title),
+			dom.Escape(title),
+		)
+	}
+
+	b.WriteString(`</div>`)
+	return b.String()
 }
 
 // renderHistoryPagination returns the pagination row for the history view.
