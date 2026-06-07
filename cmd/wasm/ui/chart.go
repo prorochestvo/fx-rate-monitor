@@ -49,6 +49,22 @@ func RenderSparklineListForPeriod(chart dto.MeChartResponse, period int) string 
 	return renderSparklineListInternal(chart, period)
 }
 
+// effectiveDaysForChart returns the maximum EffectiveDays across all series of
+// all pairs in chart. Series with EffectiveDays == 0 (sparse / no data) are
+// skipped. If every series is zero, 0 is returned and the caller should treat
+// coverage as equal to the requested period.
+func effectiveDaysForChart(chart dto.MeChartResponse) int {
+	best := 0
+	for _, row := range chart.Pairs {
+		for _, sr := range row.Series {
+			if sr.EffectiveDays > best {
+				best = sr.EffectiveDays
+			}
+		}
+	}
+	return best
+}
+
 // renderSparklineListInternal renders the full chart list with the given active
 // period chip highlighted.
 func renderSparklineListInternal(chart dto.MeChartResponse, period int) string {
@@ -57,13 +73,20 @@ func renderSparklineListInternal(chart dto.MeChartResponse, period int) string {
 	}
 
 	now := time.Now().UTC()
-	dateLabel := fmt.Sprintf("%s · last %s", now.Format("Mon 02 Jan 2006"), chart.Window)
+	effective := effectiveDaysForChart(chart)
+	var periodLabel string
+	if effective > 0 && effective < period {
+		periodLabel = fmt.Sprintf("last %d days (max available)", effective)
+	} else {
+		periodLabel = fmt.Sprintf("last %d days", period)
+	}
+	dateLabel := fmt.Sprintf("%s · %s", now.Format("Mon 02 Jan 2006"), periodLabel)
 
 	var b strings.Builder
 	b.WriteString(`<div class="sparkline-list">`)
 	b.WriteString(`<div class="sparkline-header">`)
 	b.WriteString(`<div class="sparkline-title">FX rates · % change</div>`)
-	fmt.Fprintf(&b, `<div class="sparkline-subtitle">%s</div>`, dateLabel)
+	fmt.Fprintf(&b, `<div class="sparkline-subtitle">%s</div>`, dom.Escape(dateLabel))
 	b.WriteString(`</div>`)
 
 	b.WriteString(renderPeriodChips(period))

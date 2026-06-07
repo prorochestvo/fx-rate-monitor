@@ -98,6 +98,14 @@ type SeriesRow struct {
 	// Sparse is true when fewer than two values were found in the window, so
 	// the renderer draws a flat line and shows "+0.0%" delta.
 	Sparse bool
+	// EffectiveDays is the actual number of days covered by this series.
+	// Always >= 1 when Sparse==false and len(Points)>0; zero is reserved
+	// exclusively for the sparse/no-data case (sentinel: use the requested
+	// period as the displayed window). When EffectiveDays equals the requested
+	// period, bucketing is bit-identical to pre-capping behaviour (regression
+	// guard). Sub-day windows are clamped to 1 so the sentinel zero value
+	// remains unambiguous.
+	EffectiveDays int
 	// Points are the downsampled sparkline values. Nil when zero raw values
 	// exist in the window (no-data state).
 	Points []SparkPoint
@@ -157,8 +165,9 @@ func (s *Service) ObtainMeChart(ctx context.Context, userID string) (*MeChart, e
 //     value at the same timestamp, the last row (highest ID) wins.
 //  6. Downsample each group into bucketCount equal-width time buckets
 //     (left-closed, right-open). Each bucket takes the last sample's value.
-//     Empty buckets carry the previous bucket's value forward. Leading empty
-//     buckets before the first sample are omitted.
+//     Empty buckets carry the previous bucket's value forward. The effective-
+//     since cap ensures bucket 0 is always populated when any data exists, so
+//     len(Points) == bucketCount for every non-sparse series.
 //  7. Compute delta_pct over downsampled points.
 //  8. Group BID and ASK SeriesRows for the same canonical pair into one PairRow.
 //  9. Determine the display label as BID-natural direction.
@@ -427,11 +436,23 @@ func buildPairRow(g *pairGroup) PairRow {
 // buildSeriesRow constructs a SeriesRow from raw rate values for a single pair direction.
 //
 // Bucket boundaries are left-closed, right-open:
-// bucket i covers [since + i*step, since + (i+1)*step).
+// bucket i covers [effectiveSince + i*step, effectiveSince + (i+1)*step).
+// effectiveSince is max(since, firstSampleTimestamp): when data only covers a
+// fraction of the requested window, bucketing is capped to actual coverage so
+// the polyline fills the chart width rather than collapsing to its right edge.
+// When data covers the full window (firstSampleTimestamp <= since), effectiveSince
+// equals since and the math is bit-identical to the pre-capping behaviour.
+//
 // Each bucket picks the last value in it (since vals are ordered by timestamp ASC,
 // later overwrites win). Empty buckets carry the previous bucket's value forward
-// (continuous line). Leading empty buckets before the first sample are omitted,
-// so the returned Points slice length may be less than bucketCount.
+// (continuous line). Because effectiveSince == deduped[0].Timestamp when capping
+// occurs, bucket 0 is always populated whenever data exists — the leading-empty
+// case is structurally impossible. len(Points) == bucketCount whenever any data
+// exists.
+//
+// SeriesRow.EffectiveDays is set to the day count of the effective window
+// (always >= 1) when Sparse==false and len(Points)>0. Zero otherwise (sentinel:
+// use the requested period as the displayed window).
 func buildSeriesRow(p ratepair.Pair, vals []domain.RateValue, since, now time.Time) SeriesRow {
 	color := ratepair.ColorBid
 	if p.Kind == domain.RateSourceKindASK {
@@ -454,14 +475,29 @@ func buildSeriesRow(p ratepair.Pair, vals []domain.RateValue, since, now time.Ti
 	// We check deduped (timestamp-deduplicated) raw samples, not filled buckets.
 	sparse := len(deduped) < 2
 
-	window := now.Sub(since)
+	// Cap the lower bound of the window to the first actual sample. When the
+	// data covers the full requested window, effectiveSince == since and the
+	// bucketing math is unchanged. When data only covers a fraction of the
+	// window, effectiveSince advances to the first sample so the 12 buckets
+	// span the actual data range instead of spreading over empty leading space.
+	effectiveSince := since
+	if len(deduped) > 0 && deduped[0].Timestamp.After(since) {
+		effectiveSince = deduped[0].Timestamp
+	}
+
+	window := now.Sub(effectiveSince)
+	if window <= 0 {
+		// Defensive: should not happen since values are filtered by
+		// ObtainValuesForPairsSince and now > since. Guard against zero-division.
+		window = time.Hour
+	}
 	step := window / time.Duration(bucketCount)
 
 	bucketVal := make([]float64, bucketCount)
 	bucketFilled := make([]bool, bucketCount)
 
 	for _, rv := range deduped {
-		offset := rv.Timestamp.Sub(since)
+		offset := rv.Timestamp.Sub(effectiveSince)
 		idx := int(offset / step)
 		if idx < 0 {
 			idx = 0
@@ -474,17 +510,13 @@ func buildSeriesRow(p ratepair.Pair, vals []domain.RateValue, since, now time.Ti
 	}
 
 	var prev float64
-	hasPrev := false
 	var points []SparkPoint
 	for i := 0; i < bucketCount; i++ {
-		bucketTime := since.Add(time.Duration(i+1) * step)
+		bucketTime := effectiveSince.Add(time.Duration(i+1) * step)
 		if bucketFilled[i] {
 			prev = bucketVal[i]
-			hasPrev = true
-			points = append(points, SparkPoint{Timestamp: bucketTime, Value: prev})
-		} else if hasPrev {
-			points = append(points, SparkPoint{Timestamp: bucketTime, Value: prev})
 		}
+		points = append(points, SparkPoint{Timestamp: bucketTime, Value: prev})
 	}
 
 	if len(points) == 0 {
@@ -506,6 +538,12 @@ func buildSeriesRow(p ratepair.Pair, vals []domain.RateValue, since, now time.Ti
 	if first != 0 {
 		sr.DeltaPct = (last - first) / first * 100
 	}
+
+	days := int(window / (24 * time.Hour))
+	if days < 1 {
+		days = 1
+	}
+	sr.EffectiveDays = days
 
 	return sr
 }

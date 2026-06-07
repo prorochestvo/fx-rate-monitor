@@ -1,6 +1,7 @@
 package ui_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -360,13 +361,133 @@ func TestRenderSparklineListForPeriod(t *testing.T) {
 		assert.Contains(t, html, `sparkline-empty`)
 		assert.NotContains(t, html, `period-chip`)
 	})
-}
 
-// max returns the larger of a and b. Provided as a local helper because the
-// standard library builtin max is not available before Go 1.21 in all build targets.
-func max(a, b int) int {
-	if a > b {
-		return a
+	// mkEffRow builds a single-pair chart response with one BID series whose
+	// EffectiveDays is set to the given value.
+	mkEffRow := func(period, effectiveDays int) dto.MeChartResponse {
+		sr := dto.MeChartSeries{
+			Kind:          "BID",
+			Color:         ratepair.ColorBid,
+			Latest:        450.0,
+			DeltaPct:      0.5,
+			Sparse:        false,
+			EffectiveDays: effectiveDays,
+			Points:        []dto.MeChartPoint{{Value: 449.5}, {Value: 450.0}},
+		}
+		return dto.MeChartResponse{
+			Window: fmt.Sprintf("%d days", period),
+			Pairs:  []dto.MeChartPairRow{mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{sr})},
+		}
 	}
-	return b
+
+	t.Run("(a) matched: every series EffectiveDays equals period — no suffix", func(t *testing.T) {
+		t.Parallel()
+		html := ui.RenderSparklineListForPeriod(mkEffRow(30, 30), 30)
+		assert.Contains(t, html, "last 30 days")
+		assert.NotContains(t, html, "(max available)")
+	})
+
+	t.Run("(b) all-sparse: every series EffectiveDays is zero — no suffix", func(t *testing.T) {
+		t.Parallel()
+		sr := dto.MeChartSeries{
+			Kind:          "BID",
+			Color:         ratepair.ColorBid,
+			Latest:        0,
+			Sparse:        true,
+			EffectiveDays: 0,
+			Points:        nil,
+		}
+		chart := dto.MeChartResponse{
+			Window: "360 days",
+			Pairs:  []dto.MeChartPairRow{mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{sr})},
+		}
+		html := ui.RenderSparklineListForPeriod(chart, 360)
+		assert.Contains(t, html, "last 360 days")
+		assert.NotContains(t, html, "(max available)")
+	})
+
+	t.Run("(c) all-capped: every series EffectiveDays less than period — suffix with max", func(t *testing.T) {
+		t.Parallel()
+		bid := dto.MeChartSeries{
+			Kind:          "BID",
+			Color:         ratepair.ColorBid,
+			Latest:        450.0,
+			EffectiveDays: 7,
+			Points:        []dto.MeChartPoint{{Value: 449.0}, {Value: 450.0}},
+		}
+		ask := dto.MeChartSeries{
+			Kind:          "ASK",
+			Color:         ratepair.ColorAsk,
+			Latest:        451.0,
+			EffectiveDays: 5,
+			Points:        []dto.MeChartPoint{{Value: 450.5}, {Value: 451.0}},
+		}
+		spread := float64Ptr(0.22)
+		chart := dto.MeChartResponse{
+			Window: "360 days",
+			Pairs:  []dto.MeChartPairRow{mkRow("USD/KZT", "fiat", spread, []dto.MeChartSeries{bid, ask})},
+		}
+		html := ui.RenderSparklineListForPeriod(chart, 360)
+		assert.Contains(t, html, "last 7 days (max available)")
+		assert.NotContains(t, html, "last 360 days")
+	})
+
+	t.Run("(d) mixed: some series capped, one matches period — max equals period, no suffix", func(t *testing.T) {
+		t.Parallel()
+		bid := dto.MeChartSeries{
+			Kind:          "BID",
+			Color:         ratepair.ColorBid,
+			Latest:        450.0,
+			EffectiveDays: 7,
+			Points:        []dto.MeChartPoint{{Value: 449.0}, {Value: 450.0}},
+		}
+		ask := dto.MeChartSeries{
+			Kind:          "ASK",
+			Color:         ratepair.ColorAsk,
+			Latest:        451.0,
+			EffectiveDays: 30,
+			Points:        []dto.MeChartPoint{{Value: 450.5}, {Value: 451.0}},
+		}
+		spread := float64Ptr(0.22)
+		chart := dto.MeChartResponse{
+			Window: "30 days",
+			Pairs:  []dto.MeChartPairRow{mkRow("USD/KZT", "fiat", spread, []dto.MeChartSeries{bid, ask})},
+		}
+		html := ui.RenderSparklineListForPeriod(chart, 30)
+		assert.Contains(t, html, "last 30 days")
+		assert.NotContains(t, html, "(max available)")
+	})
+
+	t.Run("(e) mixed: some sparse, some capped — suffix uses largest capped value", func(t *testing.T) {
+		t.Parallel()
+		sparse := dto.MeChartSeries{
+			Kind:          "BID",
+			Color:         ratepair.ColorBid,
+			Latest:        0,
+			Sparse:        true,
+			EffectiveDays: 0,
+			Points:        nil,
+		}
+		capped := dto.MeChartSeries{
+			Kind:          "ASK",
+			Color:         ratepair.ColorAsk,
+			Latest:        451.0,
+			EffectiveDays: 14,
+			Points:        []dto.MeChartPoint{{Value: 450.5}, {Value: 451.0}},
+		}
+		chart := dto.MeChartResponse{
+			Window: "90 days",
+			Pairs:  []dto.MeChartPairRow{mkRow("USD/KZT", "fiat", nil, []dto.MeChartSeries{sparse, capped})},
+		}
+		html := ui.RenderSparklineListForPeriod(chart, 90)
+		assert.Contains(t, html, "last 14 days (max available)")
+		assert.NotContains(t, html, "last 90 days")
+	})
+
+	t.Run("(f) zero-period edge: period 7, all data covers exactly 7 days — no suffix", func(t *testing.T) {
+		t.Parallel()
+		html := ui.RenderSparklineListForPeriod(mkEffRow(7, 7), 7)
+		assert.Contains(t, html, "last 7 days")
+		assert.NotContains(t, html, "(max available)")
+	})
 }

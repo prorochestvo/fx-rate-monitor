@@ -465,8 +465,12 @@ func TestService_ObtainMeChart(t *testing.T) {
 		}
 	})
 
-	t.Run("leading empty buckets before first sample are omitted", func(t *testing.T) {
+	t.Run("all 12 buckets are filled when data exists in the effective window", func(t *testing.T) {
 		t.Parallel()
+		// effectiveSince is capped to ts3 (the first sample), so the window starts
+		// at ts3, not at since. Bucket 0 is therefore always populated (the invariant
+		// guaranteed by the effective-since cap), and all subsequent buckets are
+		// forward-filled from the two samples. len(Points) must equal bucketCount.
 		since := fixedNow.Add(-ratepair.ChartWindow)
 		step := ratepair.ChartWindow / 12
 		ts3 := since.Add(3*step + step/2)
@@ -488,12 +492,12 @@ func TestService_ObtainMeChart(t *testing.T) {
 		require.Len(t, result.Pairs[0].Series, 1)
 		sr := result.Pairs[0].Series[0]
 		assert.False(t, sr.Sparse)
-		assert.Len(t, sr.Points, 9)
-		assert.Equal(t, 300.0, sr.Points[0].Value)
-		assert.Equal(t, 350.0, sr.Points[1].Value)
-		for i := 2; i < len(sr.Points); i++ {
-			assert.Equal(t, 350.0, sr.Points[i].Value, "bucket %d must be forward-filled to 350", i+3)
-		}
+		// Post-capping invariant: bucket 0 is always populated, so all 12 buckets
+		// are emitted. effectiveSince == ts3; ts3 lands in bucket 0, ts4 in bucket 1.
+		assert.Len(t, sr.Points, 12, "post-capping invariant: bucket 0 is always populated")
+		assert.Equal(t, 300.0, sr.Points[0].Value, "first bucket must carry the first sample value")
+		lastVal := sr.Points[len(sr.Points)-1].Value
+		assert.Equal(t, 350.0, lastVal, "last bucket must be forward-filled to the second sample value")
 	})
 
 	t.Run("multiple pairs are sorted fiat before metal", func(t *testing.T) {
@@ -582,6 +586,144 @@ func TestService_ObtainMeChart(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, result.Pairs, 1)
 		assert.Nil(t, result.Pairs[0].SpreadPct, "SpreadPct must be nil when ASK latest is zero")
+	})
+
+	t.Run("effective window: coverage >= period — effective_days equals period, regression guard", func(t *testing.T) {
+		t.Parallel()
+		// 14 days of data, 7d period. First sample is before since, so
+		// effectiveSince == since and EffectiveDays == 7. Bucketing and delta
+		// must match pre-capping behaviour exactly.
+		const periodDays = 7
+		since := fixedNow.Add(-time.Duration(periodDays) * 24 * time.Hour)
+		step := time.Duration(periodDays) * 24 * time.Hour / 12
+		// First sample is 14 days ago — well before since.
+		ts0 := since.Add(-7 * 24 * time.Hour)
+		ts11 := since.Add(11*step + step/2)
+
+		svc := chart.NewService(
+			&fakeSubs{subs: []domain.RateUserSubscription{{SourceName: "src"}}},
+			&fakeSources{sources: map[string]domain.RateSource{
+				"src": {BaseCurrency: "USD", QuoteCurrency: "KZT", Kind: "BID"},
+			}},
+			&fakeValues{values: []domain.RateValue{
+				{SourceName: "src", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 400, Timestamp: ts0},
+				{SourceName: "src", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 500, Timestamp: ts11},
+			}},
+			&fakeHistoryValues{},
+			&fakePublicSources{},
+			func() time.Time { return fixedNow },
+		)
+		result, err := svc.ObtainMeChartForPeriod(t.Context(), "u", periodDays)
+		require.NoError(t, err)
+		require.Len(t, result.Pairs, 1)
+		require.Len(t, result.Pairs[0].Series, 1)
+		sr := result.Pairs[0].Series[0]
+		assert.False(t, sr.Sparse)
+		assert.Equal(t, int(periodDays), sr.EffectiveDays,
+			"full-coverage series must report EffectiveDays == requested period")
+		assert.InDelta(t, 25.0, sr.DeltaPct, 0.001, "delta (500-400)/400*100 must be unchanged")
+	})
+
+	t.Run("effective window: coverage < period — buckets cap to actual data, effective_days reflects data window", func(t *testing.T) {
+		t.Parallel()
+		// 7 days of data, 360d period. First sample is exactly 7 days before now.
+		const periodDays = 360
+		const dataDays = 7
+		dataStart := fixedNow.Add(-time.Duration(dataDays) * 24 * time.Hour)
+		// Two samples spanning the 7-day data window.
+		ts0 := dataStart
+		ts1 := dataStart.Add(3 * 24 * time.Hour)
+
+		svc := chart.NewService(
+			&fakeSubs{subs: []domain.RateUserSubscription{{SourceName: "src"}}},
+			&fakeSources{sources: map[string]domain.RateSource{
+				"src": {BaseCurrency: "USD", QuoteCurrency: "KZT", Kind: "BID"},
+			}},
+			&fakeValues{values: []domain.RateValue{
+				{SourceName: "src", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 480, Timestamp: ts0},
+				{SourceName: "src", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 490, Timestamp: ts1},
+			}},
+			&fakeHistoryValues{},
+			&fakePublicSources{},
+			func() time.Time { return fixedNow },
+		)
+		result, err := svc.ObtainMeChartForPeriod(t.Context(), "u", periodDays)
+		require.NoError(t, err)
+		require.Len(t, result.Pairs, 1)
+		require.Len(t, result.Pairs[0].Series, 1)
+		sr := result.Pairs[0].Series[0]
+		assert.False(t, sr.Sparse)
+		assert.Equal(t, dataDays, sr.EffectiveDays,
+			"capped series must report EffectiveDays == days of actual data coverage")
+		require.NotEmpty(t, sr.Points)
+		// All bucket timestamps must fall within the 7-day data window, not 360 days ago.
+		requestedSince := fixedNow.Add(-time.Duration(periodDays) * 24 * time.Hour)
+		for i, pt := range sr.Points {
+			assert.True(t, pt.Timestamp.After(requestedSince),
+				"bucket %d timestamp %v must be after requested since %v — not in the empty 353-day gap",
+				i, pt.Timestamp, requestedSince)
+		}
+		// DeltaPct is meaningful (non-zero because prices differ).
+		assert.NotEqual(t, 0.0, sr.DeltaPct, "delta must be non-zero when first and last prices differ")
+	})
+
+	t.Run("effective window: zero data — sparse path unchanged, effective_days is zero", func(t *testing.T) {
+		t.Parallel()
+		// No samples at all. Must trigger the no-data path: Sparse=true, Points=nil,
+		// EffectiveDays=0.
+		svc := chart.NewService(
+			&fakeSubs{subs: []domain.RateUserSubscription{{SourceName: "src"}}},
+			&fakeSources{sources: map[string]domain.RateSource{
+				"src": {BaseCurrency: "USD", QuoteCurrency: "KZT", Kind: "BID"},
+			}},
+			&fakeValues{values: nil},
+			&fakeHistoryValues{},
+			&fakePublicSources{},
+			func() time.Time { return fixedNow },
+		)
+		result, err := svc.ObtainMeChartForPeriod(t.Context(), "u", 360)
+		require.NoError(t, err)
+		require.Len(t, result.Pairs, 1)
+		require.Len(t, result.Pairs[0].Series, 1)
+		sr := result.Pairs[0].Series[0]
+		assert.True(t, sr.Sparse, "zero data must be sparse")
+		assert.Nil(t, sr.Points, "zero data must have nil Points")
+		assert.Equal(t, 0, sr.EffectiveDays, "zero data must have EffectiveDays=0")
+	})
+
+	t.Run("effective window: coverage exactly equals period — effectiveSince==since, effective_days equals period", func(t *testing.T) {
+		// First sample is exactly at since. Because deduped[0].Timestamp is NOT After(since)
+		// (it is Equal, not After), effectiveSince stays equal to since. This means
+		// EffectiveDays == periodDays and bucketing is bit-identical to the all-data case.
+		t.Parallel()
+		const periodDays = 7
+		since := fixedNow.Add(-time.Duration(periodDays) * 24 * time.Hour)
+		step := time.Duration(periodDays) * 24 * time.Hour / 12
+		ts0 := since // exactly at since
+		ts1 := since.Add(6 * step)
+
+		svc := chart.NewService(
+			&fakeSubs{subs: []domain.RateUserSubscription{{SourceName: "src"}}},
+			&fakeSources{sources: map[string]domain.RateSource{
+				"src": {BaseCurrency: "USD", QuoteCurrency: "KZT", Kind: "BID"},
+			}},
+			&fakeValues{values: []domain.RateValue{
+				{SourceName: "src", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 450, Timestamp: ts0},
+				{SourceName: "src", BaseCurrency: "USD", QuoteCurrency: "KZT", Price: 460, Timestamp: ts1},
+			}},
+			&fakeHistoryValues{},
+			&fakePublicSources{},
+			func() time.Time { return fixedNow },
+		)
+		result, err := svc.ObtainMeChartForPeriod(t.Context(), "u", periodDays)
+		require.NoError(t, err)
+		require.Len(t, result.Pairs, 1)
+		require.Len(t, result.Pairs[0].Series, 1)
+		sr := result.Pairs[0].Series[0]
+		assert.False(t, sr.Sparse)
+		assert.Equal(t, int(periodDays), sr.EffectiveDays,
+			"first sample at exactly since must not advance effectiveSince; EffectiveDays must equal the requested period")
+		require.NotEmpty(t, sr.Points)
 	})
 }
 

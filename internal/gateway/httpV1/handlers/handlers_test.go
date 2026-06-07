@@ -1715,6 +1715,51 @@ func TestGetMeRatesChart(t *testing.T) {
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 		require.Equal(t, "7 days", body.Window)
 	})
+
+	t.Run("effective_days round-trips through GetMeRatesChart", func(t *testing.T) {
+		t.Parallel()
+		// Service returns a series with EffectiveDays=7 (capped from a longer period).
+		// The handler must forward it to the DTO without modification.
+		// Window must still be "360 days" (the requested period), not the effective one.
+		chartSvc := &mockMeChartService{
+			chart: &appchart.MeChart{
+				Pairs: []appchart.PairRow{
+					{
+						Pair:     "USD/KZT",
+						Category: "fiat",
+						Series: []appchart.SeriesRow{
+							{
+								Kind:          domain.RateSourceKindBID,
+								Color:         ratepair.ColorBid,
+								Latest:        490.0,
+								DeltaPct:      2.1,
+								Sparse:        false,
+								EffectiveDays: 7,
+								Points:        []appchart.SparkPoint{{Timestamp: time.Now(), Value: 490.0}},
+							},
+						},
+					},
+				},
+			},
+		}
+		h, err := NewHandler(&mockRateService{}, "token", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{}, &mockMeProfileRepo{}, chartSvc)
+		require.NoError(t, err)
+		h.validateInitData = alwaysValidateInitData(1)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/me/rates/chart?period=360", nil)
+		req.Header.Set("X-Telegram-Init-Data", "valid")
+		rr := httptest.NewRecorder()
+		h.GetMeRatesChart(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		var body dto.MeChartResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+		require.Equal(t, "360 days", body.Window, "Window must reflect the requested period, not effective coverage")
+		require.Len(t, body.Pairs, 1)
+		require.Len(t, body.Pairs[0].Series, 1)
+		assert.Equal(t, 7, body.Pairs[0].Series[0].EffectiveDays,
+			"EffectiveDays from the service must round-trip to the DTO unchanged")
+	})
 }
 
 func TestGetPublicRatesChart(t *testing.T) {
@@ -1917,6 +1962,48 @@ func TestGetPublicRatesChart(t *testing.T) {
 		require.Equal(t, http.StatusInternalServerError, rr.Code)
 		const errFallbackMessage = `{"error":"internal error"}` + "\n"
 		assert.Equal(t, errFallbackMessage, rr.Body.String())
+	})
+
+	t.Run("effective_days round-trips through GetPublicRatesChart", func(t *testing.T) {
+		t.Parallel()
+		// Service returns a series with EffectiveDays=7 (capped from a longer period).
+		// The handler must forward it to the DTO without modification.
+		// Window must still equal the requested period, not the effective coverage.
+		svc := &mockMeChartService{
+			publicChart: &appchart.PublicChart{
+				Pairs: []appchart.PairRow{
+					{
+						Pair:     "USD/KZT",
+						Category: "fiat",
+						Series: []appchart.SeriesRow{
+							{
+								Kind:          domain.RateSourceKindBID,
+								Color:         ratepair.ColorBid,
+								Latest:        490.0,
+								Sparse:        false,
+								EffectiveDays: 7,
+								Points:        []appchart.SparkPoint{{Timestamp: time.Now(), Value: 490.0}},
+							},
+						},
+					},
+				},
+			},
+			publicTotal: 1,
+		}
+		h, err := NewHandler(&mockRateService{}, "", &mockMeSubRepo{}, &mockMeSourceRepo{}, &mockMeRateValueRepo{}, &mockMeProfileRepo{}, svc)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		h.GetPublicRatesChart(rr, httptest.NewRequest(http.MethodGet, "/api/public/rates/chart?period=90", nil))
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		var body dto.PublicChartResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+		require.Equal(t, "90 days", body.Window, "Window must reflect the requested period, not effective coverage")
+		require.Len(t, body.Pairs, 1)
+		require.Len(t, body.Pairs[0].Series, 1)
+		assert.Equal(t, 7, body.Pairs[0].Series[0].EffectiveDays,
+			"EffectiveDays from the service must round-trip to the DTO unchanged")
 	})
 }
 

@@ -62,14 +62,23 @@ type MeChartPairRow struct {
 // MeChartSeries holds the sparkline data for one direction (BID or ASK) within
 // a pair row. Color is the role-based hex: ratepair.ColorBid for BID,
 // ratepair.ColorAsk for ASK. Sparse is true when fewer than two data points
-// were found in the 7-day window.
+// were found in the requested window.
+//
+// EffectiveDays is the actual number of days covered by this series. Always
+// >= 1 when Sparse==false and len(Points)>0; zero is reserved exclusively for
+// the sparse/no-data case. A value strictly less than the requested period
+// signals that the X-axis has been capped to actual data coverage; the renderer
+// should show "(max available)" in that case. Do NOT add omitempty to this
+// field: the WASM client relies on the zero value being present on the wire to
+// distinguish "sparse/no-data" from "field missing entirely".
 type MeChartSeries struct {
-	Kind     string         `json:"kind"`
-	Color    string         `json:"color"`
-	Latest   float64        `json:"latest"`
-	DeltaPct float64        `json:"delta_pct"`
-	Sparse   bool           `json:"sparse"`
-	Points   []MeChartPoint `json:"points,omitempty"`
+	Kind          string         `json:"kind"`
+	Color         string         `json:"color"`
+	Latest        float64        `json:"latest"`
+	DeltaPct      float64        `json:"delta_pct"`
+	Sparse        bool           `json:"sparse"`
+	EffectiveDays int            `json:"effective_days"`
+	Points        []MeChartPoint `json:"points,omitempty"`
 }
 
 // MeChartPoint is one downsampled point in a sparkline series.

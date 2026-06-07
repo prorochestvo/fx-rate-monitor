@@ -1054,11 +1054,12 @@ func (h *Handler) GetMeRatesChart(w http.ResponseWriter, r *http.Request) {
 		seriesDTOs := make([]dto.MeChartSeries, 0, len(row.Series))
 		for _, sr := range row.Series {
 			s := dto.MeChartSeries{
-				Kind:     string(sr.Kind),
-				Color:    sr.Color,
-				Latest:   sr.Latest,
-				DeltaPct: sr.DeltaPct,
-				Sparse:   sr.Sparse,
+				Kind:          string(sr.Kind),
+				Color:         sr.Color,
+				Latest:        sr.Latest,
+				DeltaPct:      sr.DeltaPct,
+				Sparse:        sr.Sparse,
+				EffectiveDays: sr.EffectiveDays,
 			}
 			if len(sr.Points) > 0 {
 				pts := make([]dto.MeChartPoint, 0, len(sr.Points))
@@ -1216,11 +1217,12 @@ func (h *Handler) GetPublicRatesChart(w http.ResponseWriter, r *http.Request) {
 		seriesDTOs := make([]dto.MeChartSeries, 0, len(row.Series))
 		for _, sr := range row.Series {
 			s := dto.MeChartSeries{
-				Kind:     string(sr.Kind),
-				Color:    sr.Color,
-				Latest:   sr.Latest,
-				DeltaPct: sr.DeltaPct,
-				Sparse:   sr.Sparse,
+				Kind:          string(sr.Kind),
+				Color:         sr.Color,
+				Latest:        sr.Latest,
+				DeltaPct:      sr.DeltaPct,
+				Sparse:        sr.Sparse,
+				EffectiveDays: sr.EffectiveDays,
 			}
 			if len(sr.Points) > 0 {
 				pts := make([]dto.MeChartPoint, 0, len(sr.Points))
