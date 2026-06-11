@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,6 +28,10 @@ type TelegramChatID int64
 // NewTBotClient parses the TELEGRAMBOT_DSN, validates the bot token and admin
 // chat ID, connects to the Telegram Bot API, and returns a ready-to-use client.
 // The DSN format is <adminChatID>:<botToken>@<host>.
+//
+// The HTTP client hardcoded into the bot uses an explicit empty proxy transport
+// so Telegram traffic never routes via the process-wide proxy. Do not change
+// this without coordinating with the proxy wiring policy.
 func NewTBotClient(tbotDSN dsninjector.DataSource, logger io.Writer) (*TelegramBotClient, error) {
 	rx := regexp.MustCompile(regexpTelegramToken)
 
@@ -43,7 +49,16 @@ func NewTBotClient(tbotDSN dsninjector.DataSource, logger io.Writer) (*TelegramB
 		return nil, errors.Join(err, internal.NewTraceError())
 	}
 
-	bot, err := tgbotapi.NewBotAPI(token)
+	// Build an HTTP client with a transport whose Proxy field is explicitly nil.
+	// This guarantees Telegram Bot API traffic is always direct — it never flows
+	// through any process-wide proxy even if HTTPS_PROXY or HTTP_PROXY happens
+	// to be set in the environment.
+	noProxyTransport := &http.Transport{
+		Proxy: func(*http.Request) (*url.URL, error) { return nil, nil },
+	}
+	directClient := &http.Client{Transport: noProxyTransport}
+
+	bot, err := tgbotapi.NewBotAPIWithClient(token, tgbotapi.APIEndpoint, directClient)
 	if err != nil {
 		return nil, fmt.Errorf("telegram: init bot: %w", err)
 	}

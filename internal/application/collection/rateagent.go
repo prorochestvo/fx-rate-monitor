@@ -33,7 +33,7 @@ func NewRateAgent(
 		return nil, err
 	}
 
-	chromedpExt := rateextractor.NewChromedpRateExtractor(chromiumPath, logger, rRateValue)
+	chromedpExt := rateextractor.NewChromedpRateExtractor(chromiumPath, proxyURL, logger, rRateValue)
 
 	a := &RateAgent{
 		rateValueRepository:        rRateValue,

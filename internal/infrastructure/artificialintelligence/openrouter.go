@@ -25,7 +25,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"net/url"
 
 	"github.com/prorochestvo/dsninjector"
@@ -40,7 +39,10 @@ const openRouterCheckUPModel = "meta-llama/llama-3.2-1b-instruct"
 // newOpenRouterClient parses the DSN and returns a ready-to-use openRouterClient.
 //
 // DSN: openrouterai://_:<base64url(KEY)>@<host>/<base-path>?model=<model>&timeout=<duration>
-func newOpenRouterClient(dns dsninjector.DataSource, logger io.Writer) (*openRouterClient, error) {
+//
+// proxyURL is an optional HTTP proxy URL string (e.g. "http://127.0.0.1:7788");
+// pass "" to use no proxy.
+func newOpenRouterClient(dns dsninjector.DataSource, logger io.Writer, proxyURL string) (*openRouterClient, error) {
 	apiKey, err := parseDSNKey(dns)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewTraceError())
@@ -61,12 +63,17 @@ func newOpenRouterClient(dns dsninjector.DataSource, logger io.Writer) (*openRou
 		return nil, errors.Join(err, internal.NewTraceError())
 	}
 
+	httpClient, err := buildHTTPClient(timeout, proxyURL)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
+	}
+
 	return &openRouterClient{
 		inner: openAICompatibleClient{
 			baseURL:      baseURL,
 			model:        model,
 			apiKey:       apiKey,
-			httpClient:   &http.Client{Timeout: timeout},
+			httpClient:   httpClient,
 			logger:       log.New(logger, "openrouter ", log.LstdFlags),
 			providerName: "openrouter",
 		},

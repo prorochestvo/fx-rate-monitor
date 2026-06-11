@@ -22,6 +22,51 @@ Configuration (DB DSN, Telegram bot token, admin chat ID) lives in
 into the unit's `ExecStart` line (`--api-dsn`), never read from the
 env file. See `CLAUDE.md` for the full configuration contract.
 
+## Outbound proxy
+
+All outbound HTTP/HTTPS traffic from `cmd/collector` (rate-source scrapes, chromedp
+browser connections) and `cmd/doctor` (AI provider calls, chromedp fetcher) is routed
+through the proxy configured by `PROXY_URL`. Telegram Bot API traffic is **always
+direct** — the bypass is enforced in code via a hardcoded no-proxy transport in
+`internal/infrastructure/telegrambot/tbotclient.go`, so the bot continues to deliver
+notifications even when everything else is gated behind the proxy.
+
+To enable, add one line to `/opt/monitor/.{stage,prime}_monitor.env`:
+
+```
+PROXY_URL=http://127.0.0.1:7788
+```
+
+The value is identical on stage and prime because the proxy is a per-host loopback
+address, not a per-environment remote service. The same env file is sourced by the
+systemd unit and by the host-side cron wrappers, so the proxy setting applies to all
+relevant binaries: `cmd/collector` and any operator-invoked `cmd/doctor` run that
+inherits the same shell environment. (`cmd/web` and `cmd/notifier` do not parse
+`PROXY_URL` — their only outbound target is Telegram, which is always direct.)
+
+Do **not** set `HTTPS_PROXY`, `HTTP_PROXY`, or `NO_PROXY` for proxy routing — they
+are not consulted by any component in this project.
+
+**Failure mode.** If the proxy process is down, every outbound rate-source
+scrape fails immediately with "connection refused" on `127.0.0.1:7788`.
+These errors are persisted to `execution_history` and surface via
+`GET /api/errors/execution`. The collector log emits
+`execution: completed with errors: …` for each affected source. Telegram
+notifications are unaffected because the Telegram bypass is hardcoded. To verify
+the proxy is active from the deploy host:
+
+    curl -fs -x http://127.0.0.1:7788 https://api.ipify.org
+
+At startup `cmd/collector` and `cmd/doctor` each log one line confirming the proxy
+state (`proxy: PROXY_URL=http://127.0.0.1:7788` or `proxy: not configured`); grep
+the log for `proxy:` to confirm.
+
+For interactive `cmd/doctor` invocations, source the env file first so the
+proxy applies:
+
+    set -a; source /opt/monitor/.stage_monitor.env; set +a
+    /opt/monitor/stage_monitor_doctor rulegen --all
+
 ## Exit code & alerting
 
 `cmd/collector` and `cmd/notifier` exit with status `0` whenever the

@@ -51,6 +51,10 @@ func main() {
 	}
 	log.Println("logger: initiated")
 
+	// Notifier only makes outbound calls to Telegram. Telegram traffic bypasses
+	// any proxy unconditionally via the hardcoded transport in NewTBotClient, so
+	// PROXY_URL is not relevant here and is intentionally not parsed.
+
 	dsnTelegramBOT, err := dsninjector.Unmarshal(envDsnTelegramBOT)
 	if err != nil {
 		log.Fatalf("settings: %s, %s", envDsnTelegramBOT, err.Error())

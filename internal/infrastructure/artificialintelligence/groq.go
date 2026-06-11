@@ -25,7 +25,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"net/url"
 
 	"github.com/prorochestvo/dsninjector"
@@ -37,7 +36,10 @@ const groqDefaultModel = "openai/gpt-oss-20b"
 // newGroqClient parses the DSN and returns a ready-to-use groqClient.
 //
 // DSN: groq://_:<base64url(KEY)>@api.groq.com/openai/v1?model=<model>&timeout=<dur>
-func newGroqClient(dns dsninjector.DataSource, logger io.Writer) (*groqClient, error) {
+//
+// proxyURL is an optional HTTP proxy URL string (e.g. "http://127.0.0.1:7788");
+// pass "" to use no proxy.
+func newGroqClient(dns dsninjector.DataSource, logger io.Writer, proxyURL string) (*groqClient, error) {
 	apiKey, err := parseDSNKey(dns)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewTraceError())
@@ -58,12 +60,17 @@ func newGroqClient(dns dsninjector.DataSource, logger io.Writer) (*groqClient, e
 		return nil, errors.Join(err, internal.NewTraceError())
 	}
 
+	httpClient, err := buildHTTPClient(timeout, proxyURL)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
+	}
+
 	return &groqClient{
 		inner: openAICompatibleClient{
 			baseURL:      baseURL,
 			model:        model,
 			apiKey:       apiKey,
-			httpClient:   &http.Client{Timeout: timeout},
+			httpClient:   httpClient,
 			logger:       log.New(logger, "groq ", log.LstdFlags),
 			providerName: "groq",
 		},

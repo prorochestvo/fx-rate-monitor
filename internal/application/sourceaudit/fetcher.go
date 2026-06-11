@@ -2,9 +2,11 @@ package sourceaudit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -27,11 +29,34 @@ type Fetcher interface {
 }
 
 // NewHTTPFetcher constructs an httpFetcher with the given per-request timeout.
-func NewHTTPFetcher(timeout time.Duration) Fetcher {
-	return &httpFetcher{
-		client:  &http.Client{Timeout: timeout},
-		timeout: timeout,
+// proxyURL is an optional HTTP proxy URL string (e.g. "http://127.0.0.1:7788");
+// pass "" to use no proxy.
+//
+// When proxyURL is empty an explicit &http.Transport{} with no Proxy field is
+// used. A nil Transport would fall back to http.DefaultTransport whose Proxy
+// reads HTTPS_PROXY/HTTP_PROXY from the process environment, which would
+// silently route traffic even when no proxy was configured by the caller.
+func NewHTTPFetcher(timeout time.Duration, proxyURL string) (Fetcher, error) {
+	var client *http.Client
+	if proxyURL != "" {
+		parsed, err := url.Parse(proxyURL)
+		if err != nil {
+			return nil, errors.New("parse proxy URL: invalid format (value redacted from log; check the configured proxy URL)")
+		}
+		client = &http.Client{
+			Timeout:   timeout,
+			Transport: &http.Transport{Proxy: http.ProxyURL(parsed)},
+		}
+	} else {
+		client = &http.Client{
+			Timeout:   timeout,
+			Transport: &http.Transport{}, // explicit empty transport — no Proxy field, no env auto-pickup
+		}
 	}
+	return &httpFetcher{
+		client:  client,
+		timeout: timeout,
+	}, nil
 }
 
 // httpFetcher is the production Fetcher implementation.

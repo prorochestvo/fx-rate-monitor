@@ -75,6 +75,10 @@ func main() {
 	}
 	log.Println("logger: initiated")
 
+	// web only makes outbound calls to Telegram (bot polling/webhook). Telegram
+	// traffic bypasses any proxy unconditionally via the hardcoded transport in
+	// NewTBotClient, so PROXY_URL is not parsed here.
+
 	// init settings
 	dsnTelegramBOT, err := dsninjector.Unmarshal(envDsnTelegramBOT)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/seilbekskindirov/monitor/internal/application/sourceaudit"
+	"github.com/seilbekskindirov/monitor/internal/tools/proxyutil"
 )
 
 // runAudit is the entry point for the "doctor audit" subcommand.
@@ -136,7 +137,13 @@ func runAuditWith(args []string, fetcher sourceaudit.Fetcher, seedFS fs.FS, out,
 	}
 
 	if fetcher == nil {
-		fetcher = sourceaudit.NewHTTPFetcher(time.Minute)
+		proxyURL := proxyutil.ResolveURL(envProxyURL)
+		var fetcherErr error
+		fetcher, fetcherErr = sourceaudit.NewHTTPFetcher(time.Minute, proxyURL)
+		if fetcherErr != nil {
+			fmt.Fprintf(errOut, "doctor audit: build fetcher: %v\n", fetcherErr)
+			return 3
+		}
 	}
 	auditor := &sourceaudit.Auditor{Fetcher: fetcher}
 	results, err := auditor.Run(context.Background(), sources)

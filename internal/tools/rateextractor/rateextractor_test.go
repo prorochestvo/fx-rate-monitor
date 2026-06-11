@@ -55,7 +55,7 @@ func TestNewRateExtractor(t *testing.T) {
 
 	logger := threadsafe.NewBuffer(nil)
 
-	t.Run("NoProxy", func(t *testing.T) {
+	t.Run("no proxy passes empty string and succeeds", func(t *testing.T) {
 		t.Parallel()
 
 		ext, err := NewRateExtractor(
@@ -67,7 +67,8 @@ func TestNewRateExtractor(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, ext)
 	})
-	t.Run("InvalidProxyURL", func(t *testing.T) {
+
+	t.Run("invalid proxy URL is rejected", func(t *testing.T) {
 		t.Parallel()
 
 		_, err := NewRateExtractor(
@@ -77,6 +78,58 @@ func TestNewRateExtractor(t *testing.T) {
 			logger,
 		)
 		require.Error(t, err)
+	})
+
+	t.Run("invalid proxy URL is rejected with redacted error", func(t *testing.T) {
+		t.Parallel()
+
+		const badProxy = "http://%xx-invalid-percent-escape"
+		_, err := NewRateExtractor(
+			&mockRateValueRepository{},
+			badProxy,
+			5*time.Second,
+			logger,
+		)
+		require.Error(t, err)
+		// The error must not leak any substring from the raw URL into the log.
+		require.NotContains(t, err.Error(), "%xx")
+		require.NotContains(t, err.Error(), "invalid-percent-escape")
+		require.Contains(t, err.Error(), "parse proxy URL")
+	})
+
+	t.Run("explicit proxyURL is set on the transport", func(t *testing.T) {
+		t.Parallel()
+
+		var correctHits atomic.Int32
+		correctProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			correctHits.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("correct-proxy"))
+		}))
+		t.Cleanup(correctProxy.Close)
+
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("target"))
+		}))
+		t.Cleanup(target.Close)
+
+		ext, err := NewRateExtractor(
+			&mockRateValueRepository{},
+			correctProxy.URL,
+			5*time.Second,
+			logger,
+		)
+		require.NoError(t, err)
+
+		source := &domain.RateSource{
+			Name:  "proxy_src",
+			URL:   target.URL,
+			Rules: []domain.RateSourceRule{{Method: domain.MethodRegex, Pattern: `(correct-proxy|target)`}},
+		}
+
+		_ = ext.Run(t.Context(), source)
+		require.Positive(t, correctHits.Load(), "explicit proxyURL must route traffic through the proxy")
 	})
 }
 

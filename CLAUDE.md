@@ -197,6 +197,7 @@ step, not a startup-time step.
 
 - `SQLITEDB_DSN` — SQLite connection string, parsed via `dsninjector.Unmarshal`. Format: `sqlite://<path-to-db-file>`
 - `TELEGRAMBOT_DSN` — Telegram bot credentials parsed via `dsninjector.Unmarshal`. Format: `<adminChatID>:<botToken>@<host>` where `Addr()` returns the token and `Login()` returns the admin chat ID.
+- `PROXY_URL` — optional outbound proxy URL, parsed via `dsninjector.Unmarshal`. Format: `<scheme>://<host>:<port>` (e.g. `http://127.0.0.1:7788`). When unset or empty all outbound traffic is direct. Used by `cmd/collector` (plain and chromedp rate sources) and `cmd/doctor` (AI provider calls and chromedp fetcher). Telegram Bot API traffic bypasses the proxy unconditionally — the bypass is enforced in code via a hardcoded `Proxy: nil` transport in `internal/infrastructure/telegrambot/tbotclient.go`. Do not configure `HTTPS_PROXY`, `HTTP_PROXY`, or `NO_PROXY` for proxy routing — they are not consulted by any component in this project.
 
 > The public HTTPS origin of the `cmd/web` server is **not** an env var — see the `--api-dsn` CLI flag on the `cmd/web` binary, baked into the systemd unit's `ExecStart` line.
 

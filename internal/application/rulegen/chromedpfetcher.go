@@ -26,6 +26,7 @@ func NewChromedpFetcher(opts ChromedpFetcherOptions) *ChromedpFetcher {
 	return &ChromedpFetcher{
 		timeout:       opts.Timeout,
 		chromiumPath:  opts.ChromiumPath,
+		proxyURL:      opts.ProxyURL,
 		networkIdleMs: opts.NetworkIdleMillis,
 		waitSelector:  strings.TrimSpace(opts.WaitSelector),
 		logger:        opts.Logger,
@@ -43,6 +44,7 @@ func NewChromedpFetcher(opts ChromedpFetcherOptions) *ChromedpFetcher {
 type ChromedpFetcher struct {
 	timeout       time.Duration
 	chromiumPath  string
+	proxyURL      string
 	networkIdleMs int
 	waitSelector  string // empty means "wait for body only"
 	logger        io.Writer
@@ -59,22 +61,7 @@ func (f *ChromedpFetcher) Fetch(ctx context.Context, url string) ([]byte, error)
 	ctx, cancelCtx := context.WithTimeout(ctx, f.timeout)
 	defer cancelCtx()
 
-	// slices.Clone — never alias chromedp.DefaultExecAllocatorOptions; an
-	// upstream array-length change would otherwise let append() stomp the global.
-	allocatorOpts := append(slices.Clone(chromedp.DefaultExecAllocatorOptions[:]),
-		chromedp.Headless,
-		chromedp.DisableGPU,
-		// NoSandbox is required when Chrome runs as root (systemd unit on the
-		// ARM deploy host) or inside a container. Without it Chrome aborts at
-		// startup with "Running as root without --no-sandbox is not supported."
-		chromedp.NoSandbox,
-		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-	)
-	if f.chromiumPath != "" {
-		allocatorOpts = append(allocatorOpts, chromedp.ExecPath(f.chromiumPath))
-	}
-
-	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, allocatorOpts...)
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, f.buildExecAllocatorOptions(f.proxyURL)...)
 	defer cancelAlloc()
 
 	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx)
@@ -119,6 +106,9 @@ type ChromedpFetcherOptions struct {
 	// empty, chromedp falls back to its own PATH lookup order: chromium,
 	// chromium-browser, google-chrome, chrome.
 	ChromiumPath string
+	// ProxyURL is an optional HTTP proxy URL string (e.g. "http://127.0.0.1:7788").
+	// When empty, Chromium runs without a proxy.
+	ProxyURL string
 	// NetworkIdleMillis is the additional wait after body is visible before
 	// capturing outerHTML. Defaults to 5000 ms — bumped from 1500 ms in plan 014
 	// after live smoke-tests showed bank SPAs need 3–5 s post-body for the
@@ -138,3 +128,33 @@ const (
 	defaultChromedpTimeout       = 30 * time.Second
 	defaultChromedpNetworkIdleMs = 5000
 )
+
+// fixedExecAllocatorOptionCount is the number of options buildExecAllocatorOptions
+// appends unconditionally (Headless, DisableGPU, NoSandbox, disable-blink-features).
+// Tests use this to compute the baseline option count without a magic literal.
+const fixedExecAllocatorOptionCount = 4
+
+// buildExecAllocatorOptions constructs the full slice of chromedp allocator
+// options. When proxyURL is non-empty a ProxyServer option is appended so
+// Chromium routes its traffic through the given proxy. Chromium does not inherit
+// the Go proxy env automatically, so the URL must be passed explicitly.
+func (f *ChromedpFetcher) buildExecAllocatorOptions(proxyURL string) []chromedp.ExecAllocatorOption {
+	// slices.Clone — never alias chromedp.DefaultExecAllocatorOptions; an
+	// upstream array-length change would otherwise let append() stomp the global.
+	opts := append(slices.Clone(chromedp.DefaultExecAllocatorOptions[:]),
+		chromedp.Headless,
+		chromedp.DisableGPU,
+		// NoSandbox is required when Chrome runs as root (systemd unit on the
+		// ARM deploy host) or inside a container. Without it Chrome aborts at
+		// startup with "Running as root without --no-sandbox is not supported."
+		chromedp.NoSandbox,
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+	)
+	if proxyURL != "" {
+		opts = append(opts, chromedp.ProxyServer(proxyURL))
+	}
+	if f.chromiumPath != "" {
+		opts = append(opts, chromedp.ExecPath(f.chromiumPath))
+	}
+	return opts
+}

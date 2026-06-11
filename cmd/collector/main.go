@@ -1,7 +1,11 @@
 // Command collector polls all active rate sources on a configurable schedule,
 // extracts exchange-rate values, and persists them to the SQLite database.
-// It reads SQLITEDB_DSN from the environment and supports an optional HTTP proxy
-// via the PROXY_URL environment variable.
+//
+// It reads SQLITEDB_DSN from the environment. Outbound HTTP/HTTPS traffic from
+// plain and chromedp sources is routed through the proxy configured by PROXY_URL
+// (format: http://<host>:<port>, parsed via dsninjector). When PROXY_URL is unset
+// or empty all traffic goes direct. Telegram Bot API traffic bypasses the proxy
+// unconditionally via a hardcoded transport in internal/infrastructure/telegrambot.
 package main
 
 import (
@@ -21,6 +25,7 @@ import (
 	"github.com/seilbekskindirov/monitor/internal/application/collection"
 	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
 	"github.com/seilbekskindirov/monitor/internal/repository"
+	"github.com/seilbekskindirov/monitor/internal/tools/proxyutil"
 	_ "modernc.org/sqlite"
 )
 
@@ -33,8 +38,6 @@ var (
 	BuildHash = "undefined"
 	// LogsDir is the directory where log files are written.
 	LogsDir = path.Join(os.TempDir(), "logs")
-	// ProxyURL is the HTTP proxy URL read from the PROXY_URL environment variable.
-	ProxyURL = os.Getenv(envProxyUrl)
 	// ChromiumPath is the absolute path to the Chromium/Chrome binary read from
 	// CHROMIUM_PATH. When empty, chromedp searches PATH (chromium, chromium-browser,
 	// google-chrome, chrome) on first use.
@@ -44,7 +47,7 @@ var (
 )
 
 const (
-	envProxyUrl = "PROXY_URL"
+	envProxyURL = "PROXY_URL"
 	// envChromiumPath is an optional absolute path to the Chromium/Chrome binary.
 	// When unset, chromedp searches PATH on first use for a chromedp-kind source.
 	envChromiumPath = "CHROMIUM_PATH"
@@ -59,6 +62,8 @@ func main() {
 		log.Fatalf("logger: %s", err.Error())
 	}
 	log.Println("logger: initiated")
+
+	proxyURL := proxyutil.ResolveURL(envProxyURL)
 
 	// Preserve the startup-marker sequence (logger -> settings ->
 	// dependencies -> repositories -> runners) that operators grep on.
@@ -96,7 +101,7 @@ func main() {
 	}
 	log.Println("repositories: initiated")
 
-	runners, err := buildRunners(sourceRepo, historyRepo, rateValueRepo, l.WriterAs(internal.LogLevelWarning))
+	runners, err := buildRunners(sourceRepo, historyRepo, rateValueRepo, proxyURL, l.WriterAs(internal.LogLevelWarning))
 	if err != nil {
 		log.Fatalf("runners: runners building is failed: %s", err)
 		return
@@ -167,10 +172,11 @@ func buildRunners(
 	source *repository.RateSourceRepository,
 	history *repository.ExecutionHistoryRepository,
 	value *repository.RateValueRepository,
+	proxyURL string,
 	logger io.Writer,
 ) ([]runner, error) {
 	collectionRateAgent, err := collection.NewRateAgent(
-		ProxyURL,
+		proxyURL,
 		ChromiumPath,
 		source,
 		history,

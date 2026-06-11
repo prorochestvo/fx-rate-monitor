@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/prorochestvo/dsninjector"
@@ -30,24 +32,26 @@ type AIClient interface {
 }
 
 // NewClient parses the driver from dns and dispatches to the matching
-// provider constructor. On an unknown driver it logs to logger and returns
-// the deterministic stub so the service can still start without a live key.
-func NewClient(dns dsninjector.DataSource, logger io.Writer) (AIClient, error) {
+// provider constructor. proxyURL is an optional HTTP proxy URL string
+// (e.g. "http://127.0.0.1:7788"); pass "" to use the default transport with
+// no proxy. On an unknown driver it logs to logger and returns the
+// deterministic stub so the service can still start without a live key.
+func NewClient(dns dsninjector.DataSource, logger io.Writer, proxyURL string) (AIClient, error) {
 	switch dns.Driver() {
 	case clientOpenAI:
-		r, err := newOpenAIClient(dns, logger)
+		r, err := newOpenAIClient(dns, logger, proxyURL)
 		if err != nil {
 			return nil, err
 		}
 		return r, nil
 	case clientGroq:
-		r, err := newGroqClient(dns, logger)
+		r, err := newGroqClient(dns, logger, proxyURL)
 		if err != nil {
 			return nil, err
 		}
 		return r, nil
 	case clientOpenRouter:
-		r, err := newOpenRouterClient(dns, logger)
+		r, err := newOpenRouterClient(dns, logger, proxyURL)
 		if err != nil {
 			return nil, err
 		}
@@ -96,6 +100,29 @@ func parseDSNTimeout(dns dsninjector.DataSource) (time.Duration, error) {
 	duration = max(duration, 10*time.Second)
 	duration = min(duration, 15*time.Minute)
 	return duration, nil
+}
+
+// buildHTTPClient returns an *http.Client with the given timeout. When proxyURL
+// is non-empty it is parsed and wired into the transport. When empty, an explicit
+// &http.Transport{} with no Proxy field is used — a nil Transport would make Go
+// fall back to http.DefaultTransport whose Proxy reads HTTPS_PROXY/HTTP_PROXY
+// from the process environment, silently routing traffic even when no proxy was
+// configured by the caller.
+func buildHTTPClient(timeout time.Duration, proxyURL string) (*http.Client, error) {
+	if proxyURL == "" {
+		return &http.Client{
+			Timeout:   timeout,
+			Transport: &http.Transport{}, // explicit empty transport — no Proxy field, no env auto-pickup
+		}, nil
+	}
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, errors.New("parse proxy URL: invalid format (value redacted from log; check the configured proxy URL)")
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: &http.Transport{Proxy: http.ProxyURL(parsed)},
+	}, nil
 }
 
 // parseDSNKey reads the DSN password, decodes it as URL-safe base64, and

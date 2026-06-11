@@ -59,6 +59,7 @@ import (
 	"github.com/seilbekskindirov/monitor/internal/infrastructure/artificialintelligence"
 	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
 	"github.com/seilbekskindirov/monitor/internal/repository"
+	"github.com/seilbekskindirov/monitor/internal/tools/proxyutil"
 	_ "modernc.org/sqlite"
 )
 
@@ -70,6 +71,9 @@ const (
 	// When unset, chromedp falls back to its own PATH lookup order:
 	// chromium, chromium-browser, google-chrome, chrome.
 	envChromiumPath = "CHROMIUM_PATH"
+	// envProxyURL is the optional outbound proxy URL parsed via dsninjector.
+	// When unset or empty all outbound traffic goes direct.
+	envProxyURL = "PROXY_URL"
 )
 
 // rateSourceLister is the narrow read-side interface runAll needs.
@@ -212,6 +216,8 @@ func runRulegen(args []string, out, errOut io.Writer) int {
 		return 3
 	}
 
+	proxyURL := proxyutil.ResolveURL(envProxyURL)
+
 	dsnSQLiteDB, err := dsninjector.Unmarshal(envDsnSqliteDB)
 	if err != nil {
 		infraFail("settings %s: %v", envDsnSqliteDB, err)
@@ -240,7 +246,7 @@ func runRulegen(args []string, out, errOut io.Writer) int {
 		return 3
 	}
 
-	aiPrimary, err := artificialintelligence.NewClient(dsnAIPrimary, l.WriterAs(internal.LogLevelInfo))
+	aiPrimary, err := artificialintelligence.NewClient(dsnAIPrimary, l.WriterAs(internal.LogLevelInfo), proxyURL)
 	if err != nil {
 		infraFail("ai primary client: %v", err)
 		return 3
@@ -253,7 +259,7 @@ func runRulegen(args []string, out, errOut io.Writer) int {
 			infraFail("settings %s: %v", envDsnAIFallback, dsnErr)
 			return 3
 		}
-		aiFallback, err = artificialintelligence.NewClient(dsnAIFallback, l.WriterAs(internal.LogLevelInfo))
+		aiFallback, err = artificialintelligence.NewClient(dsnAIFallback, l.WriterAs(internal.LogLevelInfo), proxyURL)
 		if err != nil {
 			infraFail("ai fallback client: %v", err)
 			return 3
@@ -272,11 +278,17 @@ func runRulegen(args []string, out, errOut io.Writer) int {
 		return 3
 	}
 
-	plainFetcher := &sourceAuditFetcherAdapter{inner: sourceaudit.NewHTTPFetcher(time.Minute)}
+	plainHTTPFetcher, err := sourceaudit.NewHTTPFetcher(time.Minute, proxyURL)
+	if err != nil {
+		infraFail("plain fetcher build: %v", err)
+		return 3
+	}
+	plainFetcher := &sourceAuditFetcherAdapter{inner: plainHTTPFetcher}
 
 	chromedpFor := func(waitSelector string) rulegen.Fetcher {
 		return rulegen.NewChromedpFetcher(rulegen.ChromedpFetcherOptions{
 			ChromiumPath: os.Getenv(envChromiumPath),
+			ProxyURL:     proxyURL,
 			Logger:       l.WriterAs(internal.LogLevelInfo),
 			WaitSelector: waitSelector,
 		})
@@ -359,6 +371,7 @@ Environment variables:
   AI_PRIMARY_DSN  (required) primary AI provider DSN
   AI_FALLBACK_DSN (optional) fallback AI provider DSN; stub used when absent
   CHROMIUM_PATH   (optional) absolute path to Chromium binary
+  PROXY_URL       (optional) outbound proxy URL, e.g. http://127.0.0.1:7788
 
 Exit codes (single-source mode):
   0  success — rule generated and persisted

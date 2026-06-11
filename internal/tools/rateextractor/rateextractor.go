@@ -28,7 +28,12 @@ const MinPlausibleRateValue = 0.0
 const MaxPlausibleRateValue = math.MaxInt32
 
 // NewRateExtractor creates a RateExtractor with an HTTP client configured for the
-// given timeout. When proxyURL is non-empty the client routes requests through that proxy.
+// given timeout.
+//
+// When proxyURL is non-empty it is parsed and used as the explicit proxy for all
+// requests. When proxyURL is empty the transport uses no proxy — the standard Go
+// proxy env triplet (HTTPS_PROXY, HTTP_PROXY, NO_PROXY) is intentionally NOT
+// consulted. Proxy configuration is injected explicitly via PROXY_URL.
 //
 // The extractor maintains a per-process negative URL cache (tombstone): once a URL fails
 // inside one process, subsequent fetches in the same process short-circuit. This is designed
@@ -45,7 +50,10 @@ func NewRateExtractor(
 	if proxyURL != "" {
 		parsed, err := url.Parse(proxyURL)
 		if err != nil {
-			return nil, fmt.Errorf("parse proxy URL: %w", err)
+			// Do not wrap %w — url.Error.Error() includes the raw URL which may
+			// contain userinfo credentials. The operator can recover the value
+			// from the env file; we only need to flag the parse failure.
+			return nil, errors.New("parse proxy URL: invalid format (value redacted from log; check the configured proxy URL)")
 		}
 		transport.Proxy = http.ProxyURL(parsed)
 	}

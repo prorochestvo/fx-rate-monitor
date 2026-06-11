@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/chromedp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -200,5 +201,54 @@ setTimeout(function() {
 		require.NoError(t, err)
 		assert.Contains(t, string(body), `id="rate-loaded"`,
 			"WaitSelector must block until the injected element is visible")
+	})
+}
+
+func TestBuildExecAllocatorOptions(t *testing.T) {
+	t.Parallel()
+
+	// baseline is the number of options appended unconditionally.
+	// len(chromedp.DefaultExecAllocatorOptions) + fixedExecAllocatorOptionCount
+	// (Headless, DisableGPU, NoSandbox, disable-blink-features flag).
+	baseline := len(chromedp.DefaultExecAllocatorOptions) + fixedExecAllocatorOptionCount
+
+	t.Run("empty proxyURL appends no proxy option", func(t *testing.T) {
+		t.Parallel()
+
+		f := NewChromedpFetcher(ChromedpFetcherOptions{})
+		opts := f.buildExecAllocatorOptions("")
+
+		require.Len(t, opts, baseline)
+	})
+
+	t.Run("non-empty proxyURL appends exactly one ProxyServer option", func(t *testing.T) {
+		t.Parallel()
+
+		f := NewChromedpFetcher(ChromedpFetcherOptions{ProxyURL: "http://127.0.0.1:7788"})
+		opts := f.buildExecAllocatorOptions("http://127.0.0.1:7788")
+
+		require.Len(t, opts, baseline+1)
+	})
+
+	t.Run("chromiumPath appends ExecPath option on top of proxy", func(t *testing.T) {
+		t.Parallel()
+
+		f := NewChromedpFetcher(ChromedpFetcherOptions{
+			ChromiumPath: "/usr/bin/chromium",
+			ProxyURL:     "http://127.0.0.1:7788",
+		})
+		opts := f.buildExecAllocatorOptions("http://127.0.0.1:7788")
+
+		// baseline + ProxyServer + ExecPath = baseline + 2
+		require.Len(t, opts, baseline+2)
+	})
+
+	t.Run("chromiumPath without proxy appends only ExecPath", func(t *testing.T) {
+		t.Parallel()
+
+		f := NewChromedpFetcher(ChromedpFetcherOptions{ChromiumPath: "/usr/bin/chromium"})
+		opts := f.buildExecAllocatorOptions("")
+
+		require.Len(t, opts, baseline+1)
 	})
 }

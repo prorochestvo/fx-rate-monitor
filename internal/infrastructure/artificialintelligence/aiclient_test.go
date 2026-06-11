@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"net/http"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ func TestNewClient(t *testing.T) {
 		ds := &dsninjector.DataSourceMapper{}
 		ds.SetDriver("totally-unknown-driver-xyz")
 
-		client, err := NewClient(ds, &logBuf)
+		client, err := NewClient(ds, &logBuf, "")
 		require.NoError(t, err)
 		assert.Equal(t, "StubAI", client.Name())
 
@@ -39,7 +40,7 @@ func TestNewClient(t *testing.T) {
 		ds := &dsninjector.DataSourceMapper{}
 		ds.SetDriver("totally-unknown-driver-xyz")
 
-		client, err := NewClient(ds, &bytes.Buffer{})
+		client, err := NewClient(ds, &bytes.Buffer{}, "")
 		require.NoError(t, err)
 
 		checkErr := client.CheckUP(context.Background())
@@ -140,5 +141,42 @@ func TestParseDSNKey(t *testing.T) {
 		_, err := parseDSNKey(ds)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "missing API key")
+	})
+}
+
+func TestBuildHTTPClient(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty proxyURL produces transport with nil Proxy field", func(t *testing.T) {
+		t.Parallel()
+		client, err := buildHTTPClient(30*time.Second, "")
+		require.NoError(t, err)
+		transport, ok := client.Transport.(*http.Transport)
+		require.True(t, ok, "transport must be *http.Transport, not nil or another type")
+		assert.Nil(t, transport.Proxy,
+			"Proxy func must be nil when proxyURL is empty — a nil-Transport would trigger ProxyFromEnvironment")
+	})
+
+	t.Run("non-empty proxyURL produces transport with non-nil Proxy field", func(t *testing.T) {
+		t.Parallel()
+		client, err := buildHTTPClient(30*time.Second, "http://127.0.0.1:7788")
+		require.NoError(t, err)
+		transport, ok := client.Transport.(*http.Transport)
+		require.True(t, ok, "transport must be *http.Transport")
+		assert.NotNil(t, transport.Proxy, "Proxy func must be set when proxyURL is non-empty")
+	})
+
+	t.Run("invalid proxyURL returns error", func(t *testing.T) {
+		t.Parallel()
+		_, err := buildHTTPClient(30*time.Second, "://bad-url")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "parse proxy URL")
+	})
+
+	t.Run("timeout is applied to the client", func(t *testing.T) {
+		t.Parallel()
+		client, err := buildHTTPClient(5*time.Second, "")
+		require.NoError(t, err)
+		assert.Equal(t, 5*time.Second, client.Timeout)
 	})
 }

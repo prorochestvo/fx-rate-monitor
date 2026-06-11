@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"time"
 
 	openaisdk "github.com/openai/openai-go/v3"
@@ -49,7 +50,12 @@ var OpenAIModels = []string{
 // newOpenAIClient parses the DSN and returns a ready-to-use openAIClient.
 //
 // DSN: openai://_:<base64url(KEY)>@<host>/<path>?model=<model>&timeout=<duration>
-func newOpenAIClient(dns dsninjector.DataSource, logger io.Writer) (AIClient, error) {
+//
+// proxyURL is an optional HTTP proxy URL string (e.g. "http://127.0.0.1:7788");
+// pass "" to use no proxy. The HTTP client is built via buildHTTPClient and
+// injected into the SDK via option.WithHTTPClient so all SDK requests honour
+// the explicit proxy setting without falling back to HTTPS_PROXY env vars.
+func newOpenAIClient(dns dsninjector.DataSource, logger io.Writer, proxyURL string) (AIClient, error) {
 	apiKey, err := parseDSNKey(dns)
 	if err != nil {
 		return nil, errors.Join(err, internal.NewTraceError())
@@ -78,24 +84,32 @@ func newOpenAIClient(dns dsninjector.DataSource, logger io.Writer) (AIClient, er
 		return nil, errors.Join(err, internal.NewTraceError())
 	}
 
+	httpClient, err := buildHTTPClient(timeout, proxyURL)
+	if err != nil {
+		return nil, errors.Join(err, internal.NewTraceError())
+	}
+
 	api := openaisdk.NewClient(
 		option.WithEnvironmentProduction(),
 		option.WithAPIKey(apiKey),
+		option.WithHTTPClient(httpClient),
 	)
 
 	return &openAIClient{
-		model:   model,
-		api:     api,
-		logger:  log.New(logger, "openai ", log.LstdFlags),
-		timeout: timeout,
+		model:      model,
+		api:        api,
+		logger:     log.New(logger, "openai ", log.LstdFlags),
+		timeout:    timeout,
+		httpClient: httpClient,
 	}, nil
 }
 
 type openAIClient struct {
-	model   shared.ChatModel
-	api     openaisdk.Client
-	logger  *log.Logger
-	timeout time.Duration
+	model      shared.ChatModel
+	api        openaisdk.Client
+	logger     *log.Logger
+	timeout    time.Duration
+	httpClient *http.Client // retained for test-transport introspection
 }
 
 func (c *openAIClient) Name() string {

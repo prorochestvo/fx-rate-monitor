@@ -2,6 +2,7 @@ package artificialintelligence
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log"
@@ -14,6 +15,7 @@ import (
 	openaisdk "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/shared"
+	"github.com/prorochestvo/dsninjector"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -208,5 +210,44 @@ func TestOpenAIClient_Complete(t *testing.T) {
 		var decoded map[string]any
 		require.NoError(t, json.Unmarshal(receivedBody, &decoded))
 		assert.Equal(t, "user msg", decoded["input"])
+	})
+}
+
+// TestNewOpenAIClient verifies that newOpenAIClient threads the proxyURL into
+// the underlying *http.Transport. The OpenAI SDK builds its own transport
+// internally; without option.WithHTTPClient the proxy is silently ignored.
+func TestNewOpenAIClient(t *testing.T) {
+	t.Parallel()
+
+	// buildValidDSN returns a minimal openai DSN with a real base64-encoded key.
+	buildValidDSN := func(t *testing.T) dsninjector.DataSource {
+		t.Helper()
+		ds := &dsninjector.DataSourceMapper{}
+		ds.SetDriver("openai")
+		ds.SetPassword(base64.URLEncoding.EncodeToString([]byte("sk-test-key")))
+		return ds
+	}
+
+	t.Run("non-empty proxyURL results in non-nil Proxy on the injected transport", func(t *testing.T) {
+		t.Parallel()
+		client, err := newOpenAIClient(buildValidDSN(t), io.Discard, "http://127.0.0.1:7788")
+		require.NoError(t, err)
+		oc, ok := client.(*openAIClient)
+		require.True(t, ok)
+		transport, ok := oc.httpClient.Transport.(*http.Transport)
+		require.True(t, ok, "injected transport must be *http.Transport")
+		assert.NotNil(t, transport.Proxy, "Proxy func must be set when proxyURL is non-empty")
+	})
+
+	t.Run("empty proxyURL results in nil Proxy on the injected transport", func(t *testing.T) {
+		t.Parallel()
+		client, err := newOpenAIClient(buildValidDSN(t), io.Discard, "")
+		require.NoError(t, err)
+		oc, ok := client.(*openAIClient)
+		require.True(t, ok)
+		transport, ok := oc.httpClient.Transport.(*http.Transport)
+		require.True(t, ok, "injected transport must be *http.Transport")
+		assert.Nil(t, transport.Proxy,
+			"Proxy func must be nil when proxyURL is empty — prevents HTTPS_PROXY env auto-pickup")
 	})
 }
