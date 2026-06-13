@@ -110,6 +110,41 @@ operator tooling (LLM rule generation and source auditing).
 - `GET /` — unified Mini App / guest landing page (served by embedded static file server). Dispatcher inline script checks `window.Telegram.WebApp.initData`: non-empty → `_wasm.renderMeSubscriptions()`, empty → `_wasm.renderPublicSubscriptions()`
 - `GET /admin/` — operator dashboard (served by embedded static file server, `cmd/web/static/admin/index.html`; no dedicated route needed)
 
+### Static asset caching
+
+Two heavy static assets are served under content-hashed URLs so nginx can cache them
+at the edge with `Cache-Control: public, max-age=604800, immutable` (7 days):
+
+| Asset | Hashed URL shape | Gzip strategy |
+|-------|-----------------|---------------|
+| `app.wasm` (~4 MB raw) | `/app.<8hex>.wasm` | Go origin serves pre-built `app.wasm.gz` sibling with `Content-Encoding: gzip` when client sends `Accept-Encoding: gzip` |
+| `wasm_exec.js` (~17 KB) | `/wasm_exec.<8hex>.js` | nginx dynamically gzips on the wire (`application/javascript` is in `gzip_types`) |
+
+The 8-hex component is the first 4 bytes of SHA-256 over the raw (uncompressed) asset
+bytes, computed at `cmd/web` startup. Hashing raw bytes means a change in gzip
+compression level alone does not invalidate the cache-busting URL.
+
+At boot, `cmd/web` builds a `hashedAssetRegistry` from the active FS (embedded or
+`--static-dir` override), then rewrites `index.html` and `admin/index.html` in memory,
+replacing `/app.wasm` and `/wasm_exec.js` with their hashed forms. The rewritten HTML
+is cached in a `htmlCache` struct and served on `GET`/`HEAD` for `/`, `/index.html`,
+`/admin/`, and `/admin/index.html`. The boot log emits a line of the form:
+
+```
+hashed assets: app=<8hex> wasm_exec=<8hex>
+```
+
+so operators can sanity-check active hashes after each deploy.
+
+The nginx regex location in `configs/nginx.kz_behappy_common_settings.conf` matches
+`^/(app|wasm_exec)\.[a-f0-9]{8}\.(wasm|js)$` and applies the 7-day immutable cache
+header. It **must** appear above the catch-all `location /` block in the file — nginx
+evaluates regex locations in source order.
+
+Stale-HTML recovery: unhashed paths `/app.wasm` and `/wasm_exec.js` are not intercepted
+by the handler and fall through to the `http.FileServer`, which serves the current bytes.
+A browser tab holding HTML from a previous deploy can still load the wasm successfully.
+
 > Rule (re-)generation and seed auditing are operator-only tools, invoked
 > via the umbrella binary `cmd/doctor`:
 >   doctor rulegen <source>              # single-source mode

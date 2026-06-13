@@ -33,6 +33,20 @@ Thumbs.db
 /build/
 /tmp/
 
+# Stray Go build artifacts at repo root.
+# Every `cmd/<name>/` can produce a binary called `<name>`. `make build` uses
+# `-o ./build/<name>` correctly; a bare `go build ./cmd/<name>` does NOT and
+# drops the binary at repo root, where it is not otherwise ignored. These
+# explicit entries are the safety net for that mistake — keep this list in
+# sync with `ls cmd/`. The rule (CLAUDE.md): never `go build` without
+# `-o ./build/<name>`.
+/collector
+/doctor
+/migrator
+/notifier
+/wasm
+/web
+
 # Test binary, built with `go test -c`
 *.test
 cmd/debug

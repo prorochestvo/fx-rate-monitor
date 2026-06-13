@@ -21,14 +21,15 @@ deploy_environment:
 	#scp -r ./configs/nginx.kz_behappy_services_prime.conf be-happy.kz:/etc/nginx/configurations/kz.be-happy.services_prime.conf
 	#scp -r ./configs/nginx.kz_behappy_services_stage.conf be-happy.kz:/etc/nginx/configurations/kz.be-happy.services_stage.conf
 	#scp -r ./configs/nginx.kz_behappy_common_settings.conf be-happy.kz:/etc/nginx/snippets/kz.be-happy.common_settings.conf
+	#scp -r ./configs/nginx.kz_behappy_gzip.conf be-happy.kz:/etc/nginx/snippets/kz.be-happy.gzip.conf
 	#scp -r ./configs/nginx.kz_behappy_certificates.conf be-happy.kz:/etc/nginx/certificates/kz.be-happy.conf
 	#scp -r ./configs/certbot.com_lingocrm.sh be-happy.kz:/opt/letsencrypt/kz.be-happy
-	scp -r ./configs/srv.prime_monitor.service be-happy.kz:/tmp/service.prime_monitor
-	scp -r ./configs/srv.stage_monitor.service be-happy.kz:/tmp/service.stage_monitor
+	#scp -r ./configs/srv.prime_monitor.service be-happy.kz:/tmp/service.prime_monitor
+	#scp -r ./configs/srv.stage_monitor.service be-happy.kz:/tmp/service.stage_monitor
 	#ssh -t be-happy.kz "sudo mv /tmp/service.prime_monitor /etc/systemd/system/prime_monitor.service"
 	#ssh -t be-happy.kz "sudo mv /tmp/service.stage_monitor /etc/systemd/system/stage_monitor.service"
 	#ssh -t be-happy.kz "sudo systemctl daemon-reload"
-	#ssh be-happy.kz "sudo nginx -s reload"
+	#ssh be-happy.kz "sudo nginx -t && sudo nginx -s reload"
 	echo "done"
 
 

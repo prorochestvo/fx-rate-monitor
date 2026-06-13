@@ -31,7 +31,6 @@ import (
 	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
 	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
 	"github.com/seilbekskindirov/monitor/internal/repository"
-	"github.com/seilbekskindirov/monitor/internal/tools/httpenc"
 	_ "modernc.org/sqlite"
 )
 
@@ -62,6 +61,9 @@ const (
 )
 
 func main() {
+	flag.Parse()
+	initFlags()
+
 	log.Printf("build: %s (%s) at %s\n", BuildVersion, BuildHash, BuildTime)
 	if StaticDir != "" {
 		log.Printf("static directory (override): %s\n", StaticDir)
@@ -189,56 +191,51 @@ func main() {
 		log.Fatalf("services: mux api is failed, %s", err.Error())
 		return
 	}
-	var fsys http.FileSystem
-	var embeddedSub fs.FS
+	var httpFsys http.FileSystem
+	var fsSub fs.FS
 	if StaticDir != "" {
-		fsys = http.Dir(StaticDir)
+		dirFS := os.DirFS(StaticDir)
+		fsSub = dirFS
+		httpFsys = http.FS(dirFS)
 	} else {
 		sub, err := fs.Sub(staticFS, "static")
 		if err != nil {
 			log.Fatalf("embed sub: %v", err)
 		}
-		embeddedSub = sub
-		fsys = http.FS(sub)
+		fsSub = sub
+		httpFsys = http.FS(sub)
 	}
-	// wasmGzipHandler intercepts *.wasm requests and serves the pre-compressed
-	// *.wasm.gz sibling with Content-Encoding: gzip when both conditions hold:
-	//   1. The client advertises Accept-Encoding: gzip.
-	//   2. The *.gz sibling exists in the embedded FS.
-	// Falls back to the plain FileServer for all other requests and whenever
-	// the *.gz file is absent (e.g. first run before make build produces it).
-	// Scoped to *.wasm only — compressing HTML/JS here is unnecessary complexity.
-	fileHandler := http.FileServer(fsys)
-	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if embeddedSub != nil &&
-			strings.HasSuffix(r.URL.Path, ".wasm") &&
-			httpenc.AcceptsGzip(r.Header.Get("Accept-Encoding")) {
-			gzPath := strings.TrimPrefix(r.URL.Path, "/") + ".gz"
-			f, openErr := embeddedSub.Open(gzPath)
-			if openErr == nil {
-				defer func() { _ = f.Close() }()
-				fi, statErr := f.Stat()
-				if statErr != nil {
-					log.Printf("wasm.gz stat %s: %v", gzPath, statErr)
-					http.Error(w, "internal error", http.StatusInternalServerError)
-					return
-				}
-				rs, ok := f.(io.ReadSeeker)
-				if !ok {
-					log.Printf("wasm.gz %s does not implement io.ReadSeeker", gzPath)
-					http.Error(w, "internal error", http.StatusInternalServerError)
-					return
-				}
-				w.Header().Set("Vary", "Accept-Encoding")
-				w.Header().Set("Content-Encoding", "gzip")
-				w.Header().Set("Content-Type", "application/wasm")
-				http.ServeContent(w, r, fi.Name(), fi.ModTime(), rs)
-				return
-			}
-			// *.gz not found in embedded FS — fall through to plain file server.
-		}
-		fileHandler.ServeHTTP(w, r)
-	}))
+
+	// Build the hashed-asset registry from the active FS. The registry hashes raw
+	// bytes (not .gz siblings) so a gzip-level change alone does not invalidate the
+	// cache-busting URL. Missing assets are unrecoverable at this point.
+	hashSpecs := []assetSpec{
+		{sourcePath: "app.wasm", contentType: "application/wasm", gzipPath: "app.wasm.gz"},
+		{sourcePath: "wasm_exec.js", contentType: "text/javascript; charset=utf-8"},
+	}
+	registry, err := newHashedAssetRegistry(fsSub, hashSpecs)
+	if err != nil {
+		log.Fatalf("hashed assets: %v", err)
+	}
+	registry.logEntries()
+
+	// Build the boot-time HTML caches. Both entry points are rewritten once so
+	// the served HTML references the hashed asset URLs from the registry.
+	bootTime := time.Now()
+	indexCache, err := newHTMLCache(fsSub, "index.html", registry, bootTime)
+	if err != nil {
+		log.Fatalf("html cache: %v", err)
+	}
+	adminCache, err := newHTMLCache(fsSub, "admin/index.html", registry, bootTime)
+	if err != nil {
+		log.Fatalf("html cache: %v", err)
+	}
+
+	// staticHandler dispatches hashed-asset and HTML-cache paths first, then falls
+	// through to the plain FileServer for unhashed paths (stale-HTML recovery) and
+	// any other static content. All registered API routes on mux shadow this catch-all.
+	fileHandler := http.FileServer(httpFsys)
+	mux.Handle("/", staticHandler(fileHandler, fsSub, indexCache, adminCache, registry))
 	tbotAPI, err := service.NewTelegramApi(tbot, subscriptionRepo, rateValueRepo, sourceRepo, profileRepo, webAppURL)
 	if err != nil {
 		log.Fatalf("services: telegram api is failed, %s", err.Error())
@@ -295,40 +292,59 @@ func main() {
 //go:embed static
 var staticFS embed.FS
 
-func init() {
-	port := flag.Int("port", HttpPort, "http server port")
-	timeout := flag.String("timeout", HttpTimeOut.String(), "HTTP read/write/idle timeout duration")
-	logsDir := flag.String("logs-dir", LogsDir, "path to logs directory")
-	verbosity := flag.String("verbosity", "warning", "minimum stdout log level (debug, info, warning, error, severe, critical)")
-	staticDir := flag.String("static-dir", StaticDir, "path to static files directory")
-	apiDsn := flag.String("api-dsn", APIDsn, "public HTTPS origin DSN, format: https://<host>/")
-	flag.Parse()
+// flagPort, flagTimeout, etc. are the raw flag values populated by flag.Parse in main.
+// They are package-level so initFlags (called from main) can apply them to the
+// exported globals, keeping the flag-registration init() free of flag.Parse.
+var (
+	flagPort      *int
+	flagTimeout   *string
+	flagLogsDir   *string
+	flagVerbosity *string
+	flagStaticDir *string
+	flagAPIDsn    *string
+)
 
-	if *port <= 1000 || *port >= 32000 {
-		log.Printf("invalid port value: %d, using default %d", *port, HttpPort)
+func init() {
+	// Register flags here so the test binary can see them, but do NOT call
+	// flag.Parse() in init() — doing so consumes go test's own flags before
+	// the testing package registers them, causing "flag provided but not defined".
+	// flag.Parse() is called once in main(), which tests never invoke.
+	flagPort = flag.Int("port", HttpPort, "http server port")
+	flagTimeout = flag.String("timeout", HttpTimeOut.String(), "HTTP read/write/idle timeout duration")
+	flagLogsDir = flag.String("logs-dir", LogsDir, "path to logs directory")
+	flagVerbosity = flag.String("verbosity", "warning", "minimum stdout log level (debug, info, warning, error, severe, critical)")
+	flagStaticDir = flag.String("static-dir", StaticDir, "path to static files directory")
+	flagAPIDsn = flag.String("api-dsn", APIDsn, "public HTTPS origin DSN, format: https://<host>/")
+}
+
+// initFlags applies the parsed flag values to the exported globals. Called once
+// from main() after flag.Parse().
+func initFlags() {
+	if *flagPort <= 1000 || *flagPort >= 32000 {
+		log.Printf("invalid port value: %d, using default %d", *flagPort, HttpPort)
 	} else {
-		HttpPort = *port
+		HttpPort = *flagPort
 	}
 
-	if value, err := time.ParseDuration(*timeout); err != nil {
-		log.Printf("invalid timeout value: %s, using default %s", *timeout, HttpTimeOut.String())
+	if value, err := time.ParseDuration(*flagTimeout); err != nil {
+		log.Printf("invalid timeout value: %s, using default %s", *flagTimeout, HttpTimeOut.String())
 	} else if value > 10*time.Second {
 		HttpTimeOut = value
 	}
 
-	if dir := *staticDir; dir != "" {
+	if dir := *flagStaticDir; dir != "" {
 		StaticDir = dir
 	}
 
-	if dir := *logsDir; dir != "" {
+	if dir := *flagLogsDir; dir != "" {
 		LogsDir = dir
 	}
 
-	if v := *verbosity; v != "" {
-		LogVerbosity = internal.ParseLogLevel(*verbosity)
+	if v := *flagVerbosity; v != "" {
+		LogVerbosity = internal.ParseLogLevel(*flagVerbosity)
 	}
 
-	if v := *apiDsn; v != "" {
+	if v := *flagAPIDsn; v != "" {
 		APIDsn = v
 	}
 }
