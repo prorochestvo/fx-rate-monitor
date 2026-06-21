@@ -263,6 +263,54 @@ whose Mini App button was cached pointing at the old
 `/tbot-miniapp/subscriptions.html` path will receive a 404 — that file no
 longer exists in the embedded static FS.
 
+## Backups
+
+Two independent halves: a host-side dump script that snapshots the databases and
+ships them off-box, and a local Make target that pulls those snapshots back.
+
+### Host-side daily dump (`configs/sqlite_dump.sh`)
+
+Runs on the deploy host (not locally). Each invocation writes a consistent
+snapshot of every present database to `/opt/monitor/backups/<env>_monitor.<YYYYMMDD>.sqlite`
+(via the `sqlite3` online backup, so it is safe under WAL), mirrors new snapshots
+to Google Drive with `rclone`, and prunes both stores. An absent database is
+skipped, not an error.
+
+| Retention | Default | Override (in `.env`) |
+|-----------|---------|----------------------|
+| Local host | 7 days  | `LOCAL_RETENTION_DAYS`  |
+| Google Drive | 14 days | `REMOTE_RETENTION_DAYS` |
+
+`make deploy_environments` ships the script to `/opt/monitor/backups/sqlite_dump.sh`
+and installs `configs/sqlite_dump.env.example` as `/opt/monitor/backups/.env` **only
+if it does not already exist** (your edited `.env` is never overwritten). Optional
+overrides — `GDRIVE_REMOTE`, the two retentions — load from that adjacent `.env`;
+rclone needs no config override there, it auto-discovers `~/.config/rclone/rclone.conf`
+of the user the cron runs as.
+
+Schedule it once with cron (the deploy step does **not** install the crontab):
+
+```cron
+0 0 * * * /opt/monitor/backups/sqlite_dump.sh > /opt/monitor/logs/backup.log 2>&1
+```
+
+Multiple hosts can share one Drive account: keep the same rclone OAuth app on each,
+but give every host a unique `GDRIVE_REMOTE` subfolder in its `.env` (e.g.
+`gdrive:backups/<host>/monitor`) so filenames never collide.
+
+### Local pull (`make backups`)
+
+Pulls each environment's latest host snapshot **plus** its service logs into one
+per-environment archive under `./backups/`:
+
+```bash
+make backups
+# -> ./backups/prime.<stamp>.tar.gz   (latest prime DB snapshot + logs)
+# -> ./backups/stage.<stamp>.tar.gz   (latest stage DB snapshot + logs)
+```
+
+`./backups/` is gitignored.
+
 ## License
 
 See [`LICENSE`](LICENSE).

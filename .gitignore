@@ -32,6 +32,7 @@ Thumbs.db
 /logs/
 /build/
 /tmp/
+/backups/
 
 # Stray Go build artifacts at repo root.
 # Every `cmd/<name>/` can produce a binary called `<name>`. `make build` uses
