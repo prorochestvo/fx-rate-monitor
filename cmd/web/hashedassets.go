@@ -208,9 +208,9 @@ func staticHandler(
 // serveHashedAsset writes the content for a hashed asset entry.
 // For wasm: attempts to serve the precompressed sibling when the client accepts gzip;
 // falls back to the plain file. For JS and other types: serves raw bytes.
-// All hashed responses set Cache-Control: public, max-age=86400, immutable so the
-// browser caches aggressively; nginx adds the same header at the edge via the regex
-// location in common_settings.conf.
+// The Cache-Control: public, max-age=604800, immutable header is added at the edge by
+// nginx via the regex location in common_settings.conf, so the browser caches
+// aggressively; the origin does not set it here.
 func serveHashedAsset(w http.ResponseWriter, r *http.Request, fsys fs.FS, entry hashedAssetEntry) {
 	// Wasm: attempt gzip-sibling handoff when the client accepts it.
 	if entry.gzipPath != "" && httpenc.AcceptsGzip(r.Header.Get("Accept-Encoding")) {

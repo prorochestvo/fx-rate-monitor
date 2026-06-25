@@ -87,7 +87,6 @@ operator tooling (LLM rule generation and source auditing).
 
 - `GET /api/sources` — list all configured rate sources with latest execution status
 - `GET /api/sources/{name}/rates` — most recent rate values for a named source
-- `GET /api/sources/{name}/rates/chart` — aggregated chart data (period=week|month|year)
 - `GET /api/sources/{name}/history` — execution history for a named source
 - `GET /api/sources/{name}/events/failed` — paginated failed events for a source
 - `GET /api/sources/{name}/subscriptions` — grouped subscription statistics for a source
@@ -106,9 +105,11 @@ operator tooling (LLM rule generation and source auditing).
 - `DELETE /api/me/subscriptions/{id}` — delete a subscription; returns 204 on success; returns 404 when not found or belonging to a different user (same 404-on-cross-user rule as PATCH); `rate_user_events` rows are **not** cascade-deleted when a subscription is removed; authenticated via `X-Telegram-Init-Data` header only
 - `GET /api/me/rates/chart` — sparkline-list chart data for the caller's subscribed pairs; authenticated via Telegram WebApp initData HMAC (`X-Telegram-Init-Data` header only). Query params: `period` (integer days, must be one of `{7, 30, 90, 180, 360}`, default 7; any other value returns 400 with a PublicError body)
 - `GET /api/me/rates/history` — paginated rate-collection events for the calling user's subscribed sources matching a canonical pair label; authenticated via Telegram WebApp initData HMAC (`X-Telegram-Init-Data` header only). Query params: `pair` (required, e.g. `USD/KZT`), `source_title` (optional, filters to one provider by its human-readable title, which is unique per provider; unknown value returns 200 with empty items), `page` (default 1), `limit` (default 20, max 100)
+- `POST /api/me/profile` — upsert the caller's profile preferences (IANA `timezone`, optional BCP-47 `locale`) so notification timestamps render in local time; body: `{"timezone":"Asia/Almaty"}`. Fire-and-forget from the Mini App on mount. Returns 204 on success, 400 on a timezone that fails `time.LoadLocation`; authenticated via `X-Telegram-Init-Data` header only
 - `GET /api/public/rates/chart` — paginated system-wide sparkline-list chart; no authentication. Query params: `page` (default 1), `limit` (default 20, max 100), `period` (integer days, must be one of `{7, 30, 90, 180, 360}`, default 7; any other value returns 400 with a PublicError body)
 - `GET /` — unified Mini App / guest landing page (served by embedded static file server). Dispatcher inline script checks `window.Telegram.WebApp.initData`: non-empty → `_wasm.renderMeSubscriptions()`, empty → `_wasm.renderPublicSubscriptions()`
 - `GET /admin/` — operator dashboard (served by embedded static file server, `cmd/web/static/admin/index.html`; no dedicated route needed)
+- `GET /healthz` — readiness probe; calls `RateService.CheckUP` (DB ping). Returns 200 `{"status":"ok"}` when reachable, 503 `{"status":"unavailable"}` otherwise. No authentication
 
 ### Static asset caching
 

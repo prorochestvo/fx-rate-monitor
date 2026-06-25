@@ -14,16 +14,16 @@ bot. A minimal HTTP dashboard (HTML + WASM) ships embedded in the `web` binary.
   near-simultaneous runs don't race.
 - **Subscription conditions** — `delta` (absolute price change), `interval`,
   `daily` (HH:MM:SS), and `cron` (5-field). Evaluated by `RateCheckAgent`.
-- **Telegram bot UI** — fully stateless inline-keyboard flows for adding/listing/
-  deleting subscriptions; all flow state travels in `callback_data`.
+- **Telegram Mini App** — per-user subscription management (create / edit / delete,
+  charts, rate history) runs in an embedded WASM Mini App. The chat bot itself
+  presents a read-only "Latest updates" digest plus a button that launches the Mini App.
 
 ### Bot commands
 
 | Command | Available to | Description |
 |---------|-------------|-------------|
-| `/start` | All users | Opens the subscription management menu |
+| `/start` | All users | Opens the bot menu: a read-only "Latest updates" digest plus a button that launches the Mini App |
 | `/subscriptions` | All users | Same as `/start` |
-| `/regen <source> [--force-fallback] [--max-fallback=N]` | Admin only | Trigger rule (re-)generation for a named source; reply is edited in place when finished |
 - **REST + dashboard** — `cmd/web` exposes a `/api/...` v1 surface and serves an
   embedded vanilla-JS dashboard (with a WASM alternative built from `cmd/wasm`).
 - **Pure Go SQLite** — `modernc.org/sqlite`, so the project builds with
@@ -44,7 +44,7 @@ internal/
   gateway/       # http.ServeMux wiring; httpV1/{handlers,routes}
   repository/    # one repo per table; each owns its own DDL via Migration()
   infrastructure/# sqlitedb client + migrator, telegrambot client
-  tools/         # rateextractor, labelfmt, tgwebapp, threadsafe
+  tools/         # rateextractor, labelfmt, tgwebapp, httpenc, proxyutil, threadsafe
   errors.go      # PublicError / TraceError / StackTraceError / HttpCodeError
   logger.go      # cyclic file logger built on loginjector
 configs/         # nginx, systemd, sources example
@@ -136,10 +136,11 @@ go tool cover -html=cover.out
 Route constants live in `internal/gateway/httpV1/routes/routes.go`. The current
 v1 surface:
 
+Operator + public routes (no authentication):
+
 - `GET   /api/sources` — list all sources
 - `PATCH /api/sources/{name}/active` — toggle a source on/off
 - `GET   /api/sources/{name}/rates` — recent rate values
-- `GET   /api/sources/{name}/rates/chart` — aggregated chart data
 - `GET   /api/sources/{name}/history` — execution history
 - `GET   /api/sources/{name}/events/failed` — failed events for a source
 - `GET   /api/sources/{name}/events/daily` — daily aggregated event counts
@@ -150,7 +151,20 @@ v1 surface:
 - `GET   /api/notifications/failed` — failed notifications
 - `GET   /api/errors/execution` — recent failed execution history
 - `GET   /api/stats` — global counters
-- `GET   /api/public/rates/chart` — paginated system-wide sparkline list; no authentication. Query params: `page` (default 1), `limit` (default 20, max 100)
+- `GET   /api/public/rates/chart` — paginated system-wide sparkline list
+- `GET   /healthz` — readiness probe (200 when the database is reachable)
+
+Mini App routes (authenticated via the Telegram WebApp `initData` HMAC carried in
+the `X-Telegram-Init-Data` header):
+
+- `GET    /api/me/subscriptions` — caller's subscriptions, enriched with latest rates
+- `GET    /api/me/subscriptions/raw` — caller's subscriptions, one row per condition
+- `POST   /api/me/subscriptions` — create a subscription
+- `PATCH  /api/me/subscriptions/{id}` — update a subscription's condition
+- `DELETE /api/me/subscriptions/{id}` — delete a subscription
+- `GET    /api/me/rates/chart` — sparkline data for the caller's subscribed pairs
+- `GET    /api/me/rates/history` — paginated rate history for the caller's pairs
+- `POST   /api/me/profile` — store the caller's IANA timezone preference
 
 Static assets are served from `/` by the embedded FS (or `--static-dir`). The
 site root (`/`) is the unified entry point: an inline dispatcher in

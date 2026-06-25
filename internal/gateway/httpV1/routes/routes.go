@@ -45,8 +45,9 @@ const (
 	ErrorsExecution = "/api/errors/execution"
 
 	// PublicRatesChart returns the paginated sparkline-list for all currency pairs
-	// across active sources over the last 7 days. No authentication required.
-	// Query params: page (default 1), limit (default 20, max 100).
+	// across active sources. No authentication required. Query params: page
+	// (default 1), limit (default 20, max 100), period (one of 7, 30, 90, 180, 360
+	// days, default 7).
 	PublicRatesChart = "/api/public/rates/chart"
 
 	// MeSubscriptions returns the calling user's own subscriptions enriched with the
@@ -54,9 +55,10 @@ const (
 	MeSubscriptions = "/api/me/subscriptions"
 
 	// MeRatesChart returns the sparkline-list chart data for the calling user's
-	// subscribed currency pairs over the last 7 days. Authentication is via
-	// Telegram WebApp initData HMAC (X-Telegram-Init-Data header only; no query
-	// parameter to prevent initData from appearing in access logs).
+	// subscribed currency pairs over the requested period (one of 7, 30, 90, 180,
+	// 360 days, default 7). Authentication is via Telegram WebApp initData HMAC
+	// (X-Telegram-Init-Data header only; no query parameter to prevent initData
+	// from appearing in access logs).
 	MeRatesChart = "/api/me/rates/chart"
 
 	// MeRatesHistory returns paginated rate-collection events for the calling
