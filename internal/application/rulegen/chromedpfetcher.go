@@ -110,9 +110,8 @@ type ChromedpFetcherOptions struct {
 	// When empty, Chromium runs without a proxy.
 	ProxyURL string
 	// NetworkIdleMillis is the additional wait after body is visible before
-	// capturing outerHTML. Defaults to 5000 ms — bumped from 1500 ms in plan 014
-	// after live smoke-tests showed bank SPAs need 3–5 s post-body for the
-	// rate table to hydrate.
+	// capturing outerHTML. Defaults to 5000 ms — bank SPAs need 3–5 s post-body
+	// for the rate table to hydrate.
 	NetworkIdleMillis int
 	// WaitSelector, if non-empty, replaces the default body+sleep wait
 	// strategy with WaitVisible(selector). Use this for SPAs where the

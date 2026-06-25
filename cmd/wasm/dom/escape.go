@@ -9,8 +9,7 @@ import "strings"
 // The replacement order (&, <, >, ", ') is significant: & must come first to
 // avoid double-escaping the ampersands that the subsequent replacements
 // introduce. The double-quote and single-quote escapes cover both attribute
-// quoting styles; the set and order match the JS esc() helper at
-// cmd/web/static/index.html:42-48 (single-quote added for completeness).
+// quoting styles.
 func Escape(s string) string {
 	s = strings.ReplaceAll(s, "&", "&amp;")
 	s = strings.ReplaceAll(s, "<", "&lt;")

@@ -40,7 +40,7 @@ package main
 //
 // Note: the summary line prefix is the literal string "rulegen --all:" (not
 // "doctor rulegen --all:") to preserve compatibility with external grep patterns
-// and existing runall_test.go assertions. See Trade-off 4 in the plan.
+// and existing runall_test.go assertions.
 
 import (
 	"context"

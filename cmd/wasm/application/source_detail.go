@@ -10,8 +10,7 @@ import (
 )
 
 const (
-	// SubsLimit is the page size for the subscriptions table, matching the JS
-	// version's paginationHtml call at index.html:158.
+	// SubsLimit is the page size for the subscriptions table.
 	SubsLimit = 25
 	// DailyEventsLimit is the page size for the daily events table.
 	DailyEventsLimit = 25
@@ -79,8 +78,7 @@ type SourceDetailPage struct {
 //
 // Title lookup: sources is scanned for a SourceResponse whose Name matches
 // name. When found, its Title field is used; when not found (or Title is
-// empty), name is used as the fallback — matching the JS behaviour at
-// index.html:104.
+// empty), name is used as the fallback.
 func NewSourceDetailPage(name string, sources []dto.SourceResponse, rates []dto.RateResponse, client *apiclient.Client) *SourceDetailPage {
 	title := name
 	var src dto.SourceResponse

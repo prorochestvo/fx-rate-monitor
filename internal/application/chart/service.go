@@ -20,7 +20,7 @@ import (
 // Keeping this constant makes the visual density of the sparkline independent
 // of the horizon: a 360-day chart has 12 buckets of ≈30 days each, and a
 // 7-day chart has 12 buckets of ≈14 hours each. This is intentional — period
-// selection is about horizon, not resolution. See Trade-off #3 in the plan.
+// selection is about horizon, not resolution.
 const bucketCount = 12
 
 // SubscriptionsLoader loads a user's subscriptions.

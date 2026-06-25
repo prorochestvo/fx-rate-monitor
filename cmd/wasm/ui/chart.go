@@ -14,7 +14,7 @@ import (
 // chart.go renders the sparkline-list view. Each pair row emits a flex row
 // containing a text block on the left (pair label + spread/delta) and the SVG
 // sparkline on the right. The renderChartArea helper is also called by the
-// list row; the pair-detail modal is text-only (no SVG) as of plan 011.
+// list row; the pair-detail modal is text-only (no SVG).
 
 // svgW and svgH are the viewBox dimensions used for every sparkline SVG.
 // The polyline runs from x=5 to x=295 so the end halo never clips the edge.
@@ -393,7 +393,7 @@ func svgYForValue(v, minV, maxV float64) float64 {
 }
 
 // formatSparklineDelta formats a percent-change value for display.
-// When sparse is true, the value is forced to "+0.0%" per the plan's spec.
+// When sparse is true, the value is forced to "+0.0%".
 func formatSparklineDelta(v float64, sparse bool) string {
 	if sparse {
 		return "+0.0%"

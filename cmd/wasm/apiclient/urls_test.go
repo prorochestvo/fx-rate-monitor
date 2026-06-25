@@ -104,7 +104,7 @@ func TestFailedNotificationsURL(t *testing.T) {
 
 	t.Run("encodes offset and limit as query params", func(t *testing.T) {
 		t.Parallel()
-		// index.html:333 uses ?offset={(page-1)*50}&limit=50
+		// The server expects ?offset=&limit= (offset = (page-1)*50, limit = 50).
 		path, q := parseQuery(t, failedNotificationsURL(50, 50))
 		assert.Equal(t, "/api/notifications/failed", path)
 		assert.Equal(t, "50", q.Get("offset"))

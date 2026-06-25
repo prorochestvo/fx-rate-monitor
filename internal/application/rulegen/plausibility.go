@@ -24,7 +24,7 @@ type valueRange struct {
 // internal/application/sourceaudit deliberately do NOT use this table. Both
 // call sites have their own history-based plausibility checks that cover the
 // production use case; bringing a static table there would be an out-of-scope
-// refactor (plan 009 conclusion). Adding a new rate source means adding (or
+// refactor. Adding a new rate source means adding (or
 // intentionally omitting) its pair here and documenting the decision.
 var plausibleRanges = map[currencyPair]valueRange{
 	// KZT-quoted majors

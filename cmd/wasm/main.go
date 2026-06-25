@@ -1438,8 +1438,8 @@ func bindMeSubsEditHandlers(
 	}))
 
 	// Delegated change handler on the stable #app container.
-	// Handles condition-type radio changes; the legacy source <select> is gone
-	// (replaced by the picker overlays which fire click events, not change).
+	// Handles condition-type radio changes; the source picker uses overlays that
+	// fire click events, not change.
 	scr.addRelease(dom.On(app, "change", func(ev js.Value) {
 		t := ev.Get("target")
 		if t.IsNull() || t.IsUndefined() {

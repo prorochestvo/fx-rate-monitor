@@ -217,8 +217,7 @@ func reasonHashtags(partAlerts []alert) string {
 // Line 2: the timestamp rendered in loc with a numeric offset suffix, e.g.
 //
 //	"Sun 24 May, 14:57 +05" for Asia/Almaty or "Sun 24 May, 09:57 +00"
-//	for UTC. No leading glyph — user-requested cleanup of the 🕒 emoji.
-//	loc=nil falls back to UTC.
+//	for UTC. No leading glyph. loc=nil falls back to UTC.
 func headerLines(now time.Time, loc *time.Location, partAlerts []alert) string {
 	if loc == nil {
 		loc = time.UTC

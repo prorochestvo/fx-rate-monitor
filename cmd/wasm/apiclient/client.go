@@ -87,7 +87,7 @@ func (c *Client) ListExecutionErrors(ctx context.Context, page int) ([]dto.Execu
 }
 
 // ListFailedNotifications fetches a window of failed notification pool records.
-// The server uses ?offset=&limit= (not ?page=), mirroring index.html:333.
+// The server uses ?offset=&limit= (not ?page=).
 func (c *Client) ListFailedNotifications(ctx context.Context, offset, limit int) ([]dto.NotificationResponse, error) {
 	raw, err := c.fetcher.FetchJSON(ctx, "GET", failedNotificationsURL(offset, limit), nil, nil)
 	if err != nil {

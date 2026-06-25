@@ -310,7 +310,7 @@ func TestSourceRepository_RemoveSource(t *testing.T) {
 		t.Parallel()
 
 		// Dedicated DB with pool > 1 so FK enforcement runs against the
-		// production-like wiring (plan 010). The shared stubSQLiteDB helper
+		// production-like wiring. The shared stubSQLiteDB helper
 		// uses SetMaxOpenConns(1), which would hide a per-connection PRAGMA
 		// regression behind a single connection that always inherits the
 		// db.Exec defaults in NewSQLiteClientEx.

@@ -8,49 +8,28 @@ bot. A minimal HTTP dashboard (HTML + WASM) ships embedded in the `web` binary.
 ## Features
 
 - **Multi-source extraction** — regex, JSONPath, `parse_float`, and a `store_as_rate`
-  pass-through method for sources that already publish a numeric value.
-- **Per-source schedules** — each source declares its own interval (`10m`, `1h`, …);
-  the collector applies a grace window of `interval/4` (clamped to `[30s, 1h]`) so
-  near-simultaneous runs don't race.
+  pass-through for sources that already publish a numeric value.
+- **Per-source schedules** — each source declares its own collection interval (`10m`, `1h`, …).
 - **Subscription conditions** — `delta` (absolute price change), `interval`,
-  `daily` (HH:MM:SS), and `cron` (5-field). Evaluated by `RateCheckAgent`.
+  `daily` (HH:MM:SS), and `cron` (5-field).
 - **Telegram Mini App** — per-user subscription management (create / edit / delete,
-  charts, rate history) runs in an embedded WASM Mini App. The chat bot itself
-  presents a read-only "Latest updates" digest plus a button that launches the Mini App.
+  charts, rate history) runs in an embedded WASM Mini App. The chat bot itself presents
+  a read-only "Latest updates" digest plus a button that launches the Mini App; it
+  responds to `/start` and `/subscriptions`, which open the same menu.
+- **REST API + dashboard** — `cmd/web` exposes a versioned `/api/...` surface and serves
+  an embedded operator dashboard plus the WASM Mini App.
+- **Pure Go SQLite** — `modernc.org/sqlite`, so the project builds with `CGO_ENABLED=0`
+  and cross-compiles cleanly.
 
-### Bot commands
+## Binaries
 
-| Command | Available to | Description |
-|---------|-------------|-------------|
-| `/start` | All users | Opens the bot menu: a read-only "Latest updates" digest plus a button that launches the Mini App |
-| `/subscriptions` | All users | Same as `/start` |
-- **REST + dashboard** — `cmd/web` exposes a `/api/...` v1 surface and serves an
-  embedded vanilla-JS dashboard (with a WASM alternative built from `cmd/wasm`).
-- **Pure Go SQLite** — `modernc.org/sqlite`, so the project builds with
-  `CGO_ENABLED=0` and cross-compiles cleanly.
-
-## Repository layout
-
-```
-cmd/
-  collector/     # scrapes active rate sources on each invocation
-  notifier/      # check-agent + dispatch-agent, drains the notification pool
-  web/           # HTTP dashboard + REST API + Telegram callback router
-  wasm/          # GOOS=js GOARCH=wasm frontend: renderer + apiclient/application/ui/dom
-internal/
-  application/   # collection / notification agents, REST + Telegram services
-  domain/        # RateSource, RateValue, RateUserSubscription, RateUserEvent, …
-  dto/           # JSON wire DTOs shared by the server (gateway) and the WASM client
-  gateway/       # http.ServeMux wiring; httpV1/{handlers,routes}
-  repository/    # one repo per table; each owns its own DDL via Migration()
-  infrastructure/# sqlitedb client + migrator, telegrambot client
-  tools/         # rateextractor, labelfmt, tgwebapp, httpenc, proxyutil, threadsafe
-  errors.go      # PublicError / TraceError / StackTraceError / HttpCodeError
-  logger.go      # cyclic file logger built on loginjector
-configs/         # nginx, systemd, sources example
-deploy/          # reference systemd unit
-plans/           # planning workflow (see CLAUDE.md)
-```
+| Binary | Role |
+|--------|------|
+| `collector` | Scrapes active rate sources on each invocation and stores values. |
+| `notifier`  | Evaluates subscription conditions and dispatches Telegram alerts. |
+| `web`       | REST API, embedded dashboard + Mini App, Telegram callback router. |
+| `migrator`  | Applies SQL schema migrations — the only binary that mutates schema. |
+| `doctor`    | Operator tooling: LLM rule generation and source auditing. |
 
 ## Requirements
 
@@ -133,44 +112,19 @@ go tool cover -html=cover.out
 
 ## HTTP API
 
-Route constants live in `internal/gateway/httpV1/routes/routes.go`. The current
-v1 surface:
+Route constants are the source of truth — see
+`internal/gateway/httpV1/routes/routes.go`. The surface splits into three groups:
 
-Operator + public routes (no authentication):
-
-- `GET   /api/sources` — list all sources
-- `PATCH /api/sources/{name}/active` — toggle a source on/off
-- `GET   /api/sources/{name}/rates` — recent rate values
-- `GET   /api/sources/{name}/history` — execution history
-- `GET   /api/sources/{name}/events/failed` — failed events for a source
-- `GET   /api/sources/{name}/events/daily` — daily aggregated event counts
-- `GET   /api/sources/{name}/subscriptions` — grouped subscription stats
-- `GET   /api/sources/{name}/subscriptions/list` — paginated subscription detail
-- `GET   /api/events/pending` — pending notification events
-- `GET   /api/notifications` — last N notifications
-- `GET   /api/notifications/failed` — failed notifications
-- `GET   /api/errors/execution` — recent failed execution history
-- `GET   /api/stats` — global counters
-- `GET   /api/public/rates/chart` — paginated system-wide sparkline list
-- `GET   /healthz` — readiness probe (200 when the database is reachable)
-
-Mini App routes (authenticated via the Telegram WebApp `initData` HMAC carried in
-the `X-Telegram-Init-Data` header):
-
-- `GET    /api/me/subscriptions` — caller's subscriptions, enriched with latest rates
-- `GET    /api/me/subscriptions/raw` — caller's subscriptions, one row per condition
-- `POST   /api/me/subscriptions` — create a subscription
-- `PATCH  /api/me/subscriptions/{id}` — update a subscription's condition
-- `DELETE /api/me/subscriptions/{id}` — delete a subscription
-- `GET    /api/me/rates/chart` — sparkline data for the caller's subscribed pairs
-- `GET    /api/me/rates/history` — paginated rate history for the caller's pairs
-- `POST   /api/me/profile` — store the caller's IANA timezone preference
-
-Static assets are served from `/` by the embedded FS (or `--static-dir`). The
-site root (`/`) is the unified entry point: an inline dispatcher in
-`index.html` inspects `window.Telegram.WebApp.initData` and routes Telegram
-Mini App users to the per-user subscriptions view; visitors without initData
-get the public sparkline list. The operator dashboard lives at `/admin/`.
+- **Operator + public** (no auth) — source listings, rate and execution history,
+  notification diagnostics, global stats, the public sparkline chart, and `GET /healthz`.
+- **Mini App** (`/api/me/...`) — the caller's own subscriptions (CRUD), charts, history,
+  and profile. Authenticated by the Telegram WebApp `initData` HMAC, which must be passed
+  in the `X-Telegram-Init-Data` header only — never the query string, to keep it out of
+  access logs and Referer headers.
+- **Static** — served from `/` by the embedded FS (or `--static-dir`). The site root is a
+  unified entry point: an inline dispatcher in `index.html` inspects
+  `window.Telegram.WebApp.initData` and shows the per-user Mini App when present, otherwise
+  the public sparkline list. The operator dashboard lives at `/admin/`.
 
 ## Sources
 
@@ -272,10 +226,8 @@ BotFather to match the unified entry point:
 2. Set the URL to `https://<host>/` (trailing slash required).
 
 The exact value the bot emits in its reply keyboard is logged at `cmd/web`
-startup as `settings: webAppURL=...`. Until BotFather is updated, users
-whose Mini App button was cached pointing at the old
-`/tbot-miniapp/subscriptions.html` path will receive a 404 — that file no
-longer exists in the embedded static FS.
+startup as `settings: webAppURL=...`. Until BotFather is updated, a Menu Button
+cached against the previous host returns 404.
 
 ## Backups
 

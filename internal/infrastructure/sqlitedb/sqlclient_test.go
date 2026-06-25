@@ -341,7 +341,7 @@ func (s *stubDataSource) OptionsNames() []string              { return nil }
 func (s *stubDataSource) Password() string                    { return "" }
 func (s *stubDataSource) Port() int                           { return 0 }
 
-// TestSQLitePoolPerConnectionPragmas is the plan 010 regression for the
+// TestSQLitePoolPerConnectionPragmas guards against the
 // pre-fix wiring where PRAGMA foreign_keys and busy_timeout were issued via
 // db.Exec on a single anonymous connection from the pool, leaving the other
 // six connections in production with the SQLite defaults. With the DSN-based
