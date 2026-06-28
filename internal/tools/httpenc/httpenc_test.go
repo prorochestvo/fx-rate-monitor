@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/seilbekskindirov/monitor/internal/tools/httpenc"
+	"github.com/seilbekskindirov/beacon/internal/tools/httpenc"
 )
 
 func TestAcceptsGzip(t *testing.T) {

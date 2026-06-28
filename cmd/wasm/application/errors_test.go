@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/seilbekskindirov/monitor/cmd/wasm/apiclient"
-	"github.com/seilbekskindirov/monitor/cmd/wasm/application"
-	"github.com/seilbekskindirov/monitor/internal/dto"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/apiclient"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/application"
+	"github.com/seilbekskindirov/beacon/internal/dto"
 )
 
 // fakeFetcherURLRecorder records every URL passed to FetchJSON for offset-shape

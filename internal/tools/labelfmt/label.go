@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/seilbekskindirov/monitor/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/domain"
 )
 
 // SubscriptionConditionLabel returns a human-readable description of a subscription's

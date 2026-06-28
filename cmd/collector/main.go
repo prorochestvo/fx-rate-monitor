@@ -1,8 +1,8 @@
 // Command collector polls all active rate sources on a configurable schedule,
 // extracts exchange-rate values, and persists them to the SQLite database.
 //
-// It reads SQLITEDB_DSN from the environment. Outbound HTTP/HTTPS traffic from
-// plain and chromedp sources routes through PROXY_URL (format: http://<host>:<port>,
+// It reads BEACON_SQLITEDB_DSN from the environment. Outbound HTTP/HTTPS traffic from
+// plain and chromedp sources routes through BEACON_PROXY_URL (format: http://<host>:<port>,
 // parsed via dsninjector); when unset or empty, traffic goes direct. Telegram Bot
 // API traffic bypasses the proxy via a hardcoded transport in
 // internal/infrastructure/telegrambot.
@@ -21,11 +21,11 @@ import (
 	"syscall"
 
 	"github.com/prorochestvo/dsninjector"
-	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/application/collection"
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
-	"github.com/seilbekskindirov/monitor/internal/repository"
-	"github.com/seilbekskindirov/monitor/internal/tools/proxyutil"
+	"github.com/seilbekskindirov/beacon/internal"
+	"github.com/seilbekskindirov/beacon/internal/application/collection"
+	"github.com/seilbekskindirov/beacon/internal/infrastructure/sqlitedb"
+	"github.com/seilbekskindirov/beacon/internal/repository"
+	"github.com/seilbekskindirov/beacon/internal/tools/proxyutil"
 	_ "modernc.org/sqlite"
 )
 
@@ -39,7 +39,7 @@ var (
 	// LogsDir is the directory where log files are written.
 	LogsDir = path.Join(os.TempDir(), "logs")
 	// ChromiumPath is the absolute path to the Chromium/Chrome binary read from
-	// CHROMIUM_PATH. When empty, chromedp searches PATH (chromium, chromium-browser,
+	// BEACON_CHROMIUM_PATH. When empty, chromedp searches PATH (chromium, chromium-browser,
 	// google-chrome, chrome).
 	ChromiumPath = os.Getenv(envChromiumPath)
 	// LogVerbosity controls the minimum log level emitted by the logger.
@@ -47,11 +47,11 @@ var (
 )
 
 const (
-	envProxyURL = "PROXY_URL"
+	envProxyURL = "BEACON_PROXY_URL"
 	// envChromiumPath is an optional absolute path to the Chromium/Chrome binary;
 	// when unset, chromedp searches PATH for chromedp-kind sources.
-	envChromiumPath = "CHROMIUM_PATH"
-	envDsnSqliteDB  = "SQLITEDB_DSN"
+	envChromiumPath = "BEACON_CHROMIUM_PATH"
+	envDsnSqliteDB  = "BEACON_SQLITEDB_DSN"
 )
 
 func main() {

@@ -6,16 +6,19 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
-	"github.com/seilbekskindirov/monitor/internal"
-	appchart "github.com/seilbekskindirov/monitor/internal/application/chart"
-	"github.com/seilbekskindirov/monitor/internal/application/service"
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/gateway/httpV1"
+	"github.com/seilbekskindirov/beacon/internal"
+	appchart "github.com/seilbekskindirov/beacon/internal/application/chart"
+	"github.com/seilbekskindirov/beacon/internal/application/service"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/gateway/httpV1"
 )
 
 // NewGateway builds the v1 HTTP mux with all routes registered, ready for
 // http.ListenAndServe. chartSvc is required for GET /api/me/rates/chart.
+// healthAgent drives GET /health/check; when nil the endpoint returns 503.
+// serverVersion and serverStart populate the "server" block in the health response.
 func NewGateway(
 	srvRateRestApi *service.RateRestApi,
 	botToken string,
@@ -24,9 +27,12 @@ func NewGateway(
 	rateValueRepo meRateValueRepo,
 	profileRepo meProfileRepo,
 	chartSvc *appchart.Service,
+	healthAgent healthCheckAgent,
+	serverVersion string,
+	serverStart time.Time,
 ) (*http.ServeMux, error) {
 	mux := http.NewServeMux()
-	mux, err := httpV1.NewRouter(mux, srvRateRestApi, botToken, subRepo, sourceRepo, rateValueRepo, profileRepo, chartSvc)
+	mux, err := httpV1.NewRouter(mux, srvRateRestApi, botToken, subRepo, sourceRepo, rateValueRepo, profileRepo, chartSvc, healthAgent, serverVersion, serverStart)
 	if err != nil {
 		err = errors.Join(err, internal.NewTraceError())
 		return nil, err
@@ -57,4 +63,11 @@ type meRateValueRepo interface {
 // meProfileRepo is a pass-through interface for user-profile upserts.
 type meProfileRepo interface {
 	UpsertRateUserProfile(ctx context.Context, record *domain.RateUserProfile) error
+}
+
+// healthCheckAgent is a pass-through interface for the dependency-health aggregator.
+// Nil is allowed; NewGateway forwards it to the router which forwards it to the
+// HealthCheck handler. The handler returns 503 when the agent is not wired.
+type healthCheckAgent interface {
+	CheckUp(ctx context.Context) (healthy bool, report map[string]string)
 }

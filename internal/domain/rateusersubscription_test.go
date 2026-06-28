@@ -79,7 +79,7 @@ func TestRateUserSubscription_IsDeltaSatisfied(t *testing.T) {
 
 	t.Run("first run LatestNotifiedRate zero always fires", func(t *testing.T) {
 		t.Parallel()
-		// Regression: github.com/seilbekskindirov/monitor — notifications sent every tick
+		// Regression: github.com/seilbekskindirov/beacon — notifications sent every tick
 		rus := &RateUserSubscription{
 			ConditionType:      ConditionTypeDelta,
 			ConditionValue:     "5",
@@ -102,7 +102,7 @@ func TestRateUserSubscription_IsDeltaSatisfied(t *testing.T) {
 	})
 	t.Run("rate unchanged after first notification does not fire", func(t *testing.T) {
 		t.Parallel()
-		// Regression: github.com/seilbekskindirov/monitor — notifications sent every tick
+		// Regression: github.com/seilbekskindirov/beacon — notifications sent every tick
 		// delta == 0 but LatestNotifiedRate > 0 means rate has not changed → must NOT fire
 		rus := &RateUserSubscription{
 			ConditionType:      ConditionTypeDelta,

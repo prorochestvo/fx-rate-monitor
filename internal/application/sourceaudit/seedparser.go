@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/seilbekskindirov/monitor/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/domain"
 )
 
 // SeededSource represents a rate source record parsed from a seed SQL file.

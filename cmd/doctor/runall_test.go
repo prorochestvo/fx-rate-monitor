@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/seilbekskindirov/monitor/internal/application/rulegen"
-	"github.com/seilbekskindirov/monitor/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/application/rulegen"
+	"github.com/seilbekskindirov/beacon/internal/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

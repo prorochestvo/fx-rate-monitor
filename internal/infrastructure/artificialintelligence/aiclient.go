@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/prorochestvo/dsninjector"
-	"github.com/seilbekskindirov/monitor/internal"
+	"github.com/seilbekskindirov/beacon/internal"
 )
 
 // AIClient is the interface that all AI provider drivers implement.

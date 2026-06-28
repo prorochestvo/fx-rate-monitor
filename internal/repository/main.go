@@ -7,7 +7,7 @@ import (
 	"errors"
 	"log"
 
-	"github.com/seilbekskindirov/monitor/internal"
+	"github.com/seilbekskindirov/beacon/internal"
 )
 
 // printRollbackError rolls back tx and logs any failure that is not

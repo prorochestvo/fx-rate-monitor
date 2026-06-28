@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/domain"
 )
 
 // Category identifies the broad market type of a currency pair's base.

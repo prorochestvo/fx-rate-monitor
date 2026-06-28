@@ -9,8 +9,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal"
+	"github.com/seilbekskindirov/beacon/internal/domain"
 )
 
 // NewRateRestAPI returns a RateRestApi wired to the given repository implementations.

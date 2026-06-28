@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/seilbekskindirov/monitor/internal/dto"
+	"github.com/seilbekskindirov/beacon/internal/dto"
 )
 
 // Client is a typed HTTP client for the /api/... routes consumed by the WASM frontend.

@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/seilbekskindirov/monitor/cmd/wasm/ui"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/ui"
 )
 
 func TestRenderPagination(t *testing.T) {

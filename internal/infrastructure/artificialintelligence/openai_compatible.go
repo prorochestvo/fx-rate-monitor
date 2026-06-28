@@ -12,7 +12,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/seilbekskindirov/monitor/internal"
+	"github.com/seilbekskindirov/beacon/internal"
 )
 
 // chatPingPrompt is the text sent in CheckUP probes. The model is instructed

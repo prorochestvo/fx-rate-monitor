@@ -1,5 +1,5 @@
 // Command migrator applies pending SQL migration files from the embedded
-// migrations.MigrationsFS to the SQLite database pointed to by SQLITEDB_DSN.
+// migrations.MigrationsFS to the SQLite database pointed to by BEACON_SQLITEDB_DSN.
 // It is idempotent: already-applied migration filenames are tracked in
 // __schema_migrations and skipped on subsequent runs.
 package main
@@ -17,9 +17,9 @@ import (
 
 	"github.com/prorochestvo/dsninjector"
 	"github.com/prorochestvo/loginjector"
-	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
-	"github.com/seilbekskindirov/monitor/migrations"
+	"github.com/seilbekskindirov/beacon/internal"
+	"github.com/seilbekskindirov/beacon/internal/infrastructure/sqlitedb"
+	"github.com/seilbekskindirov/beacon/migrations"
 	_ "modernc.org/sqlite"
 )
 
@@ -37,7 +37,7 @@ var (
 )
 
 const (
-	envDsnSqliteDB = "SQLITEDB_DSN"
+	envDsnSqliteDB = "BEACON_SQLITEDB_DSN"
 )
 
 func main() {

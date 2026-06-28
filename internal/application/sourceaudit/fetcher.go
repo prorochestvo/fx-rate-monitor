@@ -14,7 +14,7 @@ var _ Fetcher = (*httpFetcher)(nil)
 
 // DefaultUserAgent is the audit tool's User-Agent header, matching the
 // production extractor value.
-const DefaultUserAgent = "FXRateMonitor/1.0 (+https://github.com/seilbekskindirov/monitor)"
+const DefaultUserAgent = "Beacon/1.0 (+https://github.com/seilbekskindirov/beacon)"
 
 // FetchResult holds the response from a single HTTP GET.
 type FetchResult struct {

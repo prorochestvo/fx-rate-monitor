@@ -6,9 +6,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/seilbekskindirov/monitor/cmd/wasm/application"
-	"github.com/seilbekskindirov/monitor/cmd/wasm/ui"
-	"github.com/seilbekskindirov/monitor/internal/dto"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/application"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/ui"
+	"github.com/seilbekskindirov/beacon/internal/dto"
 )
 
 func makeState(sources []dto.SourceResponse) application.SourcesState {

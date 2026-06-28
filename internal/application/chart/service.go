@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/domain/ratepair"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/domain/ratepair"
 )
 
 // bucketCount is the fixed number of equal-width buckets used when downsampling

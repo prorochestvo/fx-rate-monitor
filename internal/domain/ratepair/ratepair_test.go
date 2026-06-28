@@ -4,8 +4,8 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/domain/ratepair"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/domain/ratepair"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

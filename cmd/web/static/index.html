@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://telegram.org; script-src 'self' https://telegram.org 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline';">
-  <title>FX Rates</title>
+  <title>Beacon</title>
   <!--
     Load the Telegram WebApp SDK unconditionally so both dispatch arms work
     from the same HTML. In a plain browser tab the SDK noops and leaves
@@ -778,13 +778,13 @@
 </head>
 <body>
   <div id="app">
-    <div class="app-loader" role="status" aria-live="polite" aria-label="Loading FX Rate Monitor">
+    <div class="app-loader" role="status" aria-live="polite" aria-label="Loading Beacon">
       <div class="app-loader-disc" aria-hidden="true">
         <div class="app-loader-arc app-loader-arc-outer"></div>
         <div class="app-loader-arc app-loader-arc-inner"></div>
         <span class="app-loader-mark">&#8644;</span>
       </div>
-      <p class="app-loader-title">FX Rate Monitor</p>
+      <p class="app-loader-title">Beacon</p>
       <p class="app-loader-subtitle">Loading&#8230;</p>
     </div>
   </div>
@@ -813,7 +813,7 @@
         // BEFORE the page loads. Do NOT use the ?initData= URL fallback in any
         // environment where URLs end up in access logs or Referer headers —
         // the signed payload is replayable for 24 hours.
-        console.info('[fx-rate-monitor] No Telegram context detected — rendering public view.');
+        console.info('[beacon] No Telegram context detected — rendering public view.');
         window._wasm.renderPublicSubscriptions();
       }
     }).catch(function(err) {

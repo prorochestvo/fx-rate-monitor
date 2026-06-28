@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/seilbekskindirov/monitor/cmd/wasm/apiclient"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/apiclient"
 )
 
 func TestNewHTTPFetcher_FetchJSON(t *testing.T) {

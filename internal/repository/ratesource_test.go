@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb/sqlitedbtest"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/infrastructure/sqlitedb"
+	"github.com/seilbekskindirov/beacon/internal/infrastructure/sqlitedb/sqlitedbtest"
 	"github.com/stretchr/testify/require"
 )
 

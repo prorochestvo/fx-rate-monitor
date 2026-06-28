@@ -31,7 +31,7 @@ import (
 	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
 	"github.com/prorochestvo/dsninjector"
-	"github.com/seilbekskindirov/monitor/internal"
+	"github.com/seilbekskindirov/beacon/internal"
 )
 
 // OpenAIModels is the allowlist of models that support Structured Output

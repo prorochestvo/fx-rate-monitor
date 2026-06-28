@@ -1,6 +1,6 @@
 //go:build js && wasm
 
-// Command wasm is the single-page WASM frontend for the FX Rate Monitor.
+// Command wasm is the single-page WASM frontend for Beacon.
 // It runs inside the browser via the Go WASM runtime, drives the DOM through
 // window.fetch and innerHTML, and communicates with the server via /api/... routes.
 package main
@@ -12,11 +12,11 @@ import (
 	"syscall/js"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/cmd/wasm/apiclient"
-	"github.com/seilbekskindirov/monitor/cmd/wasm/application"
-	"github.com/seilbekskindirov/monitor/cmd/wasm/dom"
-	"github.com/seilbekskindirov/monitor/cmd/wasm/ui"
-	"github.com/seilbekskindirov/monitor/internal/dto"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/apiclient"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/application"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/dom"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/ui"
+	"github.com/seilbekskindirov/beacon/internal/dto"
 )
 
 // screen holds the teardown closures for a single active screen. On navigation,

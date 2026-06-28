@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/repository"
-	"github.com/seilbekskindirov/monitor/internal/tools/threadsafe"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/repository"
+	"github.com/seilbekskindirov/beacon/internal/tools/threadsafe"
 	"github.com/stretchr/testify/require"
 )
 

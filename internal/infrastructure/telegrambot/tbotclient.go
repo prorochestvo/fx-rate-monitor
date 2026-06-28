@@ -16,7 +16,7 @@ import (
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/prorochestvo/dsninjector"
-	"github.com/seilbekskindirov/monitor/internal"
+	"github.com/seilbekskindirov/beacon/internal"
 )
 
 // UpdateHandler is called for every incoming Telegram update in the event bus.
@@ -25,7 +25,7 @@ type UpdateHandler func(ctx context.Context, update tgbotapi.Update)
 // TelegramChatID is a typed int64 that identifies a Telegram chat or user.
 type TelegramChatID int64
 
-// NewTBotClient parses the TELEGRAMBOT_DSN, validates the bot token and admin
+// NewTBotClient parses the BEACON_TELEGRAMBOT_DSN, validates the bot token and admin
 // chat ID, connects to the Telegram Bot API, and returns a ready-to-use client.
 // The DSN format is <adminChatID>:<botToken>@<host>.
 //

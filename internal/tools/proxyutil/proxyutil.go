@@ -1,6 +1,6 @@
 // Package proxyutil resolves and redacts the operator-configured outbound proxy
 // URL. It is shared by the cmd/collector and cmd/doctor binaries, which both
-// read PROXY_URL at startup.
+// read BEACON_PROXY_URL at startup.
 package proxyutil
 
 import (
@@ -19,7 +19,7 @@ import (
 // Emits one startup line via log.Printf (the same sink as every other startup
 // line, so it reaches stdout and the file logger regardless of verbosity level):
 //   - "proxy: not configured" when the variable is absent.
-//   - "proxy: PROXY_URL=<redacted>" when a valid URL is found; userinfo
+//   - "proxy: BEACON_PROXY_URL=<redacted>" when a valid URL is found; userinfo
 //     credentials are stripped from the logged value.
 func ResolveURL(envName string) string {
 	_, ok := os.LookupEnv(envName)
@@ -32,7 +32,7 @@ func ResolveURL(envName string) string {
 		log.Fatalf("settings: %s: %s", envName, err.Error())
 	}
 	raw := dsn.Driver() + "://" + dsn.Addr()
-	log.Printf("proxy: PROXY_URL=%s", RedactURL(raw))
+	log.Printf("proxy: BEACON_PROXY_URL=%s", RedactURL(raw))
 	return raw
 }
 

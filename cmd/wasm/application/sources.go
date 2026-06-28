@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	"github.com/seilbekskindirov/monitor/cmd/wasm/apiclient"
-	"github.com/seilbekskindirov/monitor/internal/dto"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/apiclient"
+	"github.com/seilbekskindirov/beacon/internal/dto"
 )
 
 // SourcesState holds all client-side state for the Sources List screen — the

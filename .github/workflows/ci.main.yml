@@ -1,0 +1,44 @@
+# CI for the main branch — lints, runs the full suite, and does a production-shape
+# build on every push to main and every PR targeting main. No deploy. The release
+# pipeline lives in release.yml and triggers on v* tags.
+name: ci-main
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # PRs supersede their own previous runs; main pushes queue rather than cancel
+  # so a follow-up push does not abort in-flight CI for the previous commit.
+  group: ci-main-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: make lint
+      - run: make test
+      # production-shape build: CGO off, linux/amd64, the same artifacts
+      # release.yml ships. Catches "tests pass but prod build breaks" (build
+      # tags, race-only files, missing wasm assets).
+      - name: Sanity build
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p ./cmd/web/static
+          cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" ./cmd/web/static/wasm_exec.js
+          GOOS=js GOARCH=wasm go build -o ./cmd/web/static/app.wasm ./cmd/wasm
+          GOOS=linux GOARCH=amd64 go build -o ./build/webapp ./cmd/web
+          GOOS=linux GOARCH=amd64 go build -o ./build/collector ./cmd/collector
+          GOOS=linux GOARCH=amd64 go build -o ./build/notifier ./cmd/notifier
+          GOOS=linux GOARCH=amd64 go build -o ./build/migrator ./cmd/migrator

@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/repository"
+	"github.com/seilbekskindirov/beacon/internal"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/repository"
 	"github.com/stretchr/testify/require"
 )
 

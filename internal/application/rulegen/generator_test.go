@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/artificialintelligence"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/infrastructure/artificialintelligence"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -19,8 +19,8 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/tools/rateextractor"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/tools/rateextractor"
 )
 
 var _ RuleExecutor = (*defaultRuleExecutor)(nil)

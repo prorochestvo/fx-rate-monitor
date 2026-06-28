@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/domain/identity"
+	"github.com/seilbekskindirov/beacon/internal"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/domain/identity"
 )
 
 // NewRateValueRepository returns a repository for the rate_values table.

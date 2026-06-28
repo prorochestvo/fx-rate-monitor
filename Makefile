@@ -11,32 +11,40 @@ TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 BUILD_OPTIONS := "-s -w -X main.BuildVersion=${BRANCH} -X main.BuildTime=${TIME} -X main.BuildHash=${BUILD}"
 
-.PHONY: all run build build-collector build-notifier build-web build-wasm build-migrator migrate test lint format audit audit-help doctor-help swagger clean deploy_environments backups
+.PHONY: all run build build-collector build-notifier build-web build-wasm build-migrator migrate test lint format audit audit-help doctor-help swagger clean init backups
 
 
 
-## deploy_environments: push nginx, systemd unit and cron-script configs to the host, then reload systemd and nginx
-deploy_environments:
-	scp -r ./configs/nginx.kz_behappy.conf be-happy.kz:/etc/nginx/sites-available/kz.be-happy
-	scp -r ./configs/nginx.kz_behappy_balancer_prime.conf be-happy.kz:/etc/nginx/configurations/kz.be-happy.balancer_prime.conf
-	scp -r ./configs/nginx.kz_behappy_balancer_stage.conf be-happy.kz:/etc/nginx/configurations/kz.be-happy.balancer_stage.conf
-	scp -r ./configs/nginx.kz_behappy_services_prime.conf be-happy.kz:/etc/nginx/configurations/kz.be-happy.services_prime.conf
-	scp -r ./configs/nginx.kz_behappy_services_stage.conf be-happy.kz:/etc/nginx/configurations/kz.be-happy.services_stage.conf
-	scp -r ./configs/nginx.kz_behappy_common_settings.conf be-happy.kz:/etc/nginx/snippets/kz.be-happy.common_settings.conf
-	scp -r ./configs/nginx.kz_behappy_gzip.conf be-happy.kz:/etc/nginx/snippets/kz.be-happy.gzip.conf
-	scp -r ./configs/nginx.kz_behappy_certificates.conf be-happy.kz:/etc/nginx/certificates/kz.be-happy.conf
-	scp -r ./configs/certbot.com_lingocrm.sh be-happy.kz:/opt/letsencrypt/kz.be-happy
-	scp -r ./configs/sqlite_dump.sh be-happy.kz:/opt/monitor/backups/sqlite_dump.sh
-	scp -r ./configs/sqlite_dump.env.example be-happy.kz:/tmp/sqlite_dump.env.example
-	ssh be-happy.kz "if [ -f /opt/monitor/backups/.env ]; then echo 'skip: /opt/monitor/backups/.env already exists'; rm -f /tmp/sqlite_dump.env.example; else mv /tmp/sqlite_dump.env.example /opt/monitor/backups/.env && chmod 600 /opt/monitor/backups/.env && echo 'installed /opt/monitor/backups/.env from example (edit RCLONE_CONFIG)'; fi"
-	scp -r ./configs/srv.prime_monitor.service be-happy.kz:/tmp/service.prime_monitor
-	scp -r ./configs/srv.stage_monitor.service be-happy.kz:/tmp/service.stage_monitor
-	ssh -t be-happy.kz "sudo sh -c '\
-		mv /tmp/service.prime_monitor /etc/systemd/system/prime_monitor.service && \
-		mv /tmp/service.stage_monitor /etc/systemd/system/stage_monitor.service && \
-		systemctl daemon-reload && \
-		nginx -t && nginx -s reload'"
-	echo "done"
+## init: provision the host once — release-layout sandbox (artifacts/+bin/ owned by CI), systemd units, narrow sudoers, backup script, and the Cloudflare nginx vhost
+init:
+	scp ./configs/beacon.service ./configs/beacon-migrate.service ./configs/beacon-deploy.sudoers ./configs/sqlite_dump.sh ./configs/sqlite_dump.env.example ./configs/nginx.beacon.conf ./configs/nginx.beacon_common_settings.conf ./configs/nginx.beacon_gzip.conf be-happy.kz:/tmp/
+	ssh -t be-happy.kz 'set -e; \
+		CI=github_aide; \
+		sudo install -d -o $$CI -g $$CI -m 0755 /opt/beacon/artifacts /opt/beacon/bin; \
+		sudo install -d -m 0755 /opt/beacon/logs /opt/beacon/backups; \
+		sudo chown root:root /opt/beacon && sudo chmod 0755 /opt/beacon; \
+		[ -f /opt/beacon/.env ] && sudo chown root:root /opt/beacon/.env && sudo chmod 0600 /opt/beacon/.env || true; \
+		[ -f /opt/beacon/beacon.sqlite ] && sudo chown root:root /opt/beacon/beacon.sqlite && sudo chmod 0600 /opt/beacon/beacon.sqlite || true; \
+		for w in collector.sh notifier.sh; do [ -f /opt/beacon/$$w ] && sudo chown root:root /opt/beacon/$$w && sudo chmod 0750 /opt/beacon/$$w || true; done; \
+		sudo install -m 0755 /tmp/sqlite_dump.sh /opt/beacon/backups/sqlite_dump.sh; \
+		[ -f /opt/beacon/backups/.env ] && echo "skip: backups/.env exists" || { sudo install -m 0600 /tmp/sqlite_dump.env.example /opt/beacon/backups/.env; echo "installed backups/.env (edit GDRIVE_REMOTE)"; }; \
+		sudo install -m 0644 /tmp/beacon.service /etc/systemd/system/beacon.service; \
+		sudo install -m 0644 /tmp/beacon-migrate.service /etc/systemd/system/beacon-migrate.service; \
+		sudo systemctl daemon-reload; \
+		sudo install -m 0440 /tmp/beacon-deploy.sudoers /etc/sudoers.d/beacon-deploy && sudo visudo -c; \
+		sudo mkdir -p /etc/nginx/certificates/cloudflare /etc/nginx/snippets /etc/nginx/sites-available /etc/nginx/sites-enabled; \
+		sudo curl -fsSL https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem -o /etc/nginx/certificates/cloudflare/origin-pull-ca.pem; \
+		sudo install -m 0644 /tmp/nginx.beacon_common_settings.conf /etc/nginx/snippets/beacon.common_settings.conf; \
+		sudo install -m 0644 /tmp/nginx.beacon_gzip.conf /etc/nginx/snippets/beacon.gzip.conf; \
+		sudo install -m 0644 /tmp/nginx.beacon.conf /etc/nginx/sites-available/beacon.seilbekskindirov.dev; \
+		sudo ln -sfn /etc/nginx/sites-available/beacon.seilbekskindirov.dev /etc/nginx/sites-enabled/beacon.seilbekskindirov.dev.conf; \
+		sudo rm -f /tmp/beacon.service /tmp/beacon-migrate.service /tmp/beacon-deploy.sudoers /tmp/sqlite_dump.sh /tmp/sqlite_dump.env.example /tmp/nginx.beacon.conf /tmp/nginx.beacon_common_settings.conf /tmp/nginx.beacon_gzip.conf; \
+		if sudo test -s /etc/nginx/certificates/cloudflare/seilbekskindirov.dev.pem && sudo test -s /etc/nginx/certificates/cloudflare/seilbekskindirov.dev.key; then \
+			sudo nginx -t && sudo systemctl reload nginx && echo "nginx: beacon edge vhost live"; \
+		else \
+			echo "WARNING: /etc/nginx/certificates/cloudflare/seilbekskindirov.dev.{pem,key} missing — place the Cloudflare Origin cert, then rerun"; \
+		fi'
+	echo "init done"
 
 
 
@@ -77,7 +85,10 @@ audit-help: build
 test: format
 	go clean -cache
 	CGO_ENABLED=0 go vet ./...
-	CGO_ENABLED=0 go test -race ./...
+	# -race requires cgo: macOS bundles the race runtime so CGO_ENABLED=0 works
+	# there, but Linux (CI) needs a C toolchain. The pure-Go production build
+	# stays CGO_ENABLED=0; this is the documented race-detector exception.
+	CGO_ENABLED=1 go test -race ./...
 	@if command -v node >/dev/null 2>&1; then \
 		echo "running WASM tests..."; \
 		CGO_ENABLED=0 GOOS=js GOARCH=wasm go test \
@@ -114,39 +125,37 @@ format:
 
 ## clean: remove built binaries and generated WASM assets, then go mod tidy
 clean:
-	rm -f ./build/monitor ./build/collector ./build/notifier ./build/migrator ./build/web ./build/monitor.db
+	rm -f ./build/collector ./build/notifier ./build/migrator ./build/web ./build/beacon.db
 	rm -f ./build/doctor
 	rm -f ./cmd/web/static/app.wasm ./cmd/web/static/wasm_exec.js
 	rm -rf ./build/static
 	go mod tidy
 
 
-## backups: pull each env's latest DB snapshot + service logs from the host into one per-env archive (./backups/{prime,stage}.<stamp>.tar.gz)
+## backups: pull the latest DB snapshot + service logs from the host into one archive (./backups/beacon.<stamp>.tar.gz)
 backups:
 	@mkdir -p ./backups ./tmp
 	@stamp=$$(date -u +%Y%m%d-%H%M%S); \
-	for env in prime stage; do \
-		tmpdir=./tmp/backups-$$env; \
-		rm -rf $$tmpdir; mkdir -p $$tmpdir; \
-		latest=$$(ssh be-happy.kz "ls -1t /opt/monitor/backups/$${env}_monitor.*.sqlite 2>/dev/null | head -n1"); \
-		if [ -n "$$latest" ]; then \
-			echo "[$$env] db:   $$latest"; \
-			scp be-happy.kz:$$latest $$tmpdir/; \
-		else \
-			echo "[$$env] db:   no snapshot in /opt/monitor/backups (has sqlite_dump.sh run on the host yet?)"; \
-		fi; \
-		if ssh be-happy.kz "test -d /opt/monitor/logs/$$env"; then \
-			echo "[$$env] logs: /opt/monitor/logs/$$env"; \
-			scp -r be-happy.kz:/opt/monitor/logs/$$env $$tmpdir/logs; \
-		else \
-			echo "[$$env] logs: /opt/monitor/logs/$$env not present"; \
-		fi; \
-		if [ -n "$$(ls -A $$tmpdir)" ]; then \
-			archive=./backups/$$env.$$stamp.tar.gz; \
-			tar -czf $$archive -C $$tmpdir .; \
-			echo "[$$env] archive: $$archive"; \
-		else \
-			echo "[$$env] nothing pulled; no archive created"; \
-		fi; \
-		rm -rf $$tmpdir; \
-	done
+	tmpdir=./tmp/backups-beacon; \
+	rm -rf $$tmpdir; mkdir -p $$tmpdir; \
+	latest=$$(ssh be-happy.kz "ls -1t /opt/beacon/backups/beacon.*.sqlite 2>/dev/null | head -n1"); \
+	if [ -n "$$latest" ]; then \
+		echo "db:   $$latest"; \
+		scp be-happy.kz:$$latest $$tmpdir/; \
+	else \
+		echo "db:   no snapshot in /opt/beacon/backups (has sqlite_dump.sh run on the host yet?)"; \
+	fi; \
+	if ssh be-happy.kz "test -d /opt/beacon/logs"; then \
+		echo "logs: /opt/beacon/logs"; \
+		scp -r be-happy.kz:/opt/beacon/logs $$tmpdir/logs; \
+	else \
+		echo "logs: /opt/beacon/logs not present"; \
+	fi; \
+	if [ -n "$$(ls -A $$tmpdir)" ]; then \
+		archive=./backups/beacon.$$stamp.tar.gz; \
+		tar -czf $$archive -C $$tmpdir .; \
+		echo "archive: $$archive"; \
+	else \
+		echo "nothing pulled; no archive created"; \
+	fi; \
+	rm -rf $$tmpdir

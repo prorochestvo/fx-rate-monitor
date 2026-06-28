@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	tgbotapi "github.com/OvyFlash/telegram-bot-api"
-	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
+	"github.com/seilbekskindirov/beacon/internal"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	integration "github.com/seilbekskindirov/beacon/internal/infrastructure/telegrambot"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

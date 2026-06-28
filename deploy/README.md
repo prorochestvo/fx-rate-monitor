@@ -1,48 +1,80 @@
 # Deployment
 
-Production deployments are driven by the CI workflows in
-`.github/workflows/stage.yml` and `.github/workflows/prime.yml`. They
-checksum-validate every binary, pause cron wrappers, run `cmd/migrator`,
-swap the webapp binary, restart the unit, and resume cron — see those
-files for the live procedure.
+Tests run on every push/PR to `main` (`.github/workflows/ci.main.yml`).
+Production deployment is driven by `.github/workflows/release.yml`, which fires
+on an `r_*` release tag — see that file for the live procedure.
 
-## Live systemd units
+## On-server layout
 
-| Environment | Unit file |
-|-------------|-----------|
-| Stage | `configs/srv.stage_monitor.service` |
-| Prime | `configs/srv.prime_monitor.service` |
+The host follows the standard release layout: immutable per-version artifact
+sets and a channel symlink the service runs through.
 
-Each unit runs the long-lived `*_monitor_webapp` binary; the
-`*_monitor_collector` and `*_monitor_notifier` binaries are one-shot
-processes invoked by host-side cron wrappers between deploys.
+```
+/opt/beacon/                 root:root          0755   base dir — CI cannot write
+    .env                     root:root          0600   secrets
+    collector.sh notifier.sh root:root          0750   cron wrappers (call bin/release/*)
+    beacon.sqlite            root:root          0600   DB (+ -wal/-shm)
+    logs/                    root:root          0750
+    backups/                 root:root          0755   sqlite_dump output
+    artifacts/               github_aide:github_aide 0755   immutable builds, by VERSION_ID
+        20260628T…-r_0.0.1/      webapp collector notifier migrator (+x)
+    bin/                     github_aide:github_aide 0755
+        release -> ../artifacts/20260628T…-r_0.0.1
+```
 
-Configuration (DB DSN, Telegram bot token, admin chat ID) lives in
-`/opt/monitor/.{stage,prime}_monitor.env`. The public origin is baked
-into the unit's `ExecStart` line (`--api-dsn`), never read from the
-env file. See `CLAUDE.md` for the full configuration contract.
+`VERSION_ID = <UTC YYYYMMDDhhmmss>-r_<semver>`. The CI deploy user (`github_aide`)
+may write **only** inside `artifacts/` and `bin/` — base-dir write is what would
+let it replace `.env`/`*.sh`/the DB, so it is deliberately denied. A deploy is:
+upload `artifacts/<VID>/`, flip `bin/release` (relative symlink), run migrations
+(`sudo systemctl start beacon-migrate`), restart the webapp
+(`sudo systemctl restart beacon`), health-gate on `/health/check` (readiness probe),
+and on failure flip `bin/release` back to the previous VERSION_ID and restart — rollback is one
+symlink. Old versions are pruned to the newest 5 not referenced by any channel.
+
+## Units, config, sudoers
+
+- `configs/beacon.service` — long-lived webapp; `ExecStart=/opt/beacon/bin/release/webapp …`.
+- `configs/beacon-migrate.service` — one-shot migrator (`bin/release/migrator`), run
+  at deploy after the flip; runs as root so the deploy user never writes the DB.
+- `collector`/`notifier` — one-shot, invoked by host cron wrappers that call
+  `bin/release/{collector,notifier}`.
+- `configs/beacon-deploy.sudoers` → `/etc/sudoers.d/beacon-deploy` (0440): grants
+  `github_aide` exactly `systemctl restart beacon` and `systemctl start beacon-migrate`.
+- Configuration (DB DSN, Telegram bot token, admin chat ID) lives in
+  `/opt/beacon/.env`; the public origin is baked into the unit's `--api-dsn`,
+  never the env file. `make init` provisions all of the above.
+
+## Hardening (recommended follow-up)
+
+The service currently runs as **root** (`User=root`), so a build shipped by a
+leaked CI key is executed by root on restart. The CI user is already confined to
+`artifacts/`+`bin/`, but to cap the blast radius, de-root the service: create a
+dedicated `beacon` system user, move the DB to `/var/lib/beacon` (`beacon:beacon
+0750`), set `User=beacon` on both units (+ `NoNewPrivileges`, `ProtectSystem=strict`,
+`ReadWritePaths=/var/lib/beacon /opt/beacon/logs`), and make `.env` `0640 root:beacon`
+so cron one-shots running as `beacon` can read it. Then a leaked CI key tops out at
+"ship an artifact that runs as `beacon`" — never root.
 
 ## Outbound proxy
 
 All outbound HTTP/HTTPS traffic from `cmd/collector` (rate-source scrapes, chromedp
 browser connections) and `cmd/doctor` (AI provider calls, chromedp fetcher) is routed
-through the proxy configured by `PROXY_URL`. Telegram Bot API traffic is **always
+through the proxy configured by `BEACON_PROXY_URL`. Telegram Bot API traffic is **always
 direct** — the bypass is enforced in code via a hardcoded no-proxy transport in
 `internal/infrastructure/telegrambot/tbotclient.go`, so the bot continues to deliver
 notifications even when everything else is gated behind the proxy.
 
-To enable, add one line to `/opt/monitor/.{stage,prime}_monitor.env`:
+To enable, add one line to `/opt/beacon/.env`:
 
 ```
-PROXY_URL=http://127.0.0.1:7788
+BEACON_PROXY_URL=http://127.0.0.1:7788
 ```
 
-The value is identical on stage and prime because the proxy is a per-host loopback
-address, not a per-environment remote service. The same env file is sourced by the
-systemd unit and by the host-side cron wrappers, so the proxy setting applies to all
-relevant binaries: `cmd/collector` and any operator-invoked `cmd/doctor` run that
-inherits the same shell environment. (`cmd/web` and `cmd/notifier` do not parse
-`PROXY_URL` — their only outbound target is Telegram, which is always direct.)
+The same env file is sourced by the systemd unit and by the host-side cron
+wrappers, so the proxy setting applies to all relevant binaries: `cmd/collector`
+and any operator-invoked `cmd/doctor` run that inherits the same shell
+environment. (`cmd/web` and `cmd/notifier` do not parse `BEACON_PROXY_URL` — their only
+outbound target is Telegram, which is always direct.)
 
 Do **not** set `HTTPS_PROXY`, `HTTP_PROXY`, or `NO_PROXY` for proxy routing — they
 are not consulted by any component in this project.
@@ -58,14 +90,14 @@ the proxy is active from the deploy host:
     curl -fs -x http://127.0.0.1:7788 https://api.ipify.org
 
 At startup `cmd/collector` and `cmd/doctor` each log one line confirming the proxy
-state (`proxy: PROXY_URL=http://127.0.0.1:7788` or `proxy: not configured`); grep
+state (`proxy: BEACON_PROXY_URL=http://127.0.0.1:7788` or `proxy: not configured`); grep
 the log for `proxy:` to confirm.
 
 For interactive `cmd/doctor` invocations, source the env file first so the
 proxy applies:
 
-    set -a; source /opt/monitor/.stage_monitor.env; set +a
-    /opt/monitor/stage_monitor_doctor rulegen --all
+    set -a; source /opt/beacon/.env; set +a
+    /opt/beacon/doctor rulegen --all
 
 ## Exit code & alerting
 
@@ -97,10 +129,11 @@ avoid overlapping ticks.
 
 The `cmd/web` `http server: listening on N port` line fires only after
 the kernel has bound the port, so monitoring probes may use it as a
-reliable readiness marker. For an in-process readiness check the webapp
-also serves `GET /healthz` which runs a cheap repository read and
-returns `{"status":"ok"}` (200) when the database is reachable or
-`{"status":"unavailable"}` (503) otherwise.
+reliable readiness marker. For in-process health checks the webapp exposes two endpoints:
+`GET /ping` (liveness — always 200, touches no dependency) and
+`GET /health/check` (readiness — probes SQLite and the Telegram bot,
+returns per-component JSON; 200 when all healthy, 503 when any are down).
+`GET /healthz` is kept as a backward-compatible alias for `/ping`.
 
 Error-level log entries are written to the rotating log file only.
 No automatic Telegram alert hook is wired today — monitor the log
@@ -109,51 +142,30 @@ failure (`OnFailure=`) to page on critical issues.
 
 ## Backup & restore
 
-The SQLite file is the entire persistent state of the service. Run a
-nightly online backup with `deploy/cron/sqlite-backup.sh` — it uses the
-SQLite `.backup` API which is safe with live writers (collector,
-notifier, web all keep running).
-
-### Installation
-
-Copy the script to the deploy host once per environment:
-
-```bash
-scp deploy/cron/sqlite-backup.sh "$REMOTE:/opt/monitor/sqlite-backup.sh"
-ssh "$REMOTE" chmod +x /opt/monitor/sqlite-backup.sh
-```
-
-Install the cron entry (root, runs at 03:14 local time):
-
-```cron
-14 3 * * * \
-  ENV_FILE=/opt/monitor/.stage_monitor.env \
-  BACKUP_DIR=/var/backups/monitor/stage \
-  RETENTION_DAYS=14 \
-  /opt/monitor/sqlite-backup.sh \
-  >> /opt/monitor/logs/stage/sqlite-backup.log 2>&1
-```
-
-Mirror the same line with the prime env file + backup dir on the prime
-host.
+The SQLite file is the entire persistent state of the service. Snapshot
+creation runs on the host via `configs/sqlite_dump.sh` (installed by
+`make init`): a daily online backup, safe under WAL, written to
+`/opt/beacon/backups/beacon.<YYYYMMDD>.sqlite` and mirrored to Google
+Drive. See the project `README.md` for install, scheduling, and retention. The
+restore drill below is the operator-facing half not covered there.
 
 ### Restore drill
 
 Stop the live service so no writer holds the destination path:
 
 ```bash
-systemctl stop stage_monitor
+systemctl stop beacon
 ```
 
 Replace the live DB with a chosen snapshot:
 
 ```bash
-DB="$(awk -F= '/^SQLITEDB_DSN/{print $2}' /opt/monitor/.stage_monitor.env)"
+DB="$(awk -F= '/^BEACON_SQLITEDB_DSN/{print $2}' /opt/beacon/.env)"
 DB="${DB#sqlite://}"
 mv "$DB" "$DB.before-restore"
 [[ -f "$DB-wal" ]] && mv "$DB-wal" "$DB-wal.before-restore"
 [[ -f "$DB-shm" ]] && mv "$DB-shm" "$DB-shm.before-restore"
-cp /var/backups/monitor/stage/stage_monitor.<YYYY-MM-DD>.sqlite "$DB"
+cp /opt/beacon/backups/beacon.<YYYYMMDD>.sqlite "$DB"
 chown root:root "$DB"
 chmod 600 "$DB"
 ```
@@ -162,26 +174,12 @@ The WAL and SHM sidecars must move out of the way too — otherwise SQLite
 re-attaches the previous live WAL on next open and replays uncommitted
 pages into the restored snapshot, corrupting it.
 
-Restart the service and check `/healthz` returns 200:
+Restart the service and verify readiness:
 
 ```bash
-systemctl start stage_monitor
-curl -fs http://localhost:8010/healthz
+systemctl start beacon
+curl -fs http://localhost:8000/health/check
 ```
 
 Exercise the restore at least once per environment before relying on
 the backup chain in an incident.
-
-## Breaking changes
-
-### `GET /api/me/subscriptions` — `?initData=` query fallback removed
-
-The `X-Telegram-Init-Data` header is now the only accepted form of
-authentication. The previous `?initData=...` query-string fallback was
-removed because the HMAC-signed token would otherwise land in HTTP
-access logs and `Referer` headers for up to its 24h validity window.
-
-Operators with saved curl commands or monitoring probes that hit the
-endpoint with `?initData=...` now receive a generic 401 — update them
-to pass the value via the header instead. The Telegram WebApp JS SDK
-sends the header automatically, so production traffic is unaffected.

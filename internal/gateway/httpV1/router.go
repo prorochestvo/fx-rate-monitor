@@ -4,12 +4,13 @@ package httpV1
 import (
 	"context"
 	"net/http"
+	"time"
 
-	appchart "github.com/seilbekskindirov/monitor/internal/application/chart"
-	"github.com/seilbekskindirov/monitor/internal/application/service"
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	v1 "github.com/seilbekskindirov/monitor/internal/gateway/httpV1/handlers"
-	"github.com/seilbekskindirov/monitor/internal/gateway/httpV1/routes"
+	appchart "github.com/seilbekskindirov/beacon/internal/application/chart"
+	"github.com/seilbekskindirov/beacon/internal/application/service"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	v1 "github.com/seilbekskindirov/beacon/internal/gateway/httpV1/handlers"
+	"github.com/seilbekskindirov/beacon/internal/gateway/httpV1/routes"
 )
 
 // NewRouter registers all v1 HTTP routes on mux and returns it.
@@ -22,8 +23,11 @@ func NewRouter(
 	rateValueRepo meRateValueRepo,
 	profileRepo meProfileRepo,
 	chartSvc *appchart.Service,
+	healthAgent healthCheckAgent,
+	serverVersion string,
+	serverStart time.Time,
 ) (*http.ServeMux, error) {
-	h, err := v1.NewHandler(srvRateRestApi, botToken, subRepo, sourceRepo, rateValueRepo, profileRepo, chartSvc)
+	h, err := v1.NewHandler(srvRateRestApi, botToken, subRepo, sourceRepo, rateValueRepo, profileRepo, chartSvc, healthAgent, serverVersion, serverStart)
 	if err != nil {
 		return nil, err
 	}
@@ -60,9 +64,19 @@ func NewRouter(
 	mux.HandleFunc("GET "+routes.NotificationsFailed, h.ListFailedNotifications)
 	mux.HandleFunc("GET "+routes.Notifications, h.ListNotifications)
 
-	mux.HandleFunc("GET "+routes.Healthz, h.Healthz)
+	// /ping is the liveness probe; /healthz is kept as a backward-compatible alias.
+	mux.HandleFunc("GET "+routes.Ping, h.Ping)
+	mux.HandleFunc("GET "+routes.Healthz, h.Ping)
+	mux.HandleFunc("GET "+routes.HealthCheck, h.HealthCheck)
 
 	return mux, nil
+}
+
+// healthCheckAgent is the contract for the dependency-health aggregator, threaded
+// through the router to the HealthCheck handler. Nil is allowed; the handler
+// returns 503 when no agent is wired.
+type healthCheckAgent interface {
+	CheckUp(ctx context.Context) (healthy bool, report map[string]string)
 }
 
 // meSubscriptionRepo threads the subscription repository through the router

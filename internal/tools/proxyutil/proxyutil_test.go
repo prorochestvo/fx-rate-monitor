@@ -48,7 +48,7 @@ func TestRedactURL(t *testing.T) {
 // TestResolveURL omits top-level t.Parallel because subtests use t.Setenv,
 // which mutates process environment and cannot run under a parallel parent.
 func TestResolveURL(t *testing.T) {
-	// Test-specific env names avoid colliding with an operator's own PROXY_URL.
+	// Test-specific env names avoid colliding with an operator's own BEACON_PROXY_URL.
 
 	t.Run("unset env returns empty string and logs not configured", func(t *testing.T) {
 		// PROXY_URL_TEST_ABSENT_XYZ is intentionally never set in this process.
@@ -73,7 +73,7 @@ func TestResolveURL(t *testing.T) {
 		assert.Contains(t, result, "127.0.0.1:7788", "returned URL must include host:port")
 
 		logLine := logBuf.String()
-		assert.Contains(t, logLine, "PROXY_URL=", "log line must include the PROXY_URL= prefix")
+		assert.Contains(t, logLine, "BEACON_PROXY_URL=", "log line must include the BEACON_PROXY_URL= prefix")
 		assert.Contains(t, logLine, "127.0.0.1:7788", "log line must include host:port")
 		assert.NotContains(t, logLine, "s3cret", "log line must not contain the password")
 	})

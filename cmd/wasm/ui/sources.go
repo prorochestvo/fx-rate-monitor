@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/cmd/wasm/application"
-	"github.com/seilbekskindirov/monitor/cmd/wasm/dom"
-	"github.com/seilbekskindirov/monitor/internal/dto"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/application"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/dom"
+	"github.com/seilbekskindirov/beacon/internal/dto"
 )
 
 // RenderSources returns the full HTML for the Sources List screen given the
@@ -17,7 +17,7 @@ import (
 func RenderSources(state application.SourcesState) string {
 	var b strings.Builder
 
-	b.WriteString(`<h1>FX Rate Monitor</h1>`)
+	b.WriteString(`<h1>Beacon</h1>`)
 	b.WriteString(renderStatsLine(state.Stats))
 	b.WriteString(renderFilters())
 	b.WriteString(`<div id="sources-table">`)

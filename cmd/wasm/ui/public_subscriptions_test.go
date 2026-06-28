@@ -8,10 +8,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/seilbekskindirov/monitor/cmd/wasm/application"
-	"github.com/seilbekskindirov/monitor/cmd/wasm/ui"
-	"github.com/seilbekskindirov/monitor/internal/domain/ratepair"
-	"github.com/seilbekskindirov/monitor/internal/dto"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/application"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/ui"
+	"github.com/seilbekskindirov/beacon/internal/domain/ratepair"
+	"github.com/seilbekskindirov/beacon/internal/dto"
 )
 
 // publicChartWith returns a PublicChartResponse populated with the given pairs.

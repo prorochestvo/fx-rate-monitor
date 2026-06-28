@@ -4,7 +4,7 @@ import (
 	"html"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/domain"
 )
 
 // SubscriptionSnapshot pairs one subscription with its source metadata and the

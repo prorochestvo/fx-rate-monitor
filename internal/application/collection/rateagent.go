@@ -9,9 +9,9 @@ import (
 	"io"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/tools/rateextractor"
+	"github.com/seilbekskindirov/beacon/internal"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/tools/rateextractor"
 )
 
 // NewRateAgent constructs a RateAgent. proxyURL may be empty to disable proxying.

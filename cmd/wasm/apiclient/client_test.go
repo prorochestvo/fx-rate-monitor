@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/seilbekskindirov/monitor/cmd/wasm/apiclient"
-	"github.com/seilbekskindirov/monitor/internal/dto"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/apiclient"
+	"github.com/seilbekskindirov/beacon/internal/dto"
 )
 
 var _ apiclient.Fetcher = (*fakeFetcher)(nil)

@@ -6,8 +6,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
-	"github.com/seilbekskindirov/monitor/migrations"
+	"github.com/seilbekskindirov/beacon/internal/infrastructure/sqlitedb"
+	"github.com/seilbekskindirov/beacon/migrations"
 	"github.com/stretchr/testify/require"
 )
 

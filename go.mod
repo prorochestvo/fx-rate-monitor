@@ -1,4 +1,4 @@
-module github.com/seilbekskindirov/monitor
+module github.com/seilbekskindirov/beacon
 
 go 1.26
 

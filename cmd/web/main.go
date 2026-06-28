@@ -1,5 +1,5 @@
 // Command web serves the HTTP API and the embedded Mini App static files.
-// It reads SQLITEDB_DSN and TELEGRAMBOT_DSN from the environment, starts the
+// It reads BEACON_SQLITEDB_DSN and BEACON_TELEGRAMBOT_DSN from the environment, starts the
 // Telegram bot update loop, and listens on the port configured by --port (default 8080).
 package main
 
@@ -23,14 +23,15 @@ import (
 	_ "time/tzdata" // embedded IANA tzdata for time.LoadLocation in profile-upsert
 
 	"github.com/prorochestvo/dsninjector"
-	"github.com/seilbekskindirov/monitor/internal"
-	appchart "github.com/seilbekskindirov/monitor/internal/application/chart"
-	"github.com/seilbekskindirov/monitor/internal/application/service"
-	"github.com/seilbekskindirov/monitor/internal/gateway"
-	"github.com/seilbekskindirov/monitor/internal/gateway/middleware"
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
-	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
-	"github.com/seilbekskindirov/monitor/internal/repository"
+	"github.com/seilbekskindirov/beacon/internal"
+	appchart "github.com/seilbekskindirov/beacon/internal/application/chart"
+	"github.com/seilbekskindirov/beacon/internal/application/inspector"
+	"github.com/seilbekskindirov/beacon/internal/application/service"
+	"github.com/seilbekskindirov/beacon/internal/gateway"
+	"github.com/seilbekskindirov/beacon/internal/gateway/middleware"
+	"github.com/seilbekskindirov/beacon/internal/infrastructure/sqlitedb"
+	integration "github.com/seilbekskindirov/beacon/internal/infrastructure/telegrambot"
+	"github.com/seilbekskindirov/beacon/internal/repository"
 	_ "modernc.org/sqlite"
 )
 
@@ -56,11 +57,12 @@ var (
 )
 
 const (
-	envDsnTelegramBOT = "TELEGRAMBOT_DSN"
-	envDsnSqliteDB    = "SQLITEDB_DSN"
+	envDsnTelegramBOT = "BEACON_TELEGRAMBOT_DSN"
+	envDsnSqliteDB    = "BEACON_SQLITEDB_DSN"
 )
 
 func main() {
+	serviceStart := time.Now()
 	flag.Parse()
 	initFlags()
 
@@ -78,7 +80,7 @@ func main() {
 	log.Println("logger: initiated")
 
 	// web only calls Telegram (bot polling/webhook), and Telegram traffic bypasses
-	// any proxy via the hardcoded transport in NewTBotClient, so PROXY_URL is not
+	// any proxy via the hardcoded transport in NewTBotClient, so BEACON_PROXY_URL is not
 	// parsed here.
 
 	// init settings
@@ -134,6 +136,10 @@ func main() {
 	} else {
 		log.Printf("telegram: authenticated as @%s (id=%d)", username, id)
 	}
+	healthAgent := inspector.NewAgent(0,
+		inspector.NewDBInspector(db),
+		inspector.NewTelegramInspector(tbot),
+	)
 	log.Println("dependencies: initiated")
 
 	// init repositories
@@ -179,13 +185,13 @@ func main() {
 		// Without a bot token the Mini App initData HMAC can't be verified, so
 		// every /api/me/* call returns 401. Fail at startup rather than silently
 		// rejecting every authenticated request.
-		log.Fatalf("services: bot token is empty — check TELEGRAMBOT_DSN")
+		log.Fatalf("services: bot token is empty — check BEACON_TELEGRAMBOT_DSN")
 	}
 	// rateValueRepo satisfies both ValuesLoader (ObtainMeChart) and
 	// HistoryValuesLoader (ObtainMeHistory); sourceRepo also satisfies
 	// PublicSourcesLoader (ObtainPublicChart).
 	chartSvc := appchart.NewService(subscriptionRepo, sourceRepo, rateValueRepo, rateValueRepo, sourceRepo, time.Now)
-	mux, err := gateway.NewGateway(restAPI, botToken, subscriptionRepo, sourceRepo, rateValueRepo, profileRepo, chartSvc)
+	mux, err := gateway.NewGateway(restAPI, botToken, subscriptionRepo, sourceRepo, rateValueRepo, profileRepo, chartSvc, healthAgent, BuildVersion, serviceStart)
 	if err != nil {
 		log.Fatalf("services: mux api is failed, %s", err.Error())
 		return

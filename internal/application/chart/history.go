@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/domain"
 )
 
 // HistoryValuesLoader loads paginated rate_values for a bulk set of

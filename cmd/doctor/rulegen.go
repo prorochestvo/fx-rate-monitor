@@ -17,12 +17,12 @@ package main
 //
 // Environment variables:
 //
-//	SQLITEDB_DSN      (required) SQLite connection string
-//	AI_PRIMARY_DSN    (required) primary AI provider DSN
-//	AI_FALLBACK_DSN   (optional) fallback AI provider DSN; stub used when absent
-//	CHROMIUM_PATH     (optional) absolute path to Chromium binary; when unset,
-//	                  chromedp searches PATH (chromium, chromium-browser,
-//	                  google-chrome, chrome)
+//	BEACON_SQLITEDB_DSN      (required) SQLite connection string
+//	BEACON_AI_PRIMARY_DSN    (required) primary AI provider DSN
+//	BEACON_AI_FALLBACK_DSN   (optional) fallback AI provider DSN; stub used when absent
+//	BEACON_CHROMIUM_PATH     (optional) absolute path to Chromium binary; when unset,
+//	                         chromedp searches PATH (chromium, chromium-browser,
+//	                         google-chrome, chrome)
 //
 // Exit codes (single-source mode):
 //
@@ -52,28 +52,28 @@ import (
 	"time"
 
 	"github.com/prorochestvo/dsninjector"
-	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/application/rulegen"
-	"github.com/seilbekskindirov/monitor/internal/application/sourceaudit"
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/artificialintelligence"
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
-	"github.com/seilbekskindirov/monitor/internal/repository"
-	"github.com/seilbekskindirov/monitor/internal/tools/proxyutil"
+	"github.com/seilbekskindirov/beacon/internal"
+	"github.com/seilbekskindirov/beacon/internal/application/rulegen"
+	"github.com/seilbekskindirov/beacon/internal/application/sourceaudit"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/infrastructure/artificialintelligence"
+	"github.com/seilbekskindirov/beacon/internal/infrastructure/sqlitedb"
+	"github.com/seilbekskindirov/beacon/internal/repository"
+	"github.com/seilbekskindirov/beacon/internal/tools/proxyutil"
 	_ "modernc.org/sqlite"
 )
 
 const (
-	envDsnSqliteDB   = "SQLITEDB_DSN"
-	envDsnAIPrimary  = "AI_PRIMARY_DSN"
-	envDsnAIFallback = "AI_FALLBACK_DSN"
+	envDsnSqliteDB   = "BEACON_SQLITEDB_DSN"
+	envDsnAIPrimary  = "BEACON_AI_PRIMARY_DSN"
+	envDsnAIFallback = "BEACON_AI_FALLBACK_DSN"
 	// envChromiumPath is the optional absolute path to the Chromium/Chrome binary;
 	// when unset, chromedp searches PATH (chromium, chromium-browser, google-chrome,
 	// chrome).
-	envChromiumPath = "CHROMIUM_PATH"
+	envChromiumPath = "BEACON_CHROMIUM_PATH"
 	// envProxyURL is the optional outbound proxy URL parsed via dsninjector;
 	// when unset or empty, outbound traffic goes direct.
-	envProxyURL = "PROXY_URL"
+	envProxyURL = "BEACON_PROXY_URL"
 )
 
 // rateSourceLister is the narrow read-side interface runAll needs, defined locally
@@ -365,11 +365,11 @@ Flags:
   --verbosity LEVEL          minimum log level (debug|info|warning|error|severe|critical)
 
 Environment variables:
-  SQLITEDB_DSN    (required) SQLite connection string
-  AI_PRIMARY_DSN  (required) primary AI provider DSN
-  AI_FALLBACK_DSN (optional) fallback AI provider DSN; stub used when absent
-  CHROMIUM_PATH   (optional) absolute path to Chromium binary
-  PROXY_URL       (optional) outbound proxy URL, e.g. http://127.0.0.1:7788
+  BEACON_SQLITEDB_DSN    (required) SQLite connection string
+  BEACON_AI_PRIMARY_DSN  (required) primary AI provider DSN
+  BEACON_AI_FALLBACK_DSN (optional) fallback AI provider DSN; stub used when absent
+  BEACON_CHROMIUM_PATH   (optional) absolute path to Chromium binary
+  BEACON_PROXY_URL       (optional) outbound proxy URL, e.g. http://127.0.0.1:7788
 
 Exit codes (single-source mode):
   0  success — rule generated and persisted

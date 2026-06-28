@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/seilbekskindirov/monitor/cmd/wasm/apiclient"
-	"github.com/seilbekskindirov/monitor/internal/dto"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/apiclient"
+	"github.com/seilbekskindirov/beacon/internal/dto"
 )
 
 const (

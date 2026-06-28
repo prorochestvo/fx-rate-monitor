@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/prorochestvo/dsninjector"
-	"github.com/seilbekskindirov/monitor/internal"
+	"github.com/seilbekskindirov/beacon/internal"
 	_ "modernc.org/sqlite"
 )
 

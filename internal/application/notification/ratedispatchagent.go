@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
+	"github.com/seilbekskindirov/beacon/internal"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	integration "github.com/seilbekskindirov/beacon/internal/infrastructure/telegrambot"
 )
 
 // NewRateDispatchAgent constructs a RateDispatchAgent wired to the given transport and event repository.

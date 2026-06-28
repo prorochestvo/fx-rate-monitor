@@ -32,22 +32,23 @@ make format   # go fmt ./...
 make clean    # Removes binaries + go mod tidy
 ```
 
-Targeted test runs:
+Targeted test runs (`-race` needs cgo — use `CGO_ENABLED=1`; macOS tolerates 0,
+Linux does not):
 ```bash
 # Single top-level test
-CGO_ENABLED=0 go test -race -run TestFunctionName ./<package>/
+CGO_ENABLED=1 go test -race -run TestFunctionName ./<package>/
 
 # Single subtest
-CGO_ENABLED=0 go test -race -run 'TestFunctionName/subtest_name' ./<package>/
+CGO_ENABLED=1 go test -race -run 'TestFunctionName/subtest_name' ./<package>/
 
 # Verbose output (see every subtest pass/fail)
-CGO_ENABLED=0 go test -race -v ./<package>/
+CGO_ENABLED=1 go test -race -v ./<package>/
 
-# Benchmarks
+# Benchmarks (no -race, so cgo not required)
 CGO_ENABLED=0 go test -bench=. -benchmem -run=^$ ./<package>/
 
 # Coverage
-CGO_ENABLED=0 go test -race -coverprofile=cover.out ./... && go tool cover -html=cover.out
+CGO_ENABLED=1 go test -race -coverprofile=cover.out ./... && go tool cover -html=cover.out
 ```
 
 ## Architecture Overview
@@ -79,7 +80,7 @@ operator tooling (LLM rule generation and source auditing).
 ### Key Patterns
 
 - **Repository pattern** — each repository type owns its own SQL, migration, and query helper functions. Queries execute inside explicit transactions (`r.db.Transaction(ctx)`). Repositories are passed as interfaces into service and handler layers.
-- **Configuration injection** — `SQLITEDB_DSN` and `TELEGRAMBOT_DSN` are read via `dsninjector.Unmarshal(envName)` at startup in `cmd/web/main.go` and live in the systemd `EnvironmentFile`. The public HTTPS origin is passed via the `--api-dsn` CLI flag (format: `https://<host>/`, parsed by `dsninjector.Parse`) and is hardcoded in the systemd unit's `ExecStart` line — never in `.env`. All three configs must be present at startup; the binary calls `log.Fatalf` on any missing value.
+- **Configuration injection** — `BEACON_SQLITEDB_DSN` and `BEACON_TELEGRAMBOT_DSN` are read via `dsninjector.Unmarshal(envName)` at startup in `cmd/web/main.go` and live in the systemd `EnvironmentFile`. The public HTTPS origin is passed via the `--api-dsn` CLI flag (format: `https://<host>/`, parsed by `dsninjector.Parse`) and is hardcoded in the systemd unit's `ExecStart` line — never in `.env`. All three configs must be present at startup; the binary calls `log.Fatalf` on any missing value.
 - **Embedded assets** — `cmd/web/main.go` embeds the `static/` directory via `//go:embed static`. All static files served by `http.FileServer` live under `cmd/web/static/`.
 - **Auth: Telegram WebApp initData HMAC** — the `/api/me/...` endpoint family authenticates callers by verifying the Telegram WebApp `initData` HMAC-SHA256 signature. The signing algorithm uses `secret_key = HMAC_SHA256("WebAppData", botToken)` (the string literal is the key; the token is the message). Implementation lives in `internal/tools/tgwebapp/initdata.go`. The handler injects the validator as a function field so tests can substitute a fake without real bot tokens. No other endpoint requires this auth.
 
@@ -109,7 +110,8 @@ operator tooling (LLM rule generation and source auditing).
 - `GET /api/public/rates/chart` — paginated system-wide sparkline-list chart; no authentication. Query params: `page` (default 1), `limit` (default 20, max 100), `period` (integer days, must be one of `{7, 30, 90, 180, 360}`, default 7; any other value returns 400 with a PublicError body)
 - `GET /` — unified Mini App / guest landing page (served by embedded static file server). Dispatcher inline script checks `window.Telegram.WebApp.initData`: non-empty → `_wasm.renderMeSubscriptions()`, empty → `_wasm.renderPublicSubscriptions()`
 - `GET /admin/` — operator dashboard (served by embedded static file server, `cmd/web/static/admin/index.html`; no dedicated route needed)
-- `GET /healthz` — readiness probe; calls `RateService.CheckUP` (DB ping). Returns 200 `{"status":"ok"}` when reachable, 503 `{"status":"unavailable"}` otherwise. No authentication
+- `GET /ping` — liveness probe; always returns 200 `{"status":"ok"}`, touches no dependency. No authentication. `GET /healthz` is a backward-compatible alias for this endpoint.
+- `GET /health/check` — readiness probe; runs all registered dependency inspectors (SQLite, Telegram bot) under a bounded 3s timeout and returns per-component JSON: `{"status": bool, "server": {"version": "...", "uptime": "..."}, "services": {"sqlite": "ok|<error>", "telegram": "ok|<error>"}}`. Returns 200 when all healthy, 503 when any are down. No authentication; deployed to health-gate in CI and referenced by uptime monitors.
 
 ### Static asset caching
 
@@ -137,7 +139,7 @@ hashed assets: app=<8hex> wasm_exec=<8hex>
 
 so operators can sanity-check active hashes after each deploy.
 
-The nginx regex location in `configs/nginx.kz_behappy_common_settings.conf` matches
+The nginx regex location in `configs/nginx.beacon_common_settings.conf` matches
 `^/(app|wasm_exec)\.[a-f0-9]{8}\.(wasm|js)$` and applies the 7-day immutable cache
 header. It **must** appear above the catch-all `location /` block in the file — nginx
 evaluates regex locations in source order.
@@ -183,7 +185,7 @@ Schema lives at the project root: `./migrations/*.sql`. The sibling Go file
 `var MigrationsFS embed.FS` so they can be consumed without disk I/O at runtime.
 
 `cmd/migrator` is the **only** thing that mutates schema. It embeds
-`migrations.MigrationsFS` at build time, opens the DB via `SQLITEDB_DSN`, and
+`migrations.MigrationsFS` at build time, opens the DB via `BEACON_SQLITEDB_DSN`, and
 calls `sqlitedb.Migrator.Run(ctx)`. Idempotent: applied filenames are tracked in
 `__schema_migrations`.
 
@@ -222,18 +224,18 @@ make migrate       # applies any pending .sql files (no-op if up to date)
 make run           # starts collector, notifier, web
 ```
 
-Deployment ordering: the CI workflows in `.github/workflows/{stage,prime}.yml`
-run `cmd/migrator` over SSH against the target host (with the service's
-`EnvironmentFile` sourced) before swapping the service binary and restarting
-the unit. The service systemd units in `configs/` and `deploy/` do **not**
-invoke the migrator via `ExecStartPre` — schema reconciliation is a deploy-time
-step, not a startup-time step.
+Deployment ordering: the `.github/workflows/release.yml` deploy job (triggered
+by a `v*` tag) runs `cmd/migrator` over SSH against the target host (with the
+service's `EnvironmentFile` sourced) before swapping the service binary and
+restarting the unit. The service systemd unit in `configs/` does **not** invoke
+the migrator via `ExecStartPre` — schema reconciliation is a deploy-time step,
+not a startup-time step.
 
 ### Environment Variables
 
-- `SQLITEDB_DSN` — SQLite connection string, parsed via `dsninjector.Unmarshal`. Format: `sqlite://<path-to-db-file>`
-- `TELEGRAMBOT_DSN` — Telegram bot credentials parsed via `dsninjector.Unmarshal`. Format: `<adminChatID>:<botToken>@<host>` where `Addr()` returns the token and `Login()` returns the admin chat ID.
-- `PROXY_URL` — optional outbound proxy URL, parsed via `dsninjector.Unmarshal`. Format: `<scheme>://<host>:<port>` (e.g. `http://127.0.0.1:7788`). When unset or empty all outbound traffic is direct. Used by `cmd/collector` (plain and chromedp rate sources) and `cmd/doctor` (AI provider calls and chromedp fetcher). Telegram Bot API traffic bypasses the proxy unconditionally — the bypass is enforced in code via a hardcoded `Proxy: nil` transport in `internal/infrastructure/telegrambot/tbotclient.go`. Do not configure `HTTPS_PROXY`, `HTTP_PROXY`, or `NO_PROXY` for proxy routing — they are not consulted by any component in this project.
+- `BEACON_SQLITEDB_DSN` — SQLite connection string, parsed via `dsninjector.Unmarshal`. Format: `sqlite://<path-to-db-file>`
+- `BEACON_TELEGRAMBOT_DSN` — Telegram bot credentials parsed via `dsninjector.Unmarshal`. Format: `<adminChatID>:<botToken>@<host>` where `Addr()` returns the token and `Login()` returns the admin chat ID.
+- `BEACON_PROXY_URL` — optional outbound proxy URL, parsed via `dsninjector.Unmarshal`. Format: `<scheme>://<host>:<port>` (e.g. `http://127.0.0.1:7788`). When unset or empty all outbound traffic is direct. Used by `cmd/collector` (plain and chromedp rate sources) and `cmd/doctor` (AI provider calls and chromedp fetcher). Telegram Bot API traffic bypasses the proxy unconditionally — the bypass is enforced in code via a hardcoded `Proxy: nil` transport in `internal/infrastructure/telegrambot/tbotclient.go`. Do not configure `HTTPS_PROXY`, `HTTP_PROXY`, or `NO_PROXY` for proxy routing — they are not consulted by any component in this project.
 
 > The public HTTPS origin of the `cmd/web` server is **not** an env var — see the `--api-dsn` CLI flag on the `cmd/web` binary, baked into the systemd unit's `ExecStart` line.
 
@@ -271,11 +273,18 @@ no path suffix). Update it in BotFather whenever the host changes.
 
 ### Deployment
 
-The binaries run as systemd services; reference units live in `configs/` and `deploy/`.
-The CI workflows in `.github/workflows/{stage,prime}.yml` run `cmd/migrator` over SSH
-against the target host (with the service's `EnvironmentFile` sourced) before swapping
-the service binary and restarting the unit. Schema reconciliation is a deploy-time step,
-not a startup-time step — the service units do not invoke the migrator via `ExecStartPre`.
+The host uses the standard release layout: immutable `/opt/beacon/artifacts/<VERSION_ID>/`
+build sets and a `bin/release` channel symlink the units run through
+(`ExecStart=/opt/beacon/bin/release/webapp …`). The CI deploy user may write only
+inside `artifacts/` and `bin/`; `.env`, the DB, and the base dir are root-owned and
+out of its reach. The `.github/workflows/release.yml` deploy job (triggered by a `v*`
+tag) uploads a new `artifacts/<VERSION_ID>/`, flips the symlink, runs migrations via
+the `beacon-migrate` one-shot unit (root, so the deploy user never writes the DB),
+restarts `beacon`, and health-gates on `/health/check` (readiness probe) with a one-symlink rollback. Schema
+reconciliation is a deploy-time step, not a startup-time step — the service unit does
+not invoke the migrator via `ExecStartPre`. `make init` provisions the layout, the two
+units (`beacon.service`, `beacon-migrate.service`), the narrow
+`/etc/sudoers.d/beacon-deploy`, and the Cloudflare nginx vhost. See `deploy/README.md`.
 
 ## Error Handling
 
@@ -296,7 +305,7 @@ return a plain error — the controller will send a generic fallback.
 #### Creating a public error (service layer)
 
 ```go
-import "github.com/seilbekskindirov/monitor/internal"
+import "github.com/seilbekskindirov/beacon/internal"
 
 // User should know about this
 return internal.NewPublicError("Invalid input. Source name must not be empty.")

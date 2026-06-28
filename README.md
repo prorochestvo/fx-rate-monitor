@@ -1,4 +1,4 @@
-# fx_rate_monitor
+# beacon
 
 A small self-hosted FX/exchange-rate monitor written in pure Go. It scrapes rates from
 configurable web sources, stores them in SQLite, evaluates per-user notification
@@ -40,7 +40,7 @@ bot. A minimal HTTP dashboard (HTML + WASM) ships embedded in the `web` binary.
 **Deploy-host runtime dependency (not required for the build):** Chromium or Google
 Chrome must be installed on the host for any rate source with `fetcher_kind='chromedp'`
 (JS-rendered pages). The `cmd/doctor` binary looks for `chromium`, `chromium-browser`,
-`google-chrome`, or `chrome` on PATH, or uses `CHROMIUM_PATH` if set. Install once:
+`google-chrome`, or `chrome` on PATH, or uses `BEACON_CHROMIUM_PATH` if set. Install once:
 ```bash
 sudo apt-get install -y chromium-browser   # Debian/Ubuntu (Oracle Cloud ARM Free Tier)
 brew install --cask chromium               # macOS dev
@@ -55,11 +55,11 @@ All runtime configuration is passed via environment variables, normally loaded
 from a project-local `.env` (Make sources it for you on `make run`). See
 `.env.example` for the canonical shape:
 
-| Variable          | Required by                | Format |
-|-------------------|---------------------------|--------|
-| `SQLITEDB_DSN`    | collector, notifier, web  | `sqlite://_:_@_:_/<filename>` |
-| `TELEGRAMBOT_DSN` | notifier, web             | `tbot://<admin_chat_id>:@<bot_token>/` |
-| `PROXY_URL`       | collector (optional)      | `socks5://user:pass@host:port` or `http://...` |
+| Variable                  | Required by                | Format |
+|---------------------------|---------------------------|--------|
+| `BEACON_SQLITEDB_DSN`    | collector, notifier, web  | `sqlite://_:_@_:_/<filename>` |
+| `BEACON_TELEGRAMBOT_DSN` | notifier, web             | `tbot://<admin_chat_id>:@<bot_token>/` |
+| `BEACON_PROXY_URL`       | collector (optional)      | `socks5://user:pass@host:port` or `http://...` |
 
 CLI flags accepted by the binaries:
 
@@ -101,22 +101,14 @@ go run ./cmd/web       --logs-dir ./build/logs --static-dir ./cmd/web/static
 cron / a systemd timer at whatever cadence your shortest source needs. `web` is a
 long-running server that also drives the Telegram subscription bot.
 
-### Targeted tests
-
-```bash
-CGO_ENABLED=0 go test -race -run TestRateAgent ./internal/application/collection/
-CGO_ENABLED=0 go test -race -run 'TestRateUserSubscription_IsDue/cron_due' ./internal/domain/
-CGO_ENABLED=0 go test -race -coverprofile=cover.out ./...
-go tool cover -html=cover.out
-```
-
 ## HTTP API
 
 Route constants are the source of truth — see
 `internal/gateway/httpV1/routes/routes.go`. The surface splits into three groups:
 
 - **Operator + public** (no auth) — source listings, rate and execution history,
-  notification diagnostics, global stats, the public sparkline chart, and `GET /healthz`.
+  notification diagnostics, global stats, the public sparkline chart, `GET /ping` (liveness),
+  and `GET /health/check` (readiness). `GET /healthz` is a backward-compatible alias for `/ping`.
 - **Mini App** (`/api/me/...`) — the caller's own subscriptions (CRUD), charts, history,
   and profile. Authenticated by the Telegram WebApp `initData` HMAC, which must be passed
   in the `X-Telegram-Init-Data` header only — never the query string, to keep it out of
@@ -152,70 +144,45 @@ extraction `Rules`. An example shape (see `configs/sources.example.json`):
 }
 ```
 
-Supported extraction methods: `regex`, `json` (JSONPath), `parse_float`, and
-`store_as_rate`.
-
 ## Operator tools (`cmd/doctor`)
 
-`cmd/doctor` is the umbrella maintenance binary for operator-side tasks. It
-hosts two subcommands:
+`cmd/doctor` is the umbrella maintenance binary. `doctor rulegen` generates or
+regenerates a source's LLM extraction rule — run it once after seeding a new
+source row, before the collector can scrape it. `doctor audit` probes seeded
+sources against their live URLs to confirm the rules still return plausible
+values; run it from the repository root, since the seed glob is relative to CWD.
 
-### `doctor rulegen` — LLM rule generation
-
-Generates or regenerates an extraction rule for a named source using an LLM.
-It fetches the source URL, asks the LLM for a rule, validates the rule against
-the live body, and persists the result to the database. Run it once after
-inserting a new source row (via a seed migration).
-
-```bash
-# Build first
-make build
-
-# Generate a rule for the "halyk_usd" source
-SQLITEDB_DSN=sqlite://_:_@_:_/./build/monitor.db \
-AI_PRIMARY_DSN=groq://_:<base64url(KEY)>@api.groq.com/openai/v1?model=llama-3.1-8b-instant \
-./build/doctor rulegen halyk_usd
-
-# Skip primary and go straight to fallback (useful when source is hard)
-./build/doctor rulegen halyk_usd --force-fallback
-
-# Regenerate rules for every active source (cron mode; always exits 0)
-./build/doctor rulegen --all
-
-# See all flags
-make doctor-help
-```
-
-### `doctor audit` — seed source auditing
-
-Probes seeded rate sources against their live URLs to verify that the
-extraction rules still return plausible values. Run from the repository root
-(seed-glob is relative to CWD).
-
-```bash
-# Audit every seeded source
-make audit ARGS="--all"
-
-# Audit one source by exact name
-make audit ARGS="--source halyk_usd"
-
-# Audit sources matching a regex
-make audit ARGS="--only '^halyk_'"
-
-# Verbose per-source table output
-make audit ARGS="--all -v"
-```
-
-For full usage, exit codes, cost notes, Chromium setup, and troubleshooting
-guidance see `cmd/doctor/README.md`.
+`make doctor-help` lists the rulegen flags; `make audit ARGS="..."` drives the
+auditor. For full usage, exit codes, cost notes, Chromium setup, and
+troubleshooting see `cmd/doctor/README.md`.
 
 ## Deployment
 
-CI workflows in `.github/workflows/{stage,prime}.yml` drive every deploy:
-checksum-validate binaries, pause cron wrappers, run `cmd/migrator`, swap
-the webapp binary, restart the unit, resume cron. The live systemd units are
-`configs/srv.{stage,prime}_monitor.service`. See `deploy/README.md` for the
-operator-facing summary, including the "Exit code & alerting" contract.
+Tests run on every push/PR to `main` (`.github/workflows/ci.main.yml`). An `r_*`
+release tag triggers `.github/workflows/release.yml`, which uploads the four
+binaries into an immutable `/opt/beacon/artifacts/<VERSION_ID>/`, flips the
+`bin/release` channel symlink, migrates (`beacon-migrate` one-shot) and restarts
+the webapp, then health-gates on `/health/check` with an automatic one-symlink
+rollback. The CI deploy user can write only inside `artifacts/` and `bin/`. See
+`deploy/README.md` for the on-server layout, units, sudoers, and hardening.
+
+### Edge (nginx + Cloudflare)
+
+Public traffic terminates at Cloudflare and is proxied to nginx on the host,
+which forwards to the web binary on loopback:
+
+| Public domain | Loopback |
+|---------------|----------|
+| `beacon.seilbekskindirov.dev` | `127.0.0.1:8000` |
+
+`make init` provisions the host in one shot: it sets `/opt/beacon` ownership,
+installs the systemd unit and the backup script, ships `configs/nginx.beacon*.conf`,
+fetches the Cloudflare origin-pull CA, and enables the vhost. nginx authenticates
+the edge via Authenticated Origin Pulls and serves the shared
+`*.seilbekskindirov.dev` Cloudflare **Origin** certificate, which is
+operator-placed at `/etc/nginx/certificates/cloudflare/seilbekskindirov.dev.{pem,key}`
+(never shipped from the repo); `init` skips the nginx reload with a warning until
+both files are present.
 
 ### Post-deploy: BotFather Menu Button URL
 
@@ -223,7 +190,7 @@ After any deploy that changes the public hostname, update the Mini App URL in
 BotFather to match the unified entry point:
 
 1. Open BotFather → `/mybots` → your bot → `Bot Settings` → `Menu Button`.
-2. Set the URL to `https://<host>/` (trailing slash required).
+2. Set the URL to `https://beacon.seilbekskindirov.dev/` (trailing slash required).
 
 The exact value the bot emits in its reply keyboard is logged at `cmd/web`
 startup as `settings: webAppURL=...`. Until BotFather is updated, a Menu Button
@@ -237,7 +204,7 @@ ships them off-box, and a local Make target that pulls those snapshots back.
 ### Host-side daily dump (`configs/sqlite_dump.sh`)
 
 Runs on the deploy host (not locally). Each invocation writes a consistent
-snapshot of every present database to `/opt/monitor/backups/<env>_monitor.<YYYYMMDD>.sqlite`
+snapshot of every present database to `/opt/beacon/backups/beacon.<YYYYMMDD>.sqlite`
 (via the `sqlite3` online backup, so it is safe under WAL), mirrors new snapshots
 to Google Drive with `rclone`, and prunes both stores. An absent database is
 skipped, not an error.
@@ -247,8 +214,8 @@ skipped, not an error.
 | Local host | 7 days  | `LOCAL_RETENTION_DAYS`  |
 | Google Drive | 14 days | `REMOTE_RETENTION_DAYS` |
 
-`make deploy_environments` ships the script to `/opt/monitor/backups/sqlite_dump.sh`
-and installs `configs/sqlite_dump.env.example` as `/opt/monitor/backups/.env` **only
+`make init` ships the script to `/opt/beacon/backups/sqlite_dump.sh`
+and installs `configs/sqlite_dump.env.example` as `/opt/beacon/backups/.env` **only
 if it does not already exist** (your edited `.env` is never overwritten). Optional
 overrides — `GDRIVE_REMOTE`, the two retentions — load from that adjacent `.env`;
 rclone needs no config override there, it auto-discovers `~/.config/rclone/rclone.conf`
@@ -257,22 +224,21 @@ of the user the cron runs as.
 Schedule it once with cron (the deploy step does **not** install the crontab):
 
 ```cron
-0 0 * * * /opt/monitor/backups/sqlite_dump.sh > /opt/monitor/logs/backup.log 2>&1
+0 0 * * * /opt/beacon/backups/sqlite_dump.sh > /opt/beacon/logs/backup.log 2>&1
 ```
 
 Multiple hosts can share one Drive account: keep the same rclone OAuth app on each,
 but give every host a unique `GDRIVE_REMOTE` subfolder in its `.env` (e.g.
-`gdrive:backups/<host>/monitor`) so filenames never collide.
+`gdrive:backups/<host>/beacon`) so filenames never collide.
 
 ### Local pull (`make backups`)
 
-Pulls each environment's latest host snapshot **plus** its service logs into one
-per-environment archive under `./backups/`:
+Pulls the latest host snapshot **plus** the service logs into one archive
+under `./backups/`:
 
 ```bash
 make backups
-# -> ./backups/prime.<stamp>.tar.gz   (latest prime DB snapshot + logs)
-# -> ./backups/stage.<stamp>.tar.gz   (latest stage DB snapshot + logs)
+# -> ./backups/beacon.<stamp>.tar.gz   (latest DB snapshot + logs)
 ```
 
 `./backups/` is gitignored.

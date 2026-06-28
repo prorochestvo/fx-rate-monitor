@@ -19,7 +19,7 @@ import (
 var _ Fetcher = (*ChromedpFetcher)(nil)
 
 // findChromiumOrSkip looks for a Chromium/Chrome binary in chromedp's checked
-// locations plus the CHROMIUM_PATH used by cmd/doctor rulegen. The test skips
+// locations plus the BEACON_CHROMIUM_PATH used by cmd/doctor rulegen. The test skips
 // cleanly when no binary is found, or on a default GitHub Actions runner:
 // ubuntu-latest ships google-chrome on PATH but its sandbox cannot bring up the
 // DevTools websocket, surfacing as "websocket url timeout reached" after ~20 s.

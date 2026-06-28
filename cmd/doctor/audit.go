@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal/application/sourceaudit"
-	"github.com/seilbekskindirov/monitor/internal/tools/proxyutil"
+	"github.com/seilbekskindirov/beacon/internal/application/sourceaudit"
+	"github.com/seilbekskindirov/beacon/internal/tools/proxyutil"
 )
 
 // runAudit is the entry point for the "doctor audit" subcommand.

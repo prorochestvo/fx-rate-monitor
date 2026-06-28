@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal/tools/httpenc"
+	"github.com/seilbekskindirov/beacon/internal/tools/httpenc"
 )
 
 // assetSpec describes a hashable static asset and its optional precompressed sibling.

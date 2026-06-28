@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/tools/threadsafe"
+	"github.com/seilbekskindirov/beacon/internal"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/tools/threadsafe"
 )
 
 // MinPlausibleRateValue rejects zero and negative extractions.
@@ -33,7 +33,7 @@ const MaxPlausibleRateValue = math.MaxInt32
 // A non-empty proxyURL is parsed and used as the explicit proxy for all requests.
 // An empty proxyURL uses no proxy — the Go proxy env triplet (HTTPS_PROXY,
 // HTTP_PROXY, NO_PROXY) is intentionally NOT consulted; proxy config is injected
-// explicitly via PROXY_URL.
+// explicitly via BEACON_PROXY_URL.
 //
 // The extractor keeps a per-process negative URL cache (tombstone): once a URL
 // fails, later fetches in the same process short-circuit. Built for short-lived
@@ -184,7 +184,7 @@ func (extractor *RateExtractor) fetchHtmlPage(ctx context.Context, rawURL string
 		return nil, err
 	}
 
-	req.Header.Set("User-Agent", "FXRateMonitor/1.0 (+https://github.com/seilbekskindirov/monitor)")
+	req.Header.Set("User-Agent", "Beacon/1.0 (+https://github.com/seilbekskindirov/beacon)")
 
 	_, _ = fmt.Fprintf(extractor.logger, "rate_extractor: fetching url %s\n", rawURL)
 

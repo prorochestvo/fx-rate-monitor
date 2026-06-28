@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal"
+	"github.com/seilbekskindirov/beacon/internal/domain"
 )
 
 // NewRateUserProfileRepository returns a repository for the rate_user_profiles table.

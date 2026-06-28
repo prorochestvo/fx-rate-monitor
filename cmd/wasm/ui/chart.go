@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/cmd/wasm/dom"
-	"github.com/seilbekskindirov/monitor/internal/domain/ratepair"
-	"github.com/seilbekskindirov/monitor/internal/dto"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/dom"
+	"github.com/seilbekskindirov/beacon/internal/domain/ratepair"
+	"github.com/seilbekskindirov/beacon/internal/dto"
 )
 
 // chart.go renders the sparkline-list view. Each pair row is a flex row: text

@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/tools/rateextractor"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/tools/rateextractor"
 )
 
 // ProbeStatus describes the outcome of probing a single seeded source.

@@ -1,6 +1,6 @@
 // Command notifier delivers pending notification events to Telegram users.
-// It runs on a schedule, fetching unprocessed events from SQLite via SQLITEDB_DSN
-// and dispatching them through the bot configured by TELEGRAMBOT_DSN.
+// It runs on a schedule, fetching unprocessed events from SQLite via BEACON_SQLITEDB_DSN
+// and dispatching them through the bot configured by BEACON_TELEGRAMBOT_DSN.
 package main
 
 import (
@@ -16,11 +16,11 @@ import (
 	_ "time/tzdata" // embedded IANA tzdata so time.LoadLocation works without system tzdata
 
 	"github.com/prorochestvo/dsninjector"
-	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/application/notification"
-	"github.com/seilbekskindirov/monitor/internal/infrastructure/sqlitedb"
-	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
-	"github.com/seilbekskindirov/monitor/internal/repository"
+	"github.com/seilbekskindirov/beacon/internal"
+	"github.com/seilbekskindirov/beacon/internal/application/notification"
+	"github.com/seilbekskindirov/beacon/internal/infrastructure/sqlitedb"
+	integration "github.com/seilbekskindirov/beacon/internal/infrastructure/telegrambot"
+	"github.com/seilbekskindirov/beacon/internal/repository"
 	_ "modernc.org/sqlite"
 )
 
@@ -38,8 +38,8 @@ var (
 )
 
 const (
-	envDsnTelegramBOT = "TELEGRAMBOT_DSN"
-	envDsnSqliteDB    = "SQLITEDB_DSN"
+	envDsnTelegramBOT = "BEACON_TELEGRAMBOT_DSN"
+	envDsnSqliteDB    = "BEACON_SQLITEDB_DSN"
 )
 
 func main() {
@@ -52,7 +52,7 @@ func main() {
 	log.Println("logger: initiated")
 
 	// Notifier only calls Telegram, and Telegram traffic bypasses any proxy via the
-	// hardcoded transport in NewTBotClient, so PROXY_URL is intentionally not parsed.
+	// hardcoded transport in NewTBotClient, so BEACON_PROXY_URL is intentionally not parsed.
 
 	dsnTelegramBOT, err := dsninjector.Unmarshal(envDsnTelegramBOT)
 	if err != nil {

@@ -14,11 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal"
-	appchart "github.com/seilbekskindirov/monitor/internal/application/chart"
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	"github.com/seilbekskindirov/monitor/internal/dto"
-	"github.com/seilbekskindirov/monitor/internal/tools/tgwebapp"
+	"github.com/seilbekskindirov/beacon/internal"
+	appchart "github.com/seilbekskindirov/beacon/internal/application/chart"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal/dto"
+	"github.com/seilbekskindirov/beacon/internal/tools/tgwebapp"
 )
 
 // NewHandler constructs a Handler wired to the rate service and, optionally,
@@ -26,6 +26,8 @@ import (
 // meRateValueRepo are required for ListMeSubscriptions; meProfileRepo for
 // UpsertMeProfile; remaining handlers need only srvRate. meChartSvc is required
 // for GetMeRatesChart and GetPublicRatesChart and may be nil (those return 503).
+// healthAgent drives GET /health/check; when nil the endpoint returns 503.
+// serverVersion and serverStart populate the "server" block in the health response.
 func NewHandler(
 	srvRate rateService,
 	botToken string,
@@ -34,6 +36,9 @@ func NewHandler(
 	meRateValueRepo meRateValueRepository,
 	meProfileRepo meProfileRepository,
 	meChartSvc meChartService,
+	healthAgent healthCheckAgent,
+	serverVersion string,
+	serverStart time.Time,
 ) (*Handler, error) {
 	h := &Handler{
 		rateService:      srvRate,
@@ -43,6 +48,9 @@ func NewHandler(
 		meRateValueRepo:  meRateValueRepo,
 		meProfileRepo:    meProfileRepo,
 		meChartSvc:       meChartSvc,
+		healthAgent:      healthAgent,
+		serverVersion:    serverVersion,
+		serverStart:      serverStart,
 		validateInitData: tgwebapp.ValidateInitData,
 		nowFn:            time.Now,
 		logger:           log.Default(),
@@ -59,6 +67,9 @@ type Handler struct {
 	meRateValueRepo meRateValueRepository
 	meProfileRepo   meProfileRepository
 	meChartSvc      meChartService
+	healthAgent     healthCheckAgent
+	serverVersion   string
+	serverStart     time.Time
 
 	// validateInitData is the Telegram WebApp initData verifier. A field so tests
 	// can inject a fake without real bot tokens.
@@ -71,7 +82,6 @@ type Handler struct {
 }
 
 type rateService interface {
-	CheckUP(ctx context.Context) error
 	ObtainLastNExecutionHistoryBySourceName(ctx context.Context, name string, limit int64) ([]domain.ExecutionHistory, error)
 	ObtainLatestExecutionHistoryBySources(ctx context.Context, names []string) (map[string]domain.ExecutionHistory, error)
 	ObtainLastSuccessNExecutionHistoryBySourceName(ctx context.Context, name string, limit int64) ([]domain.ExecutionHistory, error)
@@ -114,32 +124,74 @@ type meProfileRepository interface {
 // GetMeRatesHistory, and GetPublicRatesChart, satisfied by *appchart.Service.
 // Only the period-aware variants are listed; the default-period wrappers
 // (ObtainMeChart, ObtainPublicChart) exist on the concrete type but not here.
+// healthCheckAgent is the contract for the health-check aggregator. CheckUp probes
+// all registered dependencies under a bounded timeout and returns a per-component
+// report; healthy is true iff every component reported nil. Nil is allowed (the
+// HealthCheck handler returns 503 when the agent is not wired).
+type healthCheckAgent interface {
+	CheckUp(ctx context.Context) (healthy bool, report map[string]string)
+}
+
 type meChartService interface {
 	ObtainMeChartForPeriod(ctx context.Context, userID string, periodDays int64) (*appchart.MeChart, error)
 	ObtainMeHistory(ctx context.Context, userID, pair, sourceTitle string, page, limit int64) (*appchart.MeHistoryResult, error)
 	ObtainPublicChartForPeriod(ctx context.Context, page, limit, periodDays int64) (*appchart.PublicChart, int64, error)
 }
 
-// Healthz reports whether the service can reach its dependencies: 200 OK when
-// the database is reachable, 503 otherwise. No auth; no PII in the body; for
-// monitoring probes and systemd readiness checks.
+// Ping is the liveness probe: it always returns 200 and touches no dependency.
+// Registered at both GET /ping and GET /healthz (backward-compatibility alias).
 //
+// GET /ping
 // GET /healthz
-func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
-	if err := h.rateService.CheckUP(r.Context()); err != nil {
-		// RateRestApi.CheckUP already attaches a trace via errors.Join; don't
-		// double-wrap.
-		log.Print(fmt.Errorf("healthz: %w", err))
-		// Write headers manually so the response advertises JSON; http.Error
-		// would force Content-Type=text/plain and add a trailing newline.
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"status":"unavailable"}`))
-		return
-	}
+func (h *Handler) Ping(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// HealthCheck is the readiness probe. It runs all registered dependency inspectors
+// under a bounded timeout and returns a per-component JSON report. 200 when all
+// dependencies are healthy; 503 when any are down (the body still lists every
+// component so operators can see which one failed). No auth; for deploy gates and
+// uptime monitors.
+//
+// GET /health/check
+func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
+	if h.healthAgent == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"status":false,"server":{},"services":{}}`))
+		return
+	}
+
+	healthy, report := h.healthAgent.CheckUp(r.Context())
+
+	var uptime string
+	if !h.serverStart.IsZero() {
+		uptime = time.Since(h.serverStart).Truncate(time.Second).String()
+	}
+
+	body := dto.HealthCheckResponse{
+		Status: healthy,
+		Server: dto.HealthServer{
+			Version: h.serverVersion,
+			Uptime:  uptime,
+		},
+		Services: report,
+	}
+
+	status := http.StatusOK
+	if !healthy {
+		status = http.StatusServiceUnavailable
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		h.logger.Print(errors.Join(
+			fmt.Errorf("encode health check response: %w", err),
+			internal.NewTraceError(),
+		))
+	}
 }
 
 // ListSources returns every configured rate source decorated with its latest execution status.

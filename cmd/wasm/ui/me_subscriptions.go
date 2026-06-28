@@ -18,9 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/cmd/wasm/application"
-	"github.com/seilbekskindirov/monitor/cmd/wasm/dom"
-	"github.com/seilbekskindirov/monitor/internal/dto"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/application"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/dom"
+	"github.com/seilbekskindirov/beacon/internal/dto"
 )
 
 // authFailureMsg is the exact copy from subscriptions.html.

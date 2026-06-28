@@ -6,7 +6,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/seilbekskindirov/monitor/cmd/wasm/dom"
+	"github.com/seilbekskindirov/beacon/cmd/wasm/dom"
 )
 
 // domFetcher is the production Fetcher backed by dom.FetchJSON and

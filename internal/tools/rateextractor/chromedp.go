@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
-	"github.com/seilbekskindirov/monitor/internal"
-	"github.com/seilbekskindirov/monitor/internal/domain"
+	"github.com/seilbekskindirov/beacon/internal"
+	"github.com/seilbekskindirov/beacon/internal/domain"
 )
 
 // ChromedpRateExtractor renders pages using a headless Chrome instance, then

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal/domain"
-	integration "github.com/seilbekskindirov/monitor/internal/infrastructure/telegrambot"
-	"github.com/seilbekskindirov/monitor/internal/repository"
+	"github.com/seilbekskindirov/beacon/internal/domain"
+	integration "github.com/seilbekskindirov/beacon/internal/infrastructure/telegrambot"
+	"github.com/seilbekskindirov/beacon/internal/repository"
 	"github.com/stretchr/testify/require"
 )
 

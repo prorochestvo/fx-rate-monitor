@@ -1,6 +1,6 @@
 # cmd/doctor
 
-`doctor` is the operator maintenance umbrella binary for the fx-rate-monitor
+`doctor` is the operator maintenance umbrella binary for the beacon
 service. It hosts two subcommands:
 
 - **`doctor rulegen`** — LLM-driven extraction-rule generator. Generates or
@@ -48,7 +48,7 @@ note below — but is not the default schedule).
 ### Prerequisites
 
 - The database must be fully migrated (`make migrate` or `./build/migrator`).
-- `SQLITEDB_DSN` and `AI_PRIMARY_DSN` must be set in the environment.
+- `BEACON_SQLITEDB_DSN` and `BEACON_AI_PRIMARY_DSN` must be set in the environment.
 - The source row must already exist in `rate_sources`.
 
 ### Usage
@@ -71,10 +71,10 @@ doctor rulegen --all [flags]
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `SQLITEDB_DSN` | Yes | SQLite connection string |
-| `AI_PRIMARY_DSN` | Yes | Primary AI provider DSN |
-| `AI_FALLBACK_DSN` | No | Fallback AI provider DSN; stub used when absent |
-| `CHROMIUM_PATH` | No | Absolute path to Chromium binary; see below |
+| `BEACON_SQLITEDB_DSN` | Yes | SQLite connection string |
+| `BEACON_AI_PRIMARY_DSN` | Yes | Primary AI provider DSN |
+| `BEACON_AI_FALLBACK_DSN` | No | Fallback AI provider DSN; stub used when absent |
+| `BEACON_CHROMIUM_PATH` | No | Absolute path to Chromium binary; see below |
 
 ### Exit codes
 
@@ -98,8 +98,8 @@ used by operators and cron scripts. This is intentional — see plan trade-off 4
 
 ```bash
 # Generate a rule using the primary AI client (default 3 attempts)
-SQLITEDB_DSN=sqlite://_:_@_:_/./build/monitor.db \
-AI_PRIMARY_DSN=groq://_:<base64url(KEY)>@api.groq.com/openai/v1?model=llama-3.1-8b-instant \
+BEACON_SQLITEDB_DSN=sqlite://_:_@_:_/./build/beacon.db \
+BEACON_AI_PRIMARY_DSN=groq://_:<base64url(KEY)>@api.groq.com/openai/v1?model=llama-3.1-8b-instant \
 ./build/doctor rulegen halyk_usd
 
 # Force fallback (skip primary, one attempt with fallback client)
@@ -124,7 +124,7 @@ Each invocation makes at most `max-primary-attempts + 1` LLM calls (default: 4
 calls maximum). With `--force-fallback` it makes exactly 1 call to the fallback
 client.
 
-The primary is typically a free Groq key (no cost). If `AI_FALLBACK_DSN` points
+The primary is typically a free Groq key (no cost). If `BEACON_AI_FALLBACK_DSN` points
 at a paid provider such as `anthropic/claude-*` via OpenRouter, a single
 escalated invocation can cost on the order of cents to dollars depending on body
 size. Check your provider's pricing before running `rulegen` on many sources in
@@ -230,17 +230,17 @@ which chromium-browser   # Debian/Ubuntu
 which chromium           # Arch / Snap variants
 ```
 
-### CHROMIUM_PATH environment variable
+### BEACON_CHROMIUM_PATH environment variable
 
 If the Chromium binary is not on PATH, or you want to use a specific version, set
-`CHROMIUM_PATH` to the absolute path before invoking `doctor rulegen`:
+`BEACON_CHROMIUM_PATH` to the absolute path before invoking `doctor rulegen`:
 
 ```bash
-export CHROMIUM_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+export BEACON_CHROMIUM_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 ./build/doctor rulegen KZ_BCC_BID_USD_KZT
 ```
 
-When `CHROMIUM_PATH` is unset, chromedp searches PATH in this order:
+When `BEACON_CHROMIUM_PATH` is unset, chromedp searches PATH in this order:
 `chromium`, `chromium-browser`, `google-chrome`, `chrome`.
 
 ### Behaviour and latency
@@ -303,7 +303,7 @@ The default post-body sleep is 5 s and applies only when `wait_selector` is empt
 On the deploy host with the service's `EnvironmentFile` sourced:
 
 ```bash
-set -a; . /etc/monitor/prime.env; set +a
+set -a; . /opt/beacon/.env; set +a
 ./build/doctor rulegen <source-name>
 ```
 

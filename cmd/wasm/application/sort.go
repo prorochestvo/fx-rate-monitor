@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal/dto"
+	"github.com/seilbekskindirov/beacon/internal/dto"
 )
 
 // sortSourcesByLastRun sorts sources in-place by last_run_at. desc=true puts the

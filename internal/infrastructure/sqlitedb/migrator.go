@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/seilbekskindirov/monitor/internal"
+	"github.com/seilbekskindirov/beacon/internal"
 )
 
 // Committer is the minimal DB interface required by NewMigrator.

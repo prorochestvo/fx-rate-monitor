@@ -6,8 +6,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/seilbekskindirov/monitor/internal/application/sourceaudit"
-	"github.com/seilbekskindirov/monitor/migrations"
+	"github.com/seilbekskindirov/beacon/internal/application/sourceaudit"
+	"github.com/seilbekskindirov/beacon/migrations"
 )
 
 func TestParseSeedFiles_EmbeddedMigrations(t *testing.T) {

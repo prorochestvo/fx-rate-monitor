@@ -1,4 +1,4 @@
-// Command doctor is the operator maintenance umbrella for the fx-rate-monitor
+// Command doctor is the operator maintenance umbrella for the Beacon
 // service. It hosts two subcommands:
 //
 //	doctor rulegen <source>        generate or regenerate a rule for one source
@@ -27,7 +27,7 @@ import (
 	"os"
 	"path"
 
-	"github.com/seilbekskindirov/monitor/internal"
+	"github.com/seilbekskindirov/beacon/internal"
 )
 
 var (

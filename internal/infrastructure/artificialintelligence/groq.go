@@ -27,7 +27,7 @@ import (
 	"net/url"
 
 	"github.com/prorochestvo/dsninjector"
-	"github.com/seilbekskindirov/monitor/internal"
+	"github.com/seilbekskindirov/beacon/internal"
 )
 
 const groqDefaultModel = "openai/gpt-oss-20b"

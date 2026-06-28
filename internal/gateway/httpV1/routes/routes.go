@@ -80,8 +80,16 @@ const (
 	// IANA timezone). Auth via Telegram WebApp initData HMAC, same as MeSubscriptions.
 	MeProfile = "/api/me/profile"
 
-	// Healthz reports service readiness: 200 when the database is reachable, 503
-	// otherwise. For monitoring probes and systemd ExecStartPost checks. No auth;
-	// no PII; cheap (one Ping).
+	// Ping is the liveness probe. Touches no dependency; always returns 200. Registered
+	// at /ping. /healthz is kept as a backward-compatible alias.
+	Ping = "/ping"
+
+	// Healthz is a backward-compatible alias for Ping; kept so existing monitoring
+	// scripts and deploy gates that target /healthz continue to work unchanged.
 	Healthz = "/healthz"
+
+	// HealthCheck is the readiness probe. Runs all dependency inspectors under a
+	// bounded timeout and returns a per-component JSON report. 200 when healthy,
+	// 503 when any dependency is down. No auth; for deploy gates and uptime monitors.
+	HealthCheck = "/health/check"
 )
