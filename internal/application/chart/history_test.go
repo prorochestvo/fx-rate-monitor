@@ -313,6 +313,35 @@ func TestService_ObtainMeHistory(t *testing.T) {
 		assert.Equal(t, 489.0, *res.Items[0].Ask)
 	})
 
+	t.Run("LAST-kind price lands in Bid slot, Ask remains nil", func(t *testing.T) {
+		t.Parallel()
+		// AAPL/USD LAST source — no bid/ask direction; MVP surfaces it in the "bid" slot.
+		aaplLastSrc := domain.RateSource{
+			Name:          "aapl-last",
+			Title:         "Yahoo Finance",
+			BaseCurrency:  "AAPL",
+			QuoteCurrency: "USD",
+			Kind:          domain.RateSourceKindLAST,
+			Active:        true,
+		}
+		subs := []domain.RateUserSubscription{subFor("aapl-last")}
+		sources := map[string]domain.RateSource{"aapl-last": aaplLastSrc}
+		histRows := []domain.RateValue{
+			{SourceName: "aapl-last", BaseCurrency: "AAPL", QuoteCurrency: "USD", Price: 300.0, Timestamp: base},
+		}
+		svc := newServiceWithHistory(subs, sources, histRows, 1, nil)
+
+		res, err := svc.ObtainMeHistory(t.Context(), "user1", "AAPL/USD", "", 1, 20)
+		require.NoError(t, err)
+		require.Len(t, res.Items, 1)
+		// LAST routes to the Bid slot; Ask must remain nil.
+		require.NotNil(t, res.Items[0].Bid,
+			"LAST-kind price must appear in the Bid slot (MVP surfacing)")
+		assert.Equal(t, 300.0, *res.Items[0].Bid)
+		assert.Nil(t, res.Items[0].Ask,
+			"Ask must remain nil for a LAST-kind source; no ask direction exists")
+	})
+
 	t.Run("Total counts distinct (title, timestamp) tuples not raw rows", func(t *testing.T) {
 		t.Parallel()
 		// Two timestamps × (BID + ASK) = 4 raw rate_values rows for the same provider.

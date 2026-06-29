@@ -50,8 +50,8 @@ type Pair struct {
 	Base string
 	// Quote is the quote currency code (e.g. "KZT").
 	Quote string
-	// Kind is the rate direction; must be domain.RateSourceKindBID or
-	// domain.RateSourceKindASK.
+	// Kind is the rate direction; one of domain.RateSourceKindBID,
+	// domain.RateSourceKindASK, or domain.RateSourceKindLAST.
 	Kind domain.RateSourceKind
 }
 

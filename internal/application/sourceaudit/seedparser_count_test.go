@@ -13,10 +13,10 @@ import (
 func TestParseSeedFiles_EmbeddedMigrations(t *testing.T) {
 	t.Parallel()
 
-	t.Run("embedded migrations enumerate 36 sources", func(t *testing.T) {
+	t.Run("embedded migrations enumerate 38 sources", func(t *testing.T) {
 		t.Parallel()
 		sources, err := sourceaudit.ParseSeedFiles(migrations.MigrationsFS, "*.seed*.sql")
 		require.NoError(t, err)
-		assert.Len(t, sources, 36)
+		assert.Len(t, sources, 38)
 	})
 }

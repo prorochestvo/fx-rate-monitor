@@ -61,7 +61,10 @@ conditions (delta / interval / daily / cron) against the latest rates and enqueu
 notifications, and a dispatch-agent that drains the pool and sends them over Telegram.
 The `web` binary serves a REST API plus an embedded dashboard (HTML and a WASM build)
 and routes Telegram callbacks. `migrator` applies schema migrations; `doctor` provides
-operator tooling (LLM rule generation and source auditing).
+operator tooling (LLM rule generation and source auditing). Sources use a `kind` of
+`BID`, `ASK`, or `LAST` (equity / last-traded price); sources that require a custom
+`User-Agent` or other header overrides store them in `RateSourceOptions.Headers` (the
+`options` JSON column), applied per-request by the plain fetcher.
 
 ### Layer Responsibilities
 

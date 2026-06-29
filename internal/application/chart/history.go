@@ -203,8 +203,10 @@ func (s *Service) ObtainMeHistory(ctx context.Context, userID, pair, sourceTitle
 		// Assign price to the correct direction slot.
 		kind := kindBySource[rv.SourceName]
 		price := rv.Price
-		if kind == domain.RateSourceKindBID {
-			// Invariant 1: one BID source per (title, base, quote); if violated,
+		if kind == domain.RateSourceKindBID || kind == domain.RateSourceKindLAST {
+			// LAST has no bid/ask direction; surface it in the single "bid" slot for MVP.
+			// A dedicated Last field is deferred to the Phase-2 chart work (plan 017 Task 6).
+			// Invariant 1: one BID/LAST source per (title, base, quote); if violated,
 			// last-write-in-page-order wins — see warn-log below.
 			if g.Bid != nil {
 				log.Printf("warn: history title collision user=%s pair=%s title=%q ts=%s kind=BID: silent overwrite (Invariant 1 violated)",
