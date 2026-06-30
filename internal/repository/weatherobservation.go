@@ -72,6 +72,16 @@ func (r *WeatherObservationRepository) RetainWeatherObservation(ctx context.Cont
 		sunsetStr = &s
 	}
 
+	// Marshal the hourly block to JSON; nil bytes → SQL NULL (no hourly data for this row).
+	hourlyJSON, err := record.MarshalHourlyJSON()
+	if err != nil {
+		return errors.Join(fmt.Errorf("weather observation: marshal hourly_json: %w", err), internal.NewTraceError())
+	}
+	var hourlyJSONArg interface{}
+	if len(hourlyJSON) > 0 {
+		hourlyJSONArg = string(hourlyJSON)
+	}
+
 	cmd := "INSERT INTO " + weatherObservationTableName + " (" +
 		weatherObservationIDFieldName + ", " +
 		weatherObservationLocationIDFieldName + ", " +
@@ -93,8 +103,9 @@ func (r *WeatherObservationRepository) RetainWeatherObservation(ctx context.Cont
 		weatherObservationWindSpeedFieldName + ", " +
 		weatherObservationWindDirFieldName + ", " +
 		weatherObservationPrecipFieldName + ", " +
-		weatherObservationCloudCoverFieldName +
-		") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"
+		weatherObservationCloudCoverFieldName + ", " +
+		weatherObservationHourlyJSONFieldName +
+		") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"
 
 	if _, err := tx.ExecContext(ctx, cmd,
 		record.ID,
@@ -118,6 +129,7 @@ func (r *WeatherObservationRepository) RetainWeatherObservation(ctx context.Cont
 		record.WindDir,
 		record.Precip,
 		record.CloudCover,
+		hourlyJSONArg,
 	); err != nil {
 		return errors.Join(err, fmt.Errorf("SQL: %s", cmd), internal.NewTraceError())
 	}
@@ -201,6 +213,10 @@ const (
 	weatherObservationWindDirFieldName       = "wind_dir"
 	weatherObservationPrecipFieldName        = "precip"
 	weatherObservationCloudCoverFieldName    = "cloud_cover"
+	// weatherObservationHourlyJSONFieldName is the nullable column storing the
+	// Open-Meteo hourly forecast block as a compact JSON array (migration 014).
+	// NULL for Gismeteo rows and for rows stored before the migration was applied.
+	weatherObservationHourlyJSONFieldName = "hourly_json"
 
 	weatherObservationSQLSelect = "SELECT " +
 		weatherObservationIDFieldName + ", " +
@@ -223,7 +239,8 @@ const (
 		weatherObservationWindSpeedFieldName + ", " +
 		weatherObservationWindDirFieldName + ", " +
 		weatherObservationPrecipFieldName + ", " +
-		weatherObservationCloudCoverFieldName +
+		weatherObservationCloudCoverFieldName + ", " +
+		weatherObservationHourlyJSONFieldName +
 		" FROM " + weatherObservationTableName
 )
 
@@ -231,6 +248,7 @@ func weatherObservationScan(s weatherUserCityScanner) (domain.WeatherObservation
 	var item domain.WeatherObservation
 	var capturedAt string
 	var sunriseStr, sunsetStr *string
+	var hourlyJSONStr *string
 
 	if err := s.Scan(
 		&item.ID,
@@ -254,6 +272,7 @@ func weatherObservationScan(s weatherUserCityScanner) (domain.WeatherObservation
 		&item.WindDir,
 		&item.Precip,
 		&item.CloudCover,
+		&hourlyJSONStr,
 	); err != nil {
 		return domain.WeatherObservation{}, err
 	}
@@ -275,6 +294,14 @@ func weatherObservationScan(s weatherUserCityScanner) (domain.WeatherObservation
 			return domain.WeatherObservation{}, errors.Join(parseErr, internal.NewTraceError())
 		}
 		item.Sunset = &t
+	}
+	// Unmarshal hourly_json; NULL / empty yields an empty (non-nil) slice via UnmarshalHourlyJSON.
+	var hourlyRaw []byte
+	if hourlyJSONStr != nil {
+		hourlyRaw = []byte(*hourlyJSONStr)
+	}
+	if unmarshalErr := item.UnmarshalHourlyJSON(hourlyRaw); unmarshalErr != nil {
+		return domain.WeatherObservation{}, errors.Join(unmarshalErr, internal.NewTraceError())
 	}
 	return item, nil
 }

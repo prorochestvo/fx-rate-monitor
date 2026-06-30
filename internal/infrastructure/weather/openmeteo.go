@@ -175,7 +175,11 @@ func (o *OpenMeteo) Forecast(ctx context.Context, lat, lng float64) (*domain.Wea
 	q.Set("daily", "temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,weather_code,sunrise,sunset")
 	q.Set("hourly", "precipitation_probability,temperature_2m")
 	q.Set("timezone", "auto")
-	q.Set("forecast_days", "1")
+	// forecast_days=2 extends the hourly block past local midnight so a "next 6h"
+	// rain-alert window is always available late in the day. daily[0] remains today
+	// (the API always starts daily[] from the current local calendar day with
+	// timezone=auto), so the morning-summary path is unaffected.
+	q.Set("forecast_days", "2")
 	u.RawQuery = q.Encode()
 
 	body, err := o.get(ctx, u.String())
@@ -212,6 +216,11 @@ func decodeOpenMeteoForecast(body []byte, lat, lng float64) (*domain.WeatherObse
 			Sunrise              []string  `json:"sunrise"`
 			Sunset               []string  `json:"sunset"`
 		} `json:"daily"`
+		Hourly struct {
+			Time                     []string  `json:"time"`
+			PrecipitationProbability []int     `json:"precipitation_probability"`
+			Temperature2m            []float64 `json:"temperature_2m"`
+		} `json:"hourly"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, errors.Join(
@@ -304,6 +313,33 @@ func decodeOpenMeteoForecast(body []byte, lat, lng float64) (*domain.WeatherObse
 			)
 		}
 		obs.Sunset = &t
+	}
+
+	// Hourly block: decode time, precipitation_probability, and temperature_2m arrays.
+	// Array lengths may legitimately differ when a provider omits a field for some
+	// hours; guard against out-of-bounds by using the time array as the spine and
+	// indexing into the others only when long enough.
+	nHourly := len(resp.Hourly.Time)
+	if nHourly > 0 {
+		obs.Hourly = make([]domain.WeatherHourlyPoint, 0, nHourly)
+		for i, ts := range resp.Hourly.Time {
+			t, err := time.ParseInLocation("2006-01-02T15:04", ts, tzLoc)
+			if err != nil {
+				// Malformed time string — skip this slot rather than hard-failing; the
+				// rain evaluator degrades gracefully when fewer points are present.
+				continue
+			}
+			pt := domain.WeatherHourlyPoint{Time: t.UTC()}
+			if i < len(resp.Hourly.PrecipitationProbability) {
+				v := resp.Hourly.PrecipitationProbability[i]
+				pt.PrecipProb = &v
+			}
+			if i < len(resp.Hourly.Temperature2m) {
+				v := resp.Hourly.Temperature2m[i]
+				pt.Temp = &v
+			}
+			obs.Hourly = append(obs.Hourly, pt)
+		}
 	}
 
 	return obs, nil

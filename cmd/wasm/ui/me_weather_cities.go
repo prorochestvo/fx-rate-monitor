@@ -241,6 +241,8 @@ func alertKindLabel(kind, conditionValue string, notifyHour int) string {
 		return fmt.Sprintf("Frost alert ≤ %s°C", conditionValue)
 	case "alert_thunderstorm":
 		return "Thunderstorm alert"
+	case "rain_alert":
+		return fmt.Sprintf("Rain alert ≥ %s%% within 6h", conditionValue)
 	default: // morning_summary or empty
 		return fmt.Sprintf("Morning summary · %02d:00", notifyHour)
 	}
@@ -257,6 +259,7 @@ func renderWeatherAlertForm(state application.WeatherCitiesState) string {
 		{"alert_heat", "Heat alert (°C)"},
 		{"alert_frost", "Frost alert (°C)"},
 		{"alert_thunderstorm", "Thunderstorm alert"},
+		{"rain_alert", "Rain alert (%)"},
 	}
 	for _, k := range kinds {
 		selected := ""

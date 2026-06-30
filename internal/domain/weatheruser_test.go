@@ -77,6 +77,61 @@ func TestWeatherUserCity_Validate(t *testing.T) {
 		require.NoError(t, c.Validate())
 	})
 
+	t.Run("rain_alert with valid integer percent passes", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertRain, ConditionValue: "70"}
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("rain_alert with decimal percent passes", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertRain, ConditionValue: "69.5"}
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("rain_alert with 0 passes (lowest valid bound)", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertRain, ConditionValue: "0"}
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("rain_alert with 100 passes (highest valid bound)", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertRain, ConditionValue: "100"}
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("rain_alert with negative value returns error", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertRain, ConditionValue: "-1"}
+		err := c.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "probability percent")
+	})
+
+	t.Run("rain_alert with value above 100 returns error", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertRain, ConditionValue: "101"}
+		err := c.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "probability percent")
+	})
+
+	t.Run("rain_alert with non-numeric value returns error", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertRain, ConditionValue: "heavy"}
+		err := c.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "valid number")
+	})
+
+	t.Run("rain_alert with empty value returns error", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertRain, ConditionValue: ""}
+		err := c.Validate()
+		require.Error(t, err)
+	})
+
 	t.Run("unknown kind returns error", func(t *testing.T) {
 		t.Parallel()
 		c := &WeatherUserCity{NotifyKind: "unknown_kind", ConditionValue: ""}
@@ -336,5 +391,160 @@ func TestWeatherUserCity_IsMorningDue(t *testing.T) {
 		due, err := c.IsMorningDue(fireUTC)
 		require.NoError(t, err)
 		assert.True(t, due)
+	})
+}
+
+func TestWeatherUserCity_EvaluateRain(t *testing.T) {
+	t.Parallel()
+
+	ptr := func(v int) *int { return &v }
+
+	baseCity := &WeatherUserCity{
+		ID:             "city-rain",
+		NotifyKind:     WeatherNotifyAlertRain,
+		ConditionValue: "70",
+	}
+	now := time.Date(2026, 6, 30, 7, 0, 0, 0, time.UTC)
+
+	t.Run("fires when maxProb equals threshold within window", func(t *testing.T) {
+		t.Parallel()
+		obs := WeatherObservation{
+			Hourly: []WeatherHourlyPoint{
+				{Time: now.Add(time.Hour), PrecipProb: ptr(70)},
+			},
+		}
+		fired, reason, err := baseCity.EvaluateRain(obs, now)
+		require.NoError(t, err)
+		assert.True(t, fired)
+		assert.Contains(t, reason, "70%")
+		assert.Contains(t, reason, "within 6h")
+	})
+
+	t.Run("fires when maxProb exceeds threshold", func(t *testing.T) {
+		t.Parallel()
+		obs := WeatherObservation{
+			Hourly: []WeatherHourlyPoint{
+				{Time: now.Add(2 * time.Hour), PrecipProb: ptr(85)},
+			},
+		}
+		fired, reason, err := baseCity.EvaluateRain(obs, now)
+		require.NoError(t, err)
+		assert.True(t, fired)
+		assert.Contains(t, reason, "85%")
+	})
+
+	t.Run("reports the highest probability in the window", func(t *testing.T) {
+		t.Parallel()
+		obs := WeatherObservation{
+			Hourly: []WeatherHourlyPoint{
+				{Time: now.Add(time.Hour), PrecipProb: ptr(50)},
+				{Time: now.Add(2 * time.Hour), PrecipProb: ptr(80)},
+				{Time: now.Add(3 * time.Hour), PrecipProb: ptr(75)},
+			},
+		}
+		fired, reason, err := baseCity.EvaluateRain(obs, now)
+		require.NoError(t, err)
+		assert.True(t, fired)
+		assert.Contains(t, reason, "80%")
+	})
+
+	t.Run("does not fire when maxProb below threshold", func(t *testing.T) {
+		t.Parallel()
+		obs := WeatherObservation{
+			Hourly: []WeatherHourlyPoint{
+				{Time: now.Add(time.Hour), PrecipProb: ptr(65)},
+			},
+		}
+		fired, _, err := baseCity.EvaluateRain(obs, now)
+		require.NoError(t, err)
+		assert.False(t, fired)
+	})
+
+	t.Run("does not fire when all points are in the past", func(t *testing.T) {
+		t.Parallel()
+		obs := WeatherObservation{
+			Hourly: []WeatherHourlyPoint{
+				{Time: now.Add(-time.Hour), PrecipProb: ptr(90)},
+				{Time: now.Add(-2 * time.Hour), PrecipProb: ptr(90)},
+			},
+		}
+		fired, _, err := baseCity.EvaluateRain(obs, now)
+		require.NoError(t, err)
+		assert.False(t, fired)
+	})
+
+	t.Run("point at exactly now is included (inclusive lower bound)", func(t *testing.T) {
+		t.Parallel()
+		obs := WeatherObservation{
+			Hourly: []WeatherHourlyPoint{
+				{Time: now, PrecipProb: ptr(90)},
+			},
+		}
+		fired, _, err := baseCity.EvaluateRain(obs, now)
+		require.NoError(t, err)
+		assert.True(t, fired)
+	})
+
+	t.Run("point at exactly windowEnd is excluded (exclusive upper bound)", func(t *testing.T) {
+		t.Parallel()
+		obs := WeatherObservation{
+			Hourly: []WeatherHourlyPoint{
+				{Time: now.Add(weatherRainWindow), PrecipProb: ptr(90)},
+			},
+		}
+		fired, _, err := baseCity.EvaluateRain(obs, now)
+		require.NoError(t, err)
+		assert.False(t, fired)
+	})
+
+	t.Run("points beyond window are excluded", func(t *testing.T) {
+		t.Parallel()
+		obs := WeatherObservation{
+			Hourly: []WeatherHourlyPoint{
+				{Time: now.Add(7 * time.Hour), PrecipProb: ptr(90)},
+			},
+		}
+		fired, _, err := baseCity.EvaluateRain(obs, now)
+		require.NoError(t, err)
+		assert.False(t, fired)
+	})
+
+	t.Run("empty Hourly returns false without error", func(t *testing.T) {
+		t.Parallel()
+		obs := WeatherObservation{Hourly: []WeatherHourlyPoint{}}
+		fired, _, err := baseCity.EvaluateRain(obs, now)
+		require.NoError(t, err)
+		assert.False(t, fired)
+	})
+
+	t.Run("nil Hourly returns false without error", func(t *testing.T) {
+		t.Parallel()
+		obs := WeatherObservation{Hourly: nil}
+		fired, _, err := baseCity.EvaluateRain(obs, now)
+		require.NoError(t, err)
+		assert.False(t, fired)
+	})
+
+	t.Run("nil PrecipProb points are skipped", func(t *testing.T) {
+		t.Parallel()
+		obs := WeatherObservation{
+			Hourly: []WeatherHourlyPoint{
+				{Time: now.Add(time.Hour), PrecipProb: nil},
+				{Time: now.Add(2 * time.Hour), PrecipProb: nil},
+			},
+		}
+		fired, _, err := baseCity.EvaluateRain(obs, now)
+		require.NoError(t, err)
+		assert.False(t, fired)
+	})
+
+	t.Run("bad condition_value returns error", func(t *testing.T) {
+		t.Parallel()
+		city := &WeatherUserCity{
+			NotifyKind:     WeatherNotifyAlertRain,
+			ConditionValue: "not-a-number",
+		}
+		_, _, err := city.EvaluateRain(WeatherObservation{}, now)
+		require.Error(t, err)
 	})
 }

@@ -168,6 +168,8 @@ func alertKindHeader(kind domain.WeatherNotifyKind) (header, emoji string, ok bo
 		return "Frost alert", "❄️", true
 	case domain.WeatherNotifyAlertThunderstorm:
 		return "Thunderstorm alert", "⛈️", true
+	case domain.WeatherNotifyAlertRain:
+		return "Rain alert", "🌧️", true
 	default:
 		return "", "", false
 	}

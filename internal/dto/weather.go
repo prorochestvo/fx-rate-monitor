@@ -26,10 +26,11 @@ type WeatherCitySearchResponse struct {
 // NotifyHour is the local hour (0–23) for the daily morning summary; when
 // omitted the server applies its default (7 = 07:00 local time).
 //
-// To create a threshold alert, set NotifyKind to one of: "alert_heat",
-// "alert_frost", "alert_thunderstorm". When NotifyKind is empty or omitted the
-// server defaults to "morning_summary". ConditionValue is the numeric threshold
-// in °C for heat/frost (e.g. "35"); it is empty for thunderstorm and morning_summary.
+// To create an alert, set NotifyKind to one of: "alert_heat", "alert_frost",
+// "alert_thunderstorm", "rain_alert". When NotifyKind is empty or omitted the
+// server defaults to "morning_summary". ConditionValue is the numeric threshold:
+// °C for heat/frost (e.g. "35"), probability percent for rain_alert (e.g. "70",
+// range [0,100]); empty for alert_thunderstorm and morning_summary.
 type WeatherCityCreateRequest struct {
 	LocationID  string  `json:"location_id"`
 	DisplayName string  `json:"display_name"`
@@ -42,11 +43,11 @@ type WeatherCityCreateRequest struct {
 	NotifyHour *int `json:"notify_hour,omitempty"`
 	// NotifyKind identifies the subscription type. Omit or leave empty for the
 	// default "morning_summary". Alert kinds: "alert_heat", "alert_frost",
-	// "alert_thunderstorm".
+	// "alert_thunderstorm", "rain_alert".
 	NotifyKind string `json:"notify_kind,omitempty"`
 	// ConditionValue is the threshold for alert kinds. Required for alert_heat and
-	// alert_frost (a decimal number in °C); empty for alert_thunderstorm and
-	// morning_summary.
+	// alert_frost (a decimal number in °C) and for rain_alert (a probability percent
+	// in [0,100], e.g. "70"); empty for alert_thunderstorm and morning_summary.
 	ConditionValue string `json:"condition_value,omitempty"`
 }
 
@@ -72,10 +73,11 @@ type WeatherCityRow struct {
 	// NotifyHour is the local hour (0–23) at which the daily morning summary fires.
 	NotifyHour int `json:"notify_hour"`
 	// NotifyKind is the subscription type: "morning_summary", "alert_heat",
-	// "alert_frost", or "alert_thunderstorm".
+	// "alert_frost", "alert_thunderstorm", or "rain_alert".
 	NotifyKind string `json:"notify_kind"`
-	// ConditionValue is the alert threshold for heat/frost kinds (decimal °C string).
-	// Empty for morning_summary and alert_thunderstorm.
+	// ConditionValue is the alert threshold: decimal °C string for heat/frost,
+	// decimal percent string (0–100) for rain_alert. Empty for morning_summary and
+	// alert_thunderstorm.
 	ConditionValue string `json:"condition_value,omitempty"`
 }
 

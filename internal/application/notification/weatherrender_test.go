@@ -313,10 +313,23 @@ func TestRenderWeatherAlert(t *testing.T) {
 		assert.Contains(t, err.Error(), "unrecognised alert kind")
 	})
 
+	t.Run("rain alert renders emoji header and reason", func(t *testing.T) {
+		t.Parallel()
+		city := baseCity
+		city.NotifyKind = domain.WeatherNotifyAlertRain
+		result, err := RenderWeatherAlert(city, "Rain likely (82%) within 6h", obs)
+		require.NoError(t, err)
+		assert.Contains(t, result, "🌧️")
+		assert.Contains(t, result, "Rain alert")
+		assert.Contains(t, result, "Almaty")
+		assert.Contains(t, result, "Rain likely (82%) within 6h")
+		assert.Contains(t, result, "+38.2°C")
+	})
+
 	t.Run("unknown kind returns error", func(t *testing.T) {
 		t.Parallel()
 		city := baseCity
-		city.NotifyKind = "rain_alert"
+		city.NotifyKind = "completely_unknown_kind"
 		_, err := RenderWeatherAlert(city, "reason", obs)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unrecognised alert kind")

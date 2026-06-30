@@ -24,14 +24,21 @@ const weatherGismeteoMaxAge = 24 * time.Hour
 // so the cooldown is what prevents per-tick spam, not luck.
 const weatherAlertCooldownForecast = 20 * time.Hour
 
-// weatherAlertCooldown returns the per-kind cooldown for alert kinds. All three
-// shipped forecast kinds share the same ~20 h window.
+// weatherAlertCooldownRain is the cooldown for rain alerts. A shorter ~6 h window
+// re-arms when a second rain band enters the fixed look-ahead window later in the
+// day, while still preventing per-tick spam. Must be strictly greater than the
+// notifier tick interval.
+const weatherAlertCooldownRain = 6 * time.Hour
+
+// weatherAlertCooldown returns the per-kind cooldown for alert kinds.
 func weatherAlertCooldown(kind domain.WeatherNotifyKind) time.Duration {
 	switch kind {
 	case domain.WeatherNotifyAlertHeat, domain.WeatherNotifyAlertFrost, domain.WeatherNotifyAlertThunderstorm:
 		return weatherAlertCooldownForecast
+	case domain.WeatherNotifyAlertRain:
+		return weatherAlertCooldownRain
 	default:
-		return weatherAlertCooldownForecast // safe default for any future alert kind
+		return weatherAlertCooldownForecast // safe default for any unrecognised future kind
 	}
 }
 
@@ -173,6 +180,7 @@ func (a *WeatherCheckAgent) Run(ctx context.Context) error {
 		domain.WeatherNotifyAlertHeat,
 		domain.WeatherNotifyAlertFrost,
 		domain.WeatherNotifyAlertThunderstorm,
+		domain.WeatherNotifyAlertRain,
 	}
 
 	for _, kind := range alertKinds {

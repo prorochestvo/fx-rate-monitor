@@ -594,6 +594,131 @@ func TestWeatherCheckAgent_Run(t *testing.T) {
 		assert.Contains(t, eventRepo.retained[0].Message, "Thunderstorm alert")
 		require.Len(t, cityRepo.advanced, 1)
 	})
+
+	t.Run("rain_alert: condition met past cooldown queues event and advances", func(t *testing.T) {
+		t.Parallel()
+		// Hourly point 1 h from now falls within the 6 h window for any real clock value.
+		now := time.Now().UTC()
+		prob := 85
+		rainCity := domain.WeatherUserCity{
+			ID: "rain-c1", UserType: domain.UserTypeTelegram, UserID: "u-rain",
+			LocationID: "loc-rain1", DisplayName: "RainCity", Timezone: "UTC",
+			NotifyKind: domain.WeatherNotifyAlertRain, ConditionValue: "70",
+			LastNotifiedAt: time.Time{},
+		}
+		rainObs := &domain.WeatherObservation{
+			Provider:   domain.ProviderOpenMeteo,
+			LocationID: "loc-rain1",
+			Hourly:     []domain.WeatherHourlyPoint{{Time: now.Add(time.Hour), PrecipProb: &prob}},
+		}
+		cityRepo := &mockWeatherCheckCityRepo{
+			citiesByKind: map[domain.WeatherNotifyKind][]domain.WeatherUserCity{
+				domain.WeatherNotifyAlertRain: {rainCity},
+			},
+		}
+		obsRepo := &mockWeatherCheckObsRepo{obsByProvider: map[string]*domain.WeatherObservation{
+			domain.ProviderOpenMeteo: rainObs,
+		}}
+		eventRepo := &mockCheckEventRepository{}
+
+		a := &WeatherCheckAgent{cityRepo: cityRepo, obsRepo: obsRepo, eventRepo: eventRepo, logger: io.Discard}
+		require.NoError(t, a.Run(t.Context()))
+		require.Len(t, eventRepo.retained, 1, "one rain alert event must be queued")
+		assert.Contains(t, eventRepo.retained[0].Message, "Rain alert")
+		require.Len(t, cityRepo.advanced, 1)
+		assert.Equal(t, "rain-c1", cityRepo.advanced[0])
+	})
+
+	t.Run("rain_alert: within cooldown window suppresses re-alert", func(t *testing.T) {
+		t.Parallel()
+		now := time.Now().UTC()
+		prob := 85
+		rainCity := domain.WeatherUserCity{
+			ID: "rain-c2", UserType: domain.UserTypeTelegram, UserID: "u-rain",
+			LocationID: "loc-rain2", DisplayName: "RainCity", Timezone: "UTC",
+			NotifyKind: domain.WeatherNotifyAlertRain, ConditionValue: "70",
+			LastNotifiedAt: now.Add(-1 * time.Hour), // alerted 1 h ago, cooldown is 6 h
+		}
+		rainObs := &domain.WeatherObservation{
+			Provider:   domain.ProviderOpenMeteo,
+			LocationID: "loc-rain2",
+			Hourly:     []domain.WeatherHourlyPoint{{Time: now.Add(time.Hour), PrecipProb: &prob}},
+		}
+		cityRepo := &mockWeatherCheckCityRepo{
+			citiesByKind: map[domain.WeatherNotifyKind][]domain.WeatherUserCity{
+				domain.WeatherNotifyAlertRain: {rainCity},
+			},
+		}
+		obsRepo := &mockWeatherCheckObsRepo{obsByProvider: map[string]*domain.WeatherObservation{
+			domain.ProviderOpenMeteo: rainObs,
+		}}
+		eventRepo := &mockCheckEventRepository{}
+
+		a := &WeatherCheckAgent{cityRepo: cityRepo, obsRepo: obsRepo, eventRepo: eventRepo, logger: io.Discard}
+		require.NoError(t, a.Run(t.Context()))
+		require.Empty(t, eventRepo.retained, "rain alert within 6 h cooldown must be suppressed")
+		require.Empty(t, cityRepo.advanced)
+	})
+
+	t.Run("rain_alert: probability below threshold produces no event", func(t *testing.T) {
+		t.Parallel()
+		now := time.Now().UTC()
+		prob := 50 // below 70% threshold
+		rainCity := domain.WeatherUserCity{
+			ID: "rain-c3", UserType: domain.UserTypeTelegram, UserID: "u-rain",
+			LocationID: "loc-rain3", DisplayName: "DrizzleCity", Timezone: "UTC",
+			NotifyKind: domain.WeatherNotifyAlertRain, ConditionValue: "70",
+			LastNotifiedAt: time.Time{},
+		}
+		rainObs := &domain.WeatherObservation{
+			Provider:   domain.ProviderOpenMeteo,
+			LocationID: "loc-rain3",
+			Hourly:     []domain.WeatherHourlyPoint{{Time: now.Add(time.Hour), PrecipProb: &prob}},
+		}
+		cityRepo := &mockWeatherCheckCityRepo{
+			citiesByKind: map[domain.WeatherNotifyKind][]domain.WeatherUserCity{
+				domain.WeatherNotifyAlertRain: {rainCity},
+			},
+		}
+		obsRepo := &mockWeatherCheckObsRepo{obsByProvider: map[string]*domain.WeatherObservation{
+			domain.ProviderOpenMeteo: rainObs,
+		}}
+		eventRepo := &mockCheckEventRepository{}
+
+		a := &WeatherCheckAgent{cityRepo: cityRepo, obsRepo: obsRepo, eventRepo: eventRepo, logger: io.Discard}
+		require.NoError(t, a.Run(t.Context()))
+		require.Empty(t, eventRepo.retained, "no event when probability below threshold")
+		require.Empty(t, cityRepo.advanced)
+	})
+
+	t.Run("rain_alert: no hourly data skips without advancing", func(t *testing.T) {
+		t.Parallel()
+		rainCity := domain.WeatherUserCity{
+			ID: "rain-c4", UserType: domain.UserTypeTelegram, UserID: "u-rain",
+			LocationID: "loc-rain4", DisplayName: "NoDataCity", Timezone: "UTC",
+			NotifyKind: domain.WeatherNotifyAlertRain, ConditionValue: "70",
+			LastNotifiedAt: time.Time{},
+		}
+		rainObs := &domain.WeatherObservation{
+			Provider:   domain.ProviderOpenMeteo,
+			LocationID: "loc-rain4",
+			Hourly:     nil, // no hourly data yet
+		}
+		cityRepo := &mockWeatherCheckCityRepo{
+			citiesByKind: map[domain.WeatherNotifyKind][]domain.WeatherUserCity{
+				domain.WeatherNotifyAlertRain: {rainCity},
+			},
+		}
+		obsRepo := &mockWeatherCheckObsRepo{obsByProvider: map[string]*domain.WeatherObservation{
+			domain.ProviderOpenMeteo: rainObs,
+		}}
+		eventRepo := &mockCheckEventRepository{}
+
+		a := &WeatherCheckAgent{cityRepo: cityRepo, obsRepo: obsRepo, eventRepo: eventRepo, logger: io.Discard}
+		require.NoError(t, a.Run(t.Context()))
+		require.Empty(t, eventRepo.retained, "no event when hourly data is absent")
+		require.Empty(t, cityRepo.advanced, "last_notified_at must not advance when condition not met")
+	})
 }
 
 // mockWeatherCheckCityRepo simulates ObtainDueWeatherUserCities and AdvanceLastNotifiedAt.

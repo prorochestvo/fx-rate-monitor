@@ -29,11 +29,27 @@ const (
 	// numeric threshold applies. "Today is forecast stormy" semantics, not "storm
 	// at this instant."
 	WeatherNotifyAlertThunderstorm WeatherNotifyKind = "alert_thunderstorm"
+
+	// WeatherNotifyAlertRain fires when the maximum precipitation probability within
+	// the fixed look-ahead window (weatherRainWindow = 6 h) meets or exceeds the
+	// configured threshold. ConditionValue stores the probability threshold as a
+	// decimal percent string (e.g. "70"). The window is a fixed constant, not
+	// user-configurable; a per-user window would encode as "70@6h" — that is why
+	// ConditionValue is TEXT rather than a single REAL column. Evaluated against
+	// Open-Meteo hourly data only; Gismeteo has no hourly block.
+	WeatherNotifyAlertRain WeatherNotifyKind = "rain_alert"
 )
 
 // alertMinusSign is the U+2212 MINUS SIGN used in alert reason strings to format
 // negative temperatures, matching the notification package's visual style.
 const alertMinusSign = "−"
+
+// weatherRainWindow is the fixed look-ahead window for the rain alert. Any hourly
+// precipitation_probability point in [now, now+weatherRainWindow) at or above the
+// configured threshold fires the alert. A per-user window is deferred; if needed
+// later, switch condition_value to a compound "70@6h" encoding — that is exactly
+// why the column is TEXT, not a single REAL threshold.
+const weatherRainWindow = 6 * time.Hour
 
 // WeatherUserCity records a user's per-city weather subscription.
 // NotifyHour is the local-time hour (0–23) at which the daily summary fires, in Timezone.
@@ -65,7 +81,8 @@ type WeatherUserCity struct {
 // Returns a non-nil error with a human-readable message on mismatch so the
 // caller can surface it as a user-facing validation failure.
 // morning_summary ignores ConditionValue; thunderstorm accepts any value (empty
-// is canonical); heat and frost require a parseable float64.
+// is canonical); heat and frost require a parseable float64; rain requires a
+// parseable float64 in [0, 100].
 func (c *WeatherUserCity) Validate() error {
 	switch c.NotifyKind {
 	case WeatherNotifyMorningSummary:
@@ -77,16 +94,26 @@ func (c *WeatherUserCity) Validate() error {
 		return nil
 	case WeatherNotifyAlertThunderstorm:
 		return nil
+	case WeatherNotifyAlertRain:
+		v, err := strconv.ParseFloat(c.ConditionValue, 64)
+		if err != nil {
+			return fmt.Errorf("condition_value must be a valid number for %s", string(c.NotifyKind))
+		}
+		if v < 0 || v > 100 {
+			return fmt.Errorf("condition_value for %s must be a probability percent in [0, 100]", string(c.NotifyKind))
+		}
+		return nil
 	default:
 		return fmt.Errorf("unknown notify_kind: %q", string(c.NotifyKind))
 	}
 }
 
-// AlertThreshold parses ConditionValue as a float64 threshold for alert_heat and
-// alert_frost. Returns an error for kinds that take no numeric threshold.
+// AlertThreshold parses ConditionValue as a float64 threshold for alert_heat,
+// alert_frost, and rain_alert. Returns an error for kinds that take no numeric
+// threshold (thunderstorm, morning_summary, unknown).
 func (c *WeatherUserCity) AlertThreshold() (float64, error) {
 	switch c.NotifyKind {
-	case WeatherNotifyAlertHeat, WeatherNotifyAlertFrost:
+	case WeatherNotifyAlertHeat, WeatherNotifyAlertFrost, WeatherNotifyAlertRain:
 		v, err := strconv.ParseFloat(c.ConditionValue, 64)
 		if err != nil {
 			return 0, fmt.Errorf("weather city %s: parse condition_value %q as threshold: %w", c.ID, c.ConditionValue, err)
@@ -104,6 +131,8 @@ func (c *WeatherUserCity) AlertThreshold() (float64, error) {
 //   - alert_frost: obs.TempMin  ≤ threshold (forecast daily low,  °C, Open-Meteo)
 //   - alert_thunderstorm: obs.WeatherCode ≥ 95 (WMO thunderstorm band; "today is
 //     forecast stormy," not instantaneous — the daily-dominant code is used)
+//   - rain_alert: dispatches to EvaluateRain with time.Now().UTC() as the window
+//     anchor. Use EvaluateRain directly in tests to supply a deterministic now.
 //
 // A nil required field means the condition cannot be evaluated: fired=false, err=nil.
 // Anti-spam (cooldown) is the caller's responsibility, not this pure evaluator.
@@ -134,9 +163,52 @@ func (c *WeatherUserCity) EvaluateAlert(obs WeatherObservation) (fired bool, rea
 		}
 		text, _ := WMOWeatherCode(*obs.WeatherCode)
 		return true, text, nil
+	case WeatherNotifyAlertRain:
+		return c.EvaluateRain(obs, time.Now().UTC())
 	default:
 		return false, "", fmt.Errorf("weather city %s: not an alert kind: %q", c.ID, c.NotifyKind)
 	}
+}
+
+// EvaluateRain scans obs.Hourly for hourly points in [now, now+weatherRainWindow)
+// and fires when the maximum precipitation probability in that window meets or
+// exceeds the configured threshold (ConditionValue percent). Returns fired=false
+// without error when:
+//   - obs.Hourly is empty or nil (no hourly data yet — the alert fires once data arrives)
+//   - no hourly points fall within the window
+//   - the max probability in the window is below the threshold
+//
+// Points with nil PrecipProb are skipped. Anti-spam (cooldown) is the caller's concern.
+//
+// Use this method directly in tests to supply a deterministic now; EvaluateAlert
+// dispatches here with time.Now().UTC() as the window anchor for production use.
+func (c *WeatherUserCity) EvaluateRain(obs WeatherObservation, now time.Time) (bool, string, error) {
+	threshold, err := c.AlertThreshold()
+	if err != nil {
+		return false, "", err
+	}
+
+	windowEnd := now.Add(weatherRainWindow)
+	maxProb := -1
+	for _, h := range obs.Hourly {
+		if h.Time.Before(now) || !h.Time.Before(windowEnd) {
+			continue
+		}
+		if h.PrecipProb == nil {
+			continue
+		}
+		if *h.PrecipProb > maxProb {
+			maxProb = *h.PrecipProb
+		}
+	}
+	if maxProb < 0 {
+		// No points in the look-ahead window (empty or all in the past / too far ahead).
+		return false, "", nil
+	}
+	if float64(maxProb) < threshold {
+		return false, "", nil
+	}
+	return true, fmt.Sprintf("Rain likely (%d%%) within 6h", maxProb), nil
 }
 
 // formatAlertTemp formats a temperature as "+31.6°C" or "−5.2°C" using the

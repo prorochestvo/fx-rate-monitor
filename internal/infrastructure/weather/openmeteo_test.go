@@ -103,6 +103,7 @@ func TestOpenMeteo_Forecast(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, "/v1/forecast", r.URL.Path)
 			assert.Equal(t, "auto", r.URL.Query().Get("timezone"))
+			assert.Equal(t, "2", r.URL.Query().Get("forecast_days"), "must request 2 forecast days so the 6h look-ahead window reaches past midnight")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(fixture)
 		}))
@@ -163,6 +164,51 @@ func TestOpenMeteo_Forecast(t *testing.T) {
 		assert.False(t, obs.CapturedAt.IsZero())
 		// ID is not set by the provider; the caller or repository mints it.
 		assert.Empty(t, obs.ID)
+
+		// The 1-day fixture has 24 hourly entries; the decoder must populate them.
+		assert.Len(t, obs.Hourly, 24, "24 hourly points expected from 1-day fixture")
+	})
+
+	t.Run("2-day fixture: daily[0] is the first day and ForecastDate reflects it", func(t *testing.T) {
+		t.Parallel()
+		fixture := loadFixture(t, "forecast_almaty_2day.json")
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(fixture)
+		}))
+		t.Cleanup(srv.Close)
+
+		om := newTestOpenMeteo(t, srv.URL, srv.URL)
+		obs, err := om.Forecast(t.Context(), 43.25249, 76.9115)
+		require.NoError(t, err)
+
+		// daily[0] in the fixture is "2026-06-30"; with forecast_days=2 the decoder must
+		// still use daily[0] (today) as ForecastDate — not daily[1] or any computed date.
+		assert.Equal(t, "2026-06-30", obs.ForecastDate, "ForecastDate must be daily[0], not daily[1]")
+
+		// 2 daily entries → 48 hourly points (24 per day).
+		assert.Len(t, obs.Hourly, 48, "48 hourly points expected from 2-day fixture")
+	})
+
+	t.Run("2-day fixture: first hourly point maps to correct UTC instant", func(t *testing.T) {
+		t.Parallel()
+		fixture := loadFixture(t, "forecast_almaty_2day.json")
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(fixture)
+		}))
+		t.Cleanup(srv.Close)
+
+		om := newTestOpenMeteo(t, srv.URL, srv.URL)
+		obs, err := om.Forecast(t.Context(), 43.25249, 76.9115)
+		require.NoError(t, err)
+		require.NotEmpty(t, obs.Hourly)
+
+		// Fixture first entry: "2026-06-30T00:00" in Asia/Almaty (UTC+5) = 2026-06-29T19:00 UTC.
+		almatyLoc, almatyErr := time.LoadLocation("Asia/Almaty")
+		require.NoError(t, almatyErr)
+		assert.Equal(t, "2026-06-30T00:00", obs.Hourly[0].Time.In(almatyLoc).Format("2006-01-02T15:04"),
+			"first hourly point must round-trip to 2026-06-30T00:00 in Asia/Almaty")
 	})
 
 	t.Run("empty daily array returns error not panic", func(t *testing.T) {

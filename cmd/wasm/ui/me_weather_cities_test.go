@@ -348,6 +348,42 @@ func TestRenderMeWeatherCities_AlertForm(t *testing.T) {
 		assert.Contains(t, html, "Thunderstorm alert")
 	})
 
+	t.Run("rain_alert row shows kind label with threshold percent", func(t *testing.T) {
+		t.Parallel()
+		html := ui.RenderMeWeatherCities(application.WeatherCitiesState{
+			Cities: []dto.WeatherCityRow{
+				baseCity,
+				{ID: "c2", LocationID: "loc1", DisplayName: "Almaty", Timezone: "Asia/Almaty",
+					NotifyKind: "rain_alert", ConditionValue: "70"},
+			},
+		})
+		assert.Contains(t, html, "Rain alert ≥ 70% within 6h")
+	})
+
+	t.Run("rain_alert form shows value input (numeric threshold visible)", func(t *testing.T) {
+		t.Parallel()
+		html := ui.RenderMeWeatherCities(application.WeatherCitiesState{
+			Cities:              []dto.WeatherCityRow{baseCity},
+			AlertFormLocationID: "loc1",
+			AlertFormKind:       "rain_alert",
+			AlertFormValue:      "70",
+		})
+		assert.Contains(t, html, "weather-alert-form")
+		assert.Contains(t, html, "weather-alert-value")
+		assert.Contains(t, html, `value="70"`)
+	})
+
+	t.Run("rain_alert option appears in kind selector", func(t *testing.T) {
+		t.Parallel()
+		html := ui.RenderMeWeatherCities(application.WeatherCitiesState{
+			Cities:              []dto.WeatherCityRow{baseCity},
+			AlertFormLocationID: "loc1",
+			AlertFormKind:       "alert_heat",
+		})
+		assert.Contains(t, html, `value="rain_alert"`)
+		assert.Contains(t, html, "Rain alert (%)")
+	})
+
 	t.Run("different city gets Add alert button when another city has form open", func(t *testing.T) {
 		t.Parallel()
 		city2 := dto.WeatherCityRow{

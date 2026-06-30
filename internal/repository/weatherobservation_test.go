@@ -116,6 +116,64 @@ func TestWeatherObservationRepository_RetainWeatherObservation(t *testing.T) {
 		assert.InDelta(t, prec, *got.Precip, 1e-6)
 	})
 
+	t.Run("non-nil Hourly round-trips via hourly_json", func(t *testing.T) {
+		t.Parallel()
+		db := stubSQLiteDB(t)
+		repo, err := NewWeatherObservationRepository(db)
+		require.NoError(t, err)
+
+		prob := 75
+		temp := 28.5
+		ts1 := time.Date(2026, 6, 30, 7, 0, 0, 0, time.UTC)
+		ts2 := time.Date(2026, 6, 30, 8, 0, 0, 0, time.UTC)
+
+		obs := &domain.WeatherObservation{
+			LocationID:   "loc-hourly",
+			Provider:     "open-meteo",
+			CapturedAt:   time.Now().UTC().Truncate(time.Second),
+			ForecastDate: "2026-06-30",
+			Hourly: []domain.WeatherHourlyPoint{
+				{Time: ts1, PrecipProb: &prob, Temp: &temp},
+				{Time: ts2, PrecipProb: nil},
+			},
+		}
+		require.NoError(t, repo.RetainWeatherObservation(t.Context(), obs))
+
+		got, err := repo.ObtainLatestObservation(t.Context(), "loc-hourly", "open-meteo")
+		require.NoError(t, err)
+		require.Len(t, got.Hourly, 2)
+
+		assert.Equal(t, ts1.UTC(), got.Hourly[0].Time.UTC())
+		require.NotNil(t, got.Hourly[0].PrecipProb)
+		assert.Equal(t, 75, *got.Hourly[0].PrecipProb)
+		require.NotNil(t, got.Hourly[0].Temp)
+		assert.InDelta(t, 28.5, *got.Hourly[0].Temp, 1e-4)
+
+		assert.Equal(t, ts2.UTC(), got.Hourly[1].Time.UTC())
+		assert.Nil(t, got.Hourly[1].PrecipProb, "nil PrecipProb must survive the round-trip")
+	})
+
+	t.Run("nil Hourly stores NULL and reads back empty non-nil slice", func(t *testing.T) {
+		t.Parallel()
+		db := stubSQLiteDB(t)
+		repo, err := NewWeatherObservationRepository(db)
+		require.NoError(t, err)
+
+		obs := &domain.WeatherObservation{
+			LocationID:   "loc-no-hourly",
+			Provider:     "open-meteo",
+			CapturedAt:   time.Now().UTC().Truncate(time.Second),
+			ForecastDate: "2026-06-30",
+			Hourly:       nil,
+		}
+		require.NoError(t, repo.RetainWeatherObservation(t.Context(), obs))
+
+		got, err := repo.ObtainLatestObservation(t.Context(), "loc-no-hourly", "open-meteo")
+		require.NoError(t, err)
+		assert.NotNil(t, got.Hourly, "Hourly must be non-nil so callers can use len() without a nil guard")
+		assert.Empty(t, got.Hourly)
+	})
+
 	t.Run("nil record returns error", func(t *testing.T) {
 		t.Parallel()
 		db := stubSQLiteDB(t)
