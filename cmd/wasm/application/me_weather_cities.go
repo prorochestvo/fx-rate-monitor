@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/seilbekskindirov/beacon/cmd/wasm/apiclient"
@@ -36,6 +37,16 @@ type WeatherCitiesState struct {
 	Selected *dto.WeatherCitySearchItem
 	// SaveError is the most recent non-nil POST error; nil on success.
 	SaveError error
+
+	// AlertFormLocationID is the location_id of the city for which an alert is being
+	// added. Empty when no alert form is open.
+	AlertFormLocationID string
+	// AlertFormKind is the notify_kind selected in the open alert form.
+	AlertFormKind string
+	// AlertFormValue is the condition_value typed into the open alert form.
+	AlertFormValue string
+	// AlertSaveError is the most recent non-nil error from SavePendingAlert.
+	AlertSaveError error
 }
 
 // MeWeatherCitiesPage is the page controller for the city weather subscription
@@ -179,4 +190,77 @@ func (p *MeWeatherCitiesPage) ClearSearch() {
 	p.state.SearchError = nil
 	p.state.Selected = nil
 	p.state.SaveError = nil
+}
+
+// OpenAlertForm opens the pending-alert form for the city identified by locationID.
+// The default kind is "alert_heat"; the threshold value is cleared.
+func (p *MeWeatherCitiesPage) OpenAlertForm(locationID string) {
+	p.state.AlertFormLocationID = locationID
+	p.state.AlertFormKind = "alert_heat"
+	p.state.AlertFormValue = ""
+	p.state.AlertSaveError = nil
+}
+
+// SetAlertFormKind updates the pending alert kind in the open form.
+func (p *MeWeatherCitiesPage) SetAlertFormKind(kind string) {
+	p.state.AlertFormKind = kind
+}
+
+// SetAlertFormValue updates the pending threshold value in the open form.
+func (p *MeWeatherCitiesPage) SetAlertFormValue(value string) {
+	p.state.AlertFormValue = value
+}
+
+// CloseAlertForm clears the pending alert form without saving.
+func (p *MeWeatherCitiesPage) CloseAlertForm() {
+	p.state.AlertFormLocationID = ""
+	p.state.AlertFormKind = ""
+	p.state.AlertFormValue = ""
+	p.state.AlertSaveError = nil
+}
+
+// SavePendingAlert POSTs the pending alert form as a new alert subscription for
+// the open city. It reloads the city list on success and closes the form.
+// A server validation error (bad kind/value) is stored in AlertSaveError and
+// returned so the UI can show the error without dismissing the form.
+func (p *MeWeatherCitiesPage) SavePendingAlert(ctx context.Context) error {
+	if p.state.AlertFormLocationID == "" {
+		return nil
+	}
+
+	// Find the first city row for this locationID to copy geographic fields.
+	var base *dto.WeatherCityRow
+	for i := range p.state.Cities {
+		if p.state.Cities[i].LocationID == p.state.AlertFormLocationID {
+			cp := p.state.Cities[i]
+			base = &cp
+			break
+		}
+	}
+	if base == nil {
+		return fmt.Errorf("city %s not found in loaded list", p.state.AlertFormLocationID)
+	}
+
+	body := dto.WeatherCityCreateRequest{
+		LocationID:     base.LocationID,
+		DisplayName:    base.DisplayName,
+		Latitude:       base.Latitude,
+		Longitude:      base.Longitude,
+		Timezone:       base.Timezone,
+		Country:        base.Country,
+		Admin1:         base.Admin1,
+		NotifyKind:     p.state.AlertFormKind,
+		ConditionValue: p.state.AlertFormValue,
+	}
+
+	if _, err := p.client.MeWeatherCityCreate(ctx, p.initData, body); err != nil {
+		if strings.Contains(err.Error(), AuthFailureSentinel) {
+			p.state.AuthFailure = true
+		}
+		p.state.AlertSaveError = err
+		return err
+	}
+
+	p.CloseAlertForm()
+	return p.LoadCities(ctx)
 }

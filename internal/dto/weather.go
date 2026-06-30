@@ -25,6 +25,11 @@ type WeatherCitySearchResponse struct {
 // The client copies the resolved fields from the chosen search result verbatim.
 // NotifyHour is the local hour (0–23) for the daily morning summary; when
 // omitted the server applies its default (7 = 07:00 local time).
+//
+// To create a threshold alert, set NotifyKind to one of: "alert_heat",
+// "alert_frost", "alert_thunderstorm". When NotifyKind is empty or omitted the
+// server defaults to "morning_summary". ConditionValue is the numeric threshold
+// in °C for heat/frost (e.g. "35"); it is empty for thunderstorm and morning_summary.
 type WeatherCityCreateRequest struct {
 	LocationID  string  `json:"location_id"`
 	DisplayName string  `json:"display_name"`
@@ -35,6 +40,14 @@ type WeatherCityCreateRequest struct {
 	Admin1      string  `json:"admin1"`
 	// NotifyHour is a pointer so the client can omit the field to use the default.
 	NotifyHour *int `json:"notify_hour,omitempty"`
+	// NotifyKind identifies the subscription type. Omit or leave empty for the
+	// default "morning_summary". Alert kinds: "alert_heat", "alert_frost",
+	// "alert_thunderstorm".
+	NotifyKind string `json:"notify_kind,omitempty"`
+	// ConditionValue is the threshold for alert kinds. Required for alert_heat and
+	// alert_frost (a decimal number in °C); empty for alert_thunderstorm and
+	// morning_summary.
+	ConditionValue string `json:"condition_value,omitempty"`
 }
 
 // WeatherCityCreateResponse is the JSON envelope for a successful
@@ -44,6 +57,9 @@ type WeatherCityCreateResponse struct {
 }
 
 // WeatherCityRow is one row in the caller's saved city subscription list.
+// Each (city, notify_kind) pair is its own row: a city with a morning_summary
+// subscription and a heat alert appears as two rows sharing the same location_id.
+// The client should group by location_id for display.
 type WeatherCityRow struct {
 	ID          string  `json:"id"`
 	LocationID  string  `json:"location_id"`
@@ -55,6 +71,12 @@ type WeatherCityRow struct {
 	Admin1      string  `json:"admin1"`
 	// NotifyHour is the local hour (0–23) at which the daily morning summary fires.
 	NotifyHour int `json:"notify_hour"`
+	// NotifyKind is the subscription type: "morning_summary", "alert_heat",
+	// "alert_frost", or "alert_thunderstorm".
+	NotifyKind string `json:"notify_kind"`
+	// ConditionValue is the alert threshold for heat/frost kinds (decimal °C string).
+	// Empty for morning_summary and alert_thunderstorm.
+	ConditionValue string `json:"condition_value,omitempty"`
 }
 
 // WeatherCitiesResponse is the JSON envelope for GET /api/me/weather/cities.

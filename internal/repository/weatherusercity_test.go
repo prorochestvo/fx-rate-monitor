@@ -127,6 +127,105 @@ func TestWeatherUserCityRepository_RetainWeatherUserCity(t *testing.T) {
 		assert.Equal(t, gisID, *got.GismeteoCityID)
 	})
 
+	t.Run("condition_value round-trips for alert_heat", func(t *testing.T) {
+		t.Parallel()
+		db := stubSQLiteDB(t)
+		repo, err := NewWeatherUserCityRepository(db)
+		require.NoError(t, err)
+
+		city := &domain.WeatherUserCity{
+			UserType:       domain.UserTypeTelegram,
+			UserID:         "u-heat",
+			LocationID:     "loc-heat",
+			Timezone:       "UTC",
+			NotifyKind:     domain.WeatherNotifyAlertHeat,
+			ConditionValue: "35.5",
+		}
+		require.NoError(t, repo.RetainWeatherUserCity(t.Context(), city))
+		require.NotEmpty(t, city.ID)
+
+		got, err := repo.ObtainWeatherUserCityByID(t.Context(), city.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "35.5", got.ConditionValue)
+		assert.Equal(t, domain.WeatherNotifyAlertHeat, got.NotifyKind)
+	})
+
+	t.Run("condition_value round-trips for alert_frost with negative threshold", func(t *testing.T) {
+		t.Parallel()
+		db := stubSQLiteDB(t)
+		repo, err := NewWeatherUserCityRepository(db)
+		require.NoError(t, err)
+
+		city := &domain.WeatherUserCity{
+			UserType:       domain.UserTypeTelegram,
+			UserID:         "u-frost",
+			LocationID:     "loc-frost",
+			Timezone:       "UTC",
+			NotifyKind:     domain.WeatherNotifyAlertFrost,
+			ConditionValue: "-5",
+		}
+		require.NoError(t, repo.RetainWeatherUserCity(t.Context(), city))
+
+		got, err := repo.ObtainWeatherUserCityByID(t.Context(), city.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "-5", got.ConditionValue)
+		assert.Equal(t, domain.WeatherNotifyAlertFrost, got.NotifyKind)
+	})
+
+	t.Run("condition_value round-trips as empty for alert_thunderstorm", func(t *testing.T) {
+		t.Parallel()
+		db := stubSQLiteDB(t)
+		repo, err := NewWeatherUserCityRepository(db)
+		require.NoError(t, err)
+
+		city := &domain.WeatherUserCity{
+			UserType:       domain.UserTypeTelegram,
+			UserID:         "u-storm",
+			LocationID:     "loc-storm",
+			Timezone:       "UTC",
+			NotifyKind:     domain.WeatherNotifyAlertThunderstorm,
+			ConditionValue: "",
+		}
+		require.NoError(t, repo.RetainWeatherUserCity(t.Context(), city))
+
+		got, err := repo.ObtainWeatherUserCityByID(t.Context(), city.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "", got.ConditionValue)
+		assert.Equal(t, domain.WeatherNotifyAlertThunderstorm, got.NotifyKind)
+	})
+
+	t.Run("same user, same location, different notify_kind creates separate rows", func(t *testing.T) {
+		t.Parallel()
+		db := stubSQLiteDB(t)
+		repo, err := NewWeatherUserCityRepository(db)
+		require.NoError(t, err)
+
+		base := domain.WeatherUserCity{
+			UserType:   domain.UserTypeTelegram,
+			UserID:     "u-multi",
+			LocationID: "loc-multi",
+			Timezone:   "UTC",
+		}
+
+		morning := base
+		morning.NotifyKind = domain.WeatherNotifyMorningSummary
+		require.NoError(t, repo.RetainWeatherUserCity(t.Context(), &morning))
+
+		heat := base
+		heat.NotifyKind = domain.WeatherNotifyAlertHeat
+		heat.ConditionValue = "36"
+		require.NoError(t, repo.RetainWeatherUserCity(t.Context(), &heat))
+
+		frost := base
+		frost.NotifyKind = domain.WeatherNotifyAlertFrost
+		frost.ConditionValue = "0"
+		require.NoError(t, repo.RetainWeatherUserCity(t.Context(), &frost))
+
+		all, err := repo.ObtainWeatherUserCitiesByUserID(t.Context(), domain.UserTypeTelegram, "u-multi")
+		require.NoError(t, err)
+		assert.Len(t, all, 3, "one row per notify_kind for the same (user, location) pair")
+	})
+
 	t.Run("nil record returns error", func(t *testing.T) {
 		t.Parallel()
 		db := stubSQLiteDB(t)

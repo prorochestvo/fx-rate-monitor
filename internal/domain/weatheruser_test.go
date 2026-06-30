@@ -9,6 +9,240 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestWeatherUserCity_Validate(t *testing.T) {
+	t.Parallel()
+
+	t.Run("morning_summary ignores condition_value", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyMorningSummary, ConditionValue: "ignored"}
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("alert_heat with valid numeric value passes", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertHeat, ConditionValue: "35"}
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("alert_heat with decimal value passes", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertHeat, ConditionValue: "35.5"}
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("alert_heat with non-numeric value returns error", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertHeat, ConditionValue: "hot"}
+		err := c.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "valid number")
+	})
+
+	t.Run("alert_heat with empty value returns error", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertHeat, ConditionValue: ""}
+		err := c.Validate()
+		require.Error(t, err)
+	})
+
+	t.Run("alert_frost with valid numeric value passes", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertFrost, ConditionValue: "0"}
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("alert_frost with negative value passes (frost below zero is valid)", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertFrost, ConditionValue: "-5"}
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("alert_frost with non-numeric value returns error", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertFrost, ConditionValue: "cold"}
+		err := c.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "valid number")
+	})
+
+	t.Run("alert_thunderstorm with empty value passes", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertThunderstorm, ConditionValue: ""}
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("alert_thunderstorm with any value passes (value is ignored)", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: WeatherNotifyAlertThunderstorm, ConditionValue: "whatever"}
+		require.NoError(t, c.Validate())
+	})
+
+	t.Run("unknown kind returns error", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{NotifyKind: "unknown_kind", ConditionValue: ""}
+		err := c.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown notify_kind")
+	})
+}
+
+func TestWeatherUserCity_EvaluateAlert(t *testing.T) {
+	t.Parallel()
+
+	ptr64 := func(v float64) *float64 { return &v }
+	ptrint := func(v int) *int { return &v }
+
+	t.Run("heat fires when TempMax equals threshold", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: WeatherNotifyAlertHeat, ConditionValue: "35"}
+		obs := WeatherObservation{TempMax: ptr64(35.0)}
+		fired, reason, err := c.EvaluateAlert(obs)
+		require.NoError(t, err)
+		assert.True(t, fired)
+		assert.Contains(t, reason, "≥")
+		assert.Contains(t, reason, "+35.0°C")
+	})
+
+	t.Run("heat fires when TempMax exceeds threshold", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: WeatherNotifyAlertHeat, ConditionValue: "35"}
+		obs := WeatherObservation{TempMax: ptr64(36.5)}
+		fired, reason, err := c.EvaluateAlert(obs)
+		require.NoError(t, err)
+		assert.True(t, fired)
+		assert.Contains(t, reason, "+36.5°C")
+	})
+
+	t.Run("heat does not fire when TempMax below threshold", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: WeatherNotifyAlertHeat, ConditionValue: "35"}
+		obs := WeatherObservation{TempMax: ptr64(34.9)}
+		fired, _, err := c.EvaluateAlert(obs)
+		require.NoError(t, err)
+		assert.False(t, fired)
+	})
+
+	t.Run("heat does not fire when TempMax is nil", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: WeatherNotifyAlertHeat, ConditionValue: "35"}
+		obs := WeatherObservation{TempMax: nil}
+		fired, _, err := c.EvaluateAlert(obs)
+		require.NoError(t, err)
+		assert.False(t, fired)
+	})
+
+	t.Run("heat returns error on bad condition_value", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: WeatherNotifyAlertHeat, ConditionValue: "notanumber"}
+		obs := WeatherObservation{TempMax: ptr64(40.0)}
+		_, _, err := c.EvaluateAlert(obs)
+		require.Error(t, err)
+	})
+
+	t.Run("frost fires when TempMin equals threshold", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: WeatherNotifyAlertFrost, ConditionValue: "0"}
+		obs := WeatherObservation{TempMin: ptr64(0.0)}
+		fired, reason, err := c.EvaluateAlert(obs)
+		require.NoError(t, err)
+		assert.True(t, fired)
+		assert.Contains(t, reason, "≤")
+		assert.Contains(t, reason, "+0.0°C")
+	})
+
+	t.Run("frost fires when TempMin below threshold", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: WeatherNotifyAlertFrost, ConditionValue: "0"}
+		obs := WeatherObservation{TempMin: ptr64(-7.2)}
+		fired, reason, err := c.EvaluateAlert(obs)
+		require.NoError(t, err)
+		assert.True(t, fired)
+		// Must use U+2212 minus sign for negative temperature
+		assert.Contains(t, reason, "−7.2°C")
+		assert.NotContains(t, reason, "-7.2°C")
+	})
+
+	t.Run("frost does not fire when TempMin above threshold", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: WeatherNotifyAlertFrost, ConditionValue: "0"}
+		obs := WeatherObservation{TempMin: ptr64(0.1)}
+		fired, _, err := c.EvaluateAlert(obs)
+		require.NoError(t, err)
+		assert.False(t, fired)
+	})
+
+	t.Run("frost does not fire when TempMin is nil", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: WeatherNotifyAlertFrost, ConditionValue: "0"}
+		obs := WeatherObservation{TempMin: nil}
+		fired, _, err := c.EvaluateAlert(obs)
+		require.NoError(t, err)
+		assert.False(t, fired)
+	})
+
+	t.Run("thunderstorm fires for code 95", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: WeatherNotifyAlertThunderstorm}
+		obs := WeatherObservation{WeatherCode: ptrint(95)}
+		fired, reason, err := c.EvaluateAlert(obs)
+		require.NoError(t, err)
+		assert.True(t, fired)
+		assert.Contains(t, reason, "Thunderstorm")
+	})
+
+	t.Run("thunderstorm fires for code 96", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: WeatherNotifyAlertThunderstorm}
+		obs := WeatherObservation{WeatherCode: ptrint(96)}
+		fired, _, err := c.EvaluateAlert(obs)
+		require.NoError(t, err)
+		assert.True(t, fired)
+	})
+
+	t.Run("thunderstorm fires for code 99", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: WeatherNotifyAlertThunderstorm}
+		obs := WeatherObservation{WeatherCode: ptrint(99)}
+		fired, _, err := c.EvaluateAlert(obs)
+		require.NoError(t, err)
+		assert.True(t, fired)
+	})
+
+	t.Run("thunderstorm does not fire for code 3 (overcast)", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: WeatherNotifyAlertThunderstorm}
+		obs := WeatherObservation{WeatherCode: ptrint(3)}
+		fired, _, err := c.EvaluateAlert(obs)
+		require.NoError(t, err)
+		assert.False(t, fired)
+	})
+
+	t.Run("thunderstorm does not fire when WeatherCode is nil", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: WeatherNotifyAlertThunderstorm}
+		obs := WeatherObservation{WeatherCode: nil}
+		fired, _, err := c.EvaluateAlert(obs)
+		require.NoError(t, err)
+		assert.False(t, fired)
+	})
+
+	t.Run("morning_summary kind returns error", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: WeatherNotifyMorningSummary}
+		_, _, err := c.EvaluateAlert(WeatherObservation{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not an alert kind")
+	})
+
+	t.Run("unknown kind returns error", func(t *testing.T) {
+		t.Parallel()
+		c := &WeatherUserCity{ID: "c1", NotifyKind: "completely_unknown"}
+		_, _, err := c.EvaluateAlert(WeatherObservation{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not an alert kind")
+	})
+}
+
 func TestWeatherUserCity_IsMorningDue(t *testing.T) {
 	t.Parallel()
 

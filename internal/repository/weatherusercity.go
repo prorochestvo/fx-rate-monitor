@@ -88,10 +88,11 @@ func (r *WeatherUserCityRepository) RetainWeatherUserCity(ctx context.Context, r
 		weatherUserCityGismeteoCityIDFieldName + ", " +
 		weatherUserCityNotifyKindFieldName + ", " +
 		weatherUserCityNotifyHourFieldName + ", " +
+		weatherUserCityConditionValueFieldName + ", " +
 		weatherUserCityLastNotifiedAtFieldName + ", " +
 		weatherUserCityUpdatedAtFieldName + ", " +
 		weatherUserCityCreatedAtFieldName +
-		") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+		") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
 		"ON CONFLICT(" +
 		weatherUserCityUserTypeFieldName + ", " +
 		weatherUserCityUserIDFieldName + ", " +
@@ -106,6 +107,7 @@ func (r *WeatherUserCityRepository) RetainWeatherUserCity(ctx context.Context, r
 		weatherUserCityAdmin1FieldName + " = excluded." + weatherUserCityAdmin1FieldName + ", " +
 		weatherUserCityGismeteoCityIDFieldName + " = excluded." + weatherUserCityGismeteoCityIDFieldName + ", " +
 		weatherUserCityNotifyHourFieldName + " = excluded." + weatherUserCityNotifyHourFieldName + ", " +
+		weatherUserCityConditionValueFieldName + " = excluded." + weatherUserCityConditionValueFieldName + ", " +
 		weatherUserCityUpdatedAtFieldName + " = excluded." + weatherUserCityUpdatedAtFieldName +
 		// RETURNING ensures record.ID reflects the actually-stored id: the original on
 		// conflict (id is not in the SET clause so it is never overwritten) and the
@@ -126,6 +128,7 @@ func (r *WeatherUserCityRepository) RetainWeatherUserCity(ctx context.Context, r
 		record.GismeteoCityID,
 		record.NotifyKind,
 		record.NotifyHour,
+		record.ConditionValue,
 		lastNotifiedAt,
 		record.UpdatedAt.Format(time.RFC3339),
 		record.CreatedAt.Format(time.RFC3339),
@@ -292,6 +295,7 @@ const (
 	weatherUserCityGismeteoCityIDFieldName = "gismeteo_city_id"
 	weatherUserCityNotifyKindFieldName     = "notify_kind"
 	weatherUserCityNotifyHourFieldName     = "notify_hour"
+	weatherUserCityConditionValueFieldName = "condition_value"
 	weatherUserCityLastNotifiedAtFieldName = "last_notified_at"
 	weatherUserCityUpdatedAtFieldName      = "updated_at"
 	weatherUserCityCreatedAtFieldName      = "created_at"
@@ -310,6 +314,7 @@ const (
 		weatherUserCityGismeteoCityIDFieldName + ", " +
 		weatherUserCityNotifyKindFieldName + ", " +
 		weatherUserCityNotifyHourFieldName + ", " +
+		weatherUserCityConditionValueFieldName + ", " +
 		weatherUserCityLastNotifiedAtFieldName + ", " +
 		weatherUserCityUpdatedAtFieldName + ", " +
 		weatherUserCityCreatedAtFieldName +
@@ -363,6 +368,7 @@ func weatherUserCityScan(s weatherUserCityScanner) (domain.WeatherUserCity, erro
 		&item.GismeteoCityID,
 		&item.NotifyKind,
 		&item.NotifyHour,
+		&item.ConditionValue,
 		&lastNotifiedAt,
 		&updatedAt,
 		&createdAt,

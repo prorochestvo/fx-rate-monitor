@@ -578,6 +578,146 @@ func TestHandler_CreateMeWeatherCity(t *testing.T) {
 		require.Len(t, cityRepo.retained, 1)
 		assert.Equal(t, 0, cityRepo.retained[0].NotifyHour)
 	})
+
+	t.Run("alert_heat with valid condition_value returns 201", func(t *testing.T) {
+		t.Parallel()
+		cityRepo := &mockWeatherCityRepo{}
+		h := newWeatherHandler(t, cityRepo, &mockWeatherGeocoder{})
+		h.validateInitData = alwaysValidateInitData(callerUserID)
+
+		b := validBody
+		b.NotifyKind = "alert_heat"
+		b.ConditionValue = "35"
+		req := httptest.NewRequest(http.MethodPost, "/api/me/weather/cities", bodyJSON(b))
+		rr := httptest.NewRecorder()
+		h.CreateMeWeatherCity(rr, req)
+
+		require.Equal(t, http.StatusCreated, rr.Code)
+		require.Len(t, cityRepo.retained, 1)
+		assert.Equal(t, domain.WeatherNotifyAlertHeat, cityRepo.retained[0].NotifyKind)
+		assert.Equal(t, "35", cityRepo.retained[0].ConditionValue)
+	})
+
+	t.Run("alert_frost with valid negative condition_value returns 201", func(t *testing.T) {
+		t.Parallel()
+		cityRepo := &mockWeatherCityRepo{}
+		h := newWeatherHandler(t, cityRepo, &mockWeatherGeocoder{})
+		h.validateInitData = alwaysValidateInitData(callerUserID)
+
+		b := validBody
+		b.NotifyKind = "alert_frost"
+		b.ConditionValue = "-5"
+		req := httptest.NewRequest(http.MethodPost, "/api/me/weather/cities", bodyJSON(b))
+		rr := httptest.NewRecorder()
+		h.CreateMeWeatherCity(rr, req)
+
+		require.Equal(t, http.StatusCreated, rr.Code)
+		require.Len(t, cityRepo.retained, 1)
+		assert.Equal(t, domain.WeatherNotifyAlertFrost, cityRepo.retained[0].NotifyKind)
+		assert.Equal(t, "-5", cityRepo.retained[0].ConditionValue)
+	})
+
+	t.Run("alert_thunderstorm with no condition_value returns 201", func(t *testing.T) {
+		t.Parallel()
+		cityRepo := &mockWeatherCityRepo{}
+		h := newWeatherHandler(t, cityRepo, &mockWeatherGeocoder{})
+		h.validateInitData = alwaysValidateInitData(callerUserID)
+
+		b := validBody
+		b.NotifyKind = "alert_thunderstorm"
+		// ConditionValue intentionally omitted (empty)
+		req := httptest.NewRequest(http.MethodPost, "/api/me/weather/cities", bodyJSON(b))
+		rr := httptest.NewRecorder()
+		h.CreateMeWeatherCity(rr, req)
+
+		require.Equal(t, http.StatusCreated, rr.Code)
+		require.Len(t, cityRepo.retained, 1)
+		assert.Equal(t, domain.WeatherNotifyAlertThunderstorm, cityRepo.retained[0].NotifyKind)
+		assert.Equal(t, "", cityRepo.retained[0].ConditionValue)
+	})
+
+	t.Run("unknown notify_kind returns 400 PublicError", func(t *testing.T) {
+		t.Parallel()
+		cityRepo := &mockWeatherCityRepo{}
+		h := newWeatherHandler(t, cityRepo, &mockWeatherGeocoder{})
+		h.validateInitData = alwaysValidateInitData(callerUserID)
+
+		b := validBody
+		b.NotifyKind = "alert_rainbow"
+		b.ConditionValue = "42"
+		req := httptest.NewRequest(http.MethodPost, "/api/me/weather/cities", bodyJSON(b))
+		rr := httptest.NewRecorder()
+		h.CreateMeWeatherCity(rr, req)
+
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+		assert.Contains(t, rr.Body.String(), "unknown notify_kind")
+		// Must be a PublicError payload, not a generic error.
+		assert.Contains(t, rr.Body.String(), `"error"`)
+	})
+
+	t.Run("alert_heat with non-numeric condition_value returns 400 PublicError", func(t *testing.T) {
+		t.Parallel()
+		cityRepo := &mockWeatherCityRepo{}
+		h := newWeatherHandler(t, cityRepo, &mockWeatherGeocoder{})
+		h.validateInitData = alwaysValidateInitData(callerUserID)
+
+		b := validBody
+		b.NotifyKind = "alert_heat"
+		b.ConditionValue = "hot"
+		req := httptest.NewRequest(http.MethodPost, "/api/me/weather/cities", bodyJSON(b))
+		rr := httptest.NewRecorder()
+		h.CreateMeWeatherCity(rr, req)
+
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+		assert.Contains(t, rr.Body.String(), "valid number")
+	})
+
+	t.Run("alert_heat with empty condition_value returns 400 PublicError", func(t *testing.T) {
+		t.Parallel()
+		cityRepo := &mockWeatherCityRepo{}
+		h := newWeatherHandler(t, cityRepo, &mockWeatherGeocoder{})
+		h.validateInitData = alwaysValidateInitData(callerUserID)
+
+		b := validBody
+		b.NotifyKind = "alert_heat"
+		b.ConditionValue = ""
+		req := httptest.NewRequest(http.MethodPost, "/api/me/weather/cities", bodyJSON(b))
+		rr := httptest.NewRecorder()
+		h.CreateMeWeatherCity(rr, req)
+
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+	})
+
+	t.Run("list returns notify_kind and condition_value for alert rows", func(t *testing.T) {
+		t.Parallel()
+		cityRepo := &mockWeatherCityRepo{
+			byUser: []domain.WeatherUserCity{
+				{
+					ID:             "city-id-1",
+					UserType:       domain.UserTypeTelegram,
+					UserID:         callerIDStr,
+					LocationID:     "loc1",
+					DisplayName:    "Almaty",
+					Timezone:       "UTC",
+					NotifyKind:     domain.WeatherNotifyAlertHeat,
+					ConditionValue: "35",
+				},
+			},
+		}
+		h := newWeatherHandler(t, cityRepo, &mockWeatherGeocoder{})
+		h.validateInitData = alwaysValidateInitData(callerUserID)
+
+		req := httptest.NewRequest(http.MethodGet, "/api/me/weather/cities", nil)
+		rr := httptest.NewRecorder()
+		h.ListMeWeatherCities(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		var resp dto.WeatherCitiesResponse
+		require.NoError(t, json.NewDecoder(rr.Body).Decode(&resp))
+		require.Len(t, resp.Items, 1)
+		assert.Equal(t, "alert_heat", resp.Items[0].NotifyKind)
+		assert.Equal(t, "35", resp.Items[0].ConditionValue)
+	})
 }
 
 func TestHandler_DeleteMeWeatherCity(t *testing.T) {

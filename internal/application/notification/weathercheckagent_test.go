@@ -390,17 +390,239 @@ func TestWeatherCheckAgent_Run(t *testing.T) {
 		assert.Contains(t, logBuf.String(), "gismeteo",
 			"error must be logged for observability")
 	})
+
+	// Alert phase subtests.
+
+	t.Run("alert_heat: condition met with no prior cooldown queues event and advances", func(t *testing.T) {
+		t.Parallel()
+		tempMax := 38.0 // >= 35 threshold
+		alertCity := domain.WeatherUserCity{
+			ID:             "alert-c1",
+			UserType:       domain.UserTypeTelegram,
+			UserID:         "user-alert",
+			LocationID:     "loc-alert",
+			DisplayName:    "Hot City",
+			Timezone:       "UTC",
+			NotifyKind:     domain.WeatherNotifyAlertHeat,
+			ConditionValue: "35",
+			LastNotifiedAt: time.Time{}, // never alerted
+		}
+		alertObs := &domain.WeatherObservation{
+			Provider:   domain.ProviderOpenMeteo,
+			LocationID: "loc-alert",
+			TempMax:    &tempMax,
+		}
+		cityRepo := &mockWeatherCheckCityRepo{
+			citiesByKind: map[domain.WeatherNotifyKind][]domain.WeatherUserCity{
+				domain.WeatherNotifyAlertHeat: {alertCity},
+			},
+		}
+		obsRepo := &mockWeatherCheckObsRepo{obsByProvider: map[string]*domain.WeatherObservation{
+			domain.ProviderOpenMeteo: alertObs,
+		}}
+		eventRepo := &mockCheckEventRepository{}
+
+		a := &WeatherCheckAgent{cityRepo: cityRepo, obsRepo: obsRepo, eventRepo: eventRepo, logger: io.Discard}
+		require.NoError(t, a.Run(t.Context()))
+		require.Len(t, eventRepo.retained, 1, "one heat alert event must be queued")
+		assert.Contains(t, eventRepo.retained[0].Message, "Heat alert")
+		require.Len(t, cityRepo.advanced, 1, "last_notified_at must be advanced after queuing")
+		assert.Equal(t, "alert-c1", cityRepo.advanced[0])
+	})
+
+	t.Run("alert_heat: within cooldown window suppresses re-alert", func(t *testing.T) {
+		t.Parallel()
+		tempMax := 40.0 // still above threshold
+		alertCity := domain.WeatherUserCity{
+			ID:             "alert-c2",
+			UserType:       domain.UserTypeTelegram,
+			UserID:         "user-alert",
+			LocationID:     "loc-alert",
+			DisplayName:    "Hot City",
+			Timezone:       "UTC",
+			NotifyKind:     domain.WeatherNotifyAlertHeat,
+			ConditionValue: "35",
+			LastNotifiedAt: time.Now().UTC().Add(-1 * time.Hour), // alerted 1 h ago (< 20 h cooldown)
+		}
+		alertObs := &domain.WeatherObservation{
+			Provider:   domain.ProviderOpenMeteo,
+			LocationID: "loc-alert",
+			TempMax:    &tempMax,
+		}
+		cityRepo := &mockWeatherCheckCityRepo{
+			citiesByKind: map[domain.WeatherNotifyKind][]domain.WeatherUserCity{
+				domain.WeatherNotifyAlertHeat: {alertCity},
+			},
+		}
+		obsRepo := &mockWeatherCheckObsRepo{obsByProvider: map[string]*domain.WeatherObservation{
+			domain.ProviderOpenMeteo: alertObs,
+		}}
+		eventRepo := &mockCheckEventRepository{}
+
+		a := &WeatherCheckAgent{cityRepo: cityRepo, obsRepo: obsRepo, eventRepo: eventRepo, logger: io.Discard}
+		require.NoError(t, a.Run(t.Context()))
+		require.Empty(t, eventRepo.retained, "alert within cooldown must be suppressed")
+		require.Empty(t, cityRepo.advanced, "last_notified_at must not advance when suppressed by cooldown")
+	})
+
+	t.Run("alert_heat: condition not met produces no event", func(t *testing.T) {
+		t.Parallel()
+		tempMax := 30.0 // below 35 threshold
+		alertCity := domain.WeatherUserCity{
+			ID:             "alert-c3",
+			UserType:       domain.UserTypeTelegram,
+			UserID:         "user-alert",
+			LocationID:     "loc-alert",
+			DisplayName:    "Cool City",
+			Timezone:       "UTC",
+			NotifyKind:     domain.WeatherNotifyAlertHeat,
+			ConditionValue: "35",
+			LastNotifiedAt: time.Time{},
+		}
+		alertObs := &domain.WeatherObservation{
+			Provider:   domain.ProviderOpenMeteo,
+			LocationID: "loc-alert",
+			TempMax:    &tempMax,
+		}
+		cityRepo := &mockWeatherCheckCityRepo{
+			citiesByKind: map[domain.WeatherNotifyKind][]domain.WeatherUserCity{
+				domain.WeatherNotifyAlertHeat: {alertCity},
+			},
+		}
+		obsRepo := &mockWeatherCheckObsRepo{obsByProvider: map[string]*domain.WeatherObservation{
+			domain.ProviderOpenMeteo: alertObs,
+		}}
+		eventRepo := &mockCheckEventRepository{}
+
+		a := &WeatherCheckAgent{cityRepo: cityRepo, obsRepo: obsRepo, eventRepo: eventRepo, logger: io.Discard}
+		require.NoError(t, a.Run(t.Context()))
+		require.Empty(t, eventRepo.retained, "no event when condition is not met")
+		require.Empty(t, cityRepo.advanced)
+	})
+
+	t.Run("alert: no observation for location skips without advancing", func(t *testing.T) {
+		t.Parallel()
+		alertCity := domain.WeatherUserCity{
+			ID:             "alert-c4",
+			UserType:       domain.UserTypeTelegram,
+			UserID:         "user-alert",
+			LocationID:     "loc-no-obs",
+			DisplayName:    "No Data City",
+			Timezone:       "UTC",
+			NotifyKind:     domain.WeatherNotifyAlertFrost,
+			ConditionValue: "0",
+			LastNotifiedAt: time.Time{},
+		}
+		cityRepo := &mockWeatherCheckCityRepo{
+			citiesByKind: map[domain.WeatherNotifyKind][]domain.WeatherUserCity{
+				domain.WeatherNotifyAlertFrost: {alertCity},
+			},
+		}
+		// globalErr = ErrNotFound → no observation for any location
+		obsRepo := &mockWeatherCheckObsRepo{globalErr: internal.ErrNotFound}
+		eventRepo := &mockCheckEventRepository{}
+
+		a := &WeatherCheckAgent{cityRepo: cityRepo, obsRepo: obsRepo, eventRepo: eventRepo, logger: io.Discard}
+		require.NoError(t, a.Run(t.Context()))
+		require.Empty(t, eventRepo.retained, "no event when observation is absent")
+		require.Empty(t, cityRepo.advanced, "must not advance when observation absent")
+	})
+
+	t.Run("alert: observation is cached per location_id across multiple alert kinds", func(t *testing.T) {
+		t.Parallel()
+		tempMax := 36.0
+		tempMin := -2.0
+		alertObs := &domain.WeatherObservation{
+			Provider:   domain.ProviderOpenMeteo,
+			LocationID: "loc-shared",
+			TempMax:    &tempMax,
+			TempMin:    &tempMin,
+		}
+		heatCity := domain.WeatherUserCity{
+			ID: "heat-c", UserType: domain.UserTypeTelegram, UserID: "u1",
+			LocationID: "loc-shared", DisplayName: "SharedCity", Timezone: "UTC",
+			NotifyKind: domain.WeatherNotifyAlertHeat, ConditionValue: "35",
+		}
+		frostCity := domain.WeatherUserCity{
+			ID: "frost-c", UserType: domain.UserTypeTelegram, UserID: "u1",
+			LocationID: "loc-shared", DisplayName: "SharedCity", Timezone: "UTC",
+			NotifyKind: domain.WeatherNotifyAlertFrost, ConditionValue: "0",
+		}
+		cityRepo := &mockWeatherCheckCityRepo{
+			citiesByKind: map[domain.WeatherNotifyKind][]domain.WeatherUserCity{
+				domain.WeatherNotifyAlertHeat:  {heatCity},
+				domain.WeatherNotifyAlertFrost: {frostCity},
+			},
+		}
+		callCount := 0
+		trackingObs := &mockCountingObsRepo{obs: alertObs, count: &callCount}
+		eventRepo := &mockCheckEventRepository{}
+
+		a := &WeatherCheckAgent{cityRepo: cityRepo, obsRepo: trackingObs, eventRepo: eventRepo, logger: io.Discard}
+		require.NoError(t, a.Run(t.Context()))
+		require.Len(t, eventRepo.retained, 2, "both heat and frost must fire")
+		// The obs must be fetched only once for the shared location_id.
+		assert.Equal(t, 1, callCount, "observation must be cached: only one DB call for the same location_id across two alert kinds")
+	})
+
+	t.Run("alert_thunderstorm: fires when weather code in thunderstorm band", func(t *testing.T) {
+		t.Parallel()
+		code := 95
+		alertCity := domain.WeatherUserCity{
+			ID: "thunder-c", UserType: domain.UserTypeTelegram, UserID: "u1",
+			LocationID: "loc-storm", DisplayName: "StormCity", Timezone: "UTC",
+			NotifyKind: domain.WeatherNotifyAlertThunderstorm,
+		}
+		alertObs := &domain.WeatherObservation{
+			Provider:    domain.ProviderOpenMeteo,
+			LocationID:  "loc-storm",
+			WeatherCode: &code,
+		}
+		cityRepo := &mockWeatherCheckCityRepo{
+			citiesByKind: map[domain.WeatherNotifyKind][]domain.WeatherUserCity{
+				domain.WeatherNotifyAlertThunderstorm: {alertCity},
+			},
+		}
+		obsRepo := &mockWeatherCheckObsRepo{obsByProvider: map[string]*domain.WeatherObservation{
+			domain.ProviderOpenMeteo: alertObs,
+		}}
+		eventRepo := &mockCheckEventRepository{}
+
+		a := &WeatherCheckAgent{cityRepo: cityRepo, obsRepo: obsRepo, eventRepo: eventRepo, logger: io.Discard}
+		require.NoError(t, a.Run(t.Context()))
+		require.Len(t, eventRepo.retained, 1)
+		assert.Contains(t, eventRepo.retained[0].Message, "Thunderstorm alert")
+		require.Len(t, cityRepo.advanced, 1)
+	})
 }
 
 // mockWeatherCheckCityRepo simulates ObtainDueWeatherUserCities and AdvanceLastNotifiedAt.
+// cities is returned for morning_summary lookups (backward compatible with existing
+// subtests). citiesByKind allows alert subtests to configure per-kind return values;
+// when set it takes precedence over cities for every kind.
 type mockWeatherCheckCityRepo struct {
-	cities   []domain.WeatherUserCity
-	err      error
-	advanced []string // IDs passed to AdvanceLastNotifiedAt
+	cities       []domain.WeatherUserCity
+	citiesByKind map[domain.WeatherNotifyKind][]domain.WeatherUserCity
+	err          error
+	advanced     []string // IDs passed to AdvanceLastNotifiedAt
 }
 
-func (m *mockWeatherCheckCityRepo) ObtainDueWeatherUserCities(_ context.Context, _ domain.WeatherNotifyKind) ([]domain.WeatherUserCity, error) {
-	return m.cities, m.err
+func (m *mockWeatherCheckCityRepo) ObtainDueWeatherUserCities(_ context.Context, kind domain.WeatherNotifyKind) ([]domain.WeatherUserCity, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.citiesByKind != nil {
+		if cities, ok := m.citiesByKind[kind]; ok {
+			return cities, nil
+		}
+		return []domain.WeatherUserCity{}, nil
+	}
+	// Default: return m.cities only for morning_summary so existing subtests are
+	// unaffected by the alert phase (alert kinds return empty, no EvaluateAlert called).
+	if kind == domain.WeatherNotifyMorningSummary {
+		return m.cities, nil
+	}
+	return []domain.WeatherUserCity{}, nil
 }
 
 func (m *mockWeatherCheckCityRepo) AdvanceLastNotifiedAt(_ context.Context, id string, _ time.Time) error {
@@ -439,5 +661,28 @@ func (m *mockWeatherCheckObsRepo) ObtainLatestObservation(_ context.Context, loc
 	if m.globalErr != nil {
 		return nil, m.globalErr
 	}
+	return nil, internal.ErrNotFound
+}
+
+// mockCountingObsRepo wraps a single observation and counts how many times
+// ObtainLatestObservation is called for the Open-Meteo provider, so tests can
+// verify the per-run observation cache prevents redundant DB reads.
+type mockCountingObsRepo struct {
+	obs   *domain.WeatherObservation
+	count *int
+}
+
+var _ weatherCheckObsRepository = (*mockCountingObsRepo)(nil)
+
+func (m *mockCountingObsRepo) ObtainLatestObservation(_ context.Context, _, provider string) (*domain.WeatherObservation, error) {
+	if provider == domain.ProviderOpenMeteo {
+		*m.count++
+		if m.obs != nil {
+			cp := *m.obs
+			return &cp, nil
+		}
+		return nil, internal.ErrNotFound
+	}
+	// Non-Open-Meteo providers (gismeteo) are not queried in the alert phase.
 	return nil, internal.ErrNotFound
 }

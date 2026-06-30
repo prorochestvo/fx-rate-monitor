@@ -194,6 +194,135 @@ func TestRenderMorningSummary(t *testing.T) {
 	})
 }
 
+func TestRenderWeatherAlert(t *testing.T) {
+	t.Parallel()
+
+	baseCity := domain.WeatherUserCity{
+		ID:          "WUC01",
+		DisplayName: "Almaty",
+		Timezone:    "Asia/Almaty",
+		UserType:    domain.UserTypeTelegram,
+		UserID:      "123",
+	}
+
+	tempMax := 38.2
+	tempMin := 24.1
+	code := 95
+	obs := domain.WeatherObservation{
+		Provider:    domain.ProviderOpenMeteo,
+		LocationID:  "loc1",
+		TempMax:     &tempMax,
+		TempMin:     &tempMin,
+		WeatherCode: &code,
+	}
+
+	t.Run("heat alert renders emoji header and reason", func(t *testing.T) {
+		t.Parallel()
+		city := baseCity
+		city.NotifyKind = domain.WeatherNotifyAlertHeat
+		result, err := RenderWeatherAlert(city, "High +38.2°C ≥ +35.0°C", obs)
+		require.NoError(t, err)
+		assert.Contains(t, result, "🔥")
+		assert.Contains(t, result, "Heat alert")
+		assert.Contains(t, result, "Almaty")
+		assert.Contains(t, result, "+38.2°C ≥ +35.0°C")
+		assert.Contains(t, result, "+24.1")
+	})
+
+	t.Run("frost alert renders emoji header and reason with minus sign", func(t *testing.T) {
+		t.Parallel()
+		city := baseCity
+		city.NotifyKind = domain.WeatherNotifyAlertFrost
+		negMin := -3.5
+		negObs := obs
+		negObs.TempMin = &negMin
+		result, err := RenderWeatherAlert(city, "Low −3.5°C ≤ +0.0°C", negObs)
+		require.NoError(t, err)
+		assert.Contains(t, result, "❄️")
+		assert.Contains(t, result, "Frost alert")
+		assert.Contains(t, result, "Almaty")
+		assert.Contains(t, result, "−3.5°C")
+	})
+
+	t.Run("thunderstorm alert renders emoji header and WMO reason", func(t *testing.T) {
+		t.Parallel()
+		city := baseCity
+		city.NotifyKind = domain.WeatherNotifyAlertThunderstorm
+		result, err := RenderWeatherAlert(city, "Thunderstorm", obs)
+		require.NoError(t, err)
+		assert.Contains(t, result, "⛈️")
+		assert.Contains(t, result, "Thunderstorm alert")
+		assert.Contains(t, result, "Almaty")
+		assert.Contains(t, result, "Thunderstorm")
+	})
+
+	t.Run("nil TempMax renders dash in snapshot line", func(t *testing.T) {
+		t.Parallel()
+		city := baseCity
+		city.NotifyKind = domain.WeatherNotifyAlertHeat
+		noMax := obs
+		noMax.TempMax = nil
+		result, err := RenderWeatherAlert(city, "reason", noMax)
+		require.NoError(t, err)
+		// temperature snapshot: max is "—" not zero
+		assert.Contains(t, result, "—")
+		assert.NotContains(t, result, "+0.0°C")
+	})
+
+	t.Run("nil TempMin renders dash in snapshot line", func(t *testing.T) {
+		t.Parallel()
+		city := baseCity
+		city.NotifyKind = domain.WeatherNotifyAlertFrost
+		noMin := obs
+		noMin.TempMin = nil
+		result, err := RenderWeatherAlert(city, "reason", noMin)
+		require.NoError(t, err)
+		assert.Contains(t, result, "—")
+	})
+
+	t.Run("nil WeatherCode omits condition from snapshot", func(t *testing.T) {
+		t.Parallel()
+		city := baseCity
+		city.NotifyKind = domain.WeatherNotifyAlertHeat
+		noCode := obs
+		noCode.WeatherCode = nil
+		result, err := RenderWeatherAlert(city, "reason", noCode)
+		require.NoError(t, err)
+		// no WMO emoji in the snapshot line
+		assert.NotContains(t, result, "⛈️")
+		assert.Contains(t, result, "🌡") // temperature line still present
+	})
+
+	t.Run("city name is HTML-escaped", func(t *testing.T) {
+		t.Parallel()
+		city := baseCity
+		city.NotifyKind = domain.WeatherNotifyAlertHeat
+		city.DisplayName = "<script>xss</script>"
+		result, err := RenderWeatherAlert(city, "reason", obs)
+		require.NoError(t, err)
+		assert.NotContains(t, result, "<script>")
+		assert.Contains(t, result, "&lt;script&gt;")
+	})
+
+	t.Run("morning_summary kind returns error", func(t *testing.T) {
+		t.Parallel()
+		city := baseCity
+		city.NotifyKind = domain.WeatherNotifyMorningSummary
+		_, err := RenderWeatherAlert(city, "reason", obs)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unrecognised alert kind")
+	})
+
+	t.Run("unknown kind returns error", func(t *testing.T) {
+		t.Parallel()
+		city := baseCity
+		city.NotifyKind = "rain_alert"
+		_, err := RenderWeatherAlert(city, "reason", obs)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unrecognised alert kind")
+	})
+}
+
 func TestWeatherProviderLabel(t *testing.T) {
 	t.Parallel()
 

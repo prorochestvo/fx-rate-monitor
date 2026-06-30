@@ -128,15 +128,17 @@ func (h *Handler) ListMeWeatherCities(w http.ResponseWriter, r *http.Request) {
 	rows := make([]dto.WeatherCityRow, 0, len(cities))
 	for _, c := range cities {
 		rows = append(rows, dto.WeatherCityRow{
-			ID:          c.ID,
-			LocationID:  c.LocationID,
-			DisplayName: c.DisplayName,
-			Latitude:    c.Latitude,
-			Longitude:   c.Longitude,
-			Timezone:    c.Timezone,
-			Country:     c.Country,
-			Admin1:      c.Admin1,
-			NotifyHour:  c.NotifyHour,
+			ID:             c.ID,
+			LocationID:     c.LocationID,
+			DisplayName:    c.DisplayName,
+			Latitude:       c.Latitude,
+			Longitude:      c.Longitude,
+			Timezone:       c.Timezone,
+			Country:        c.Country,
+			Admin1:         c.Admin1,
+			NotifyHour:     c.NotifyHour,
+			NotifyKind:     string(c.NotifyKind),
+			ConditionValue: c.ConditionValue,
 		})
 	}
 	writeJSON(w, dto.WeatherCitiesResponse{Items: rows})
@@ -213,19 +215,34 @@ func (h *Handler) CreateMeWeatherCity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine notify_kind: default to morning_summary when omitted.
+	notifyKind := domain.WeatherNotifyMorningSummary
+	if body.NotifyKind != "" {
+		notifyKind = domain.WeatherNotifyKind(body.NotifyKind)
+	}
+
 	record := &domain.WeatherUserCity{
-		UserType:    domain.UserTypeTelegram,
-		UserID:      tgUserID,
-		LocationID:  body.LocationID,
-		DisplayName: body.DisplayName,
-		Latitude:    body.Latitude,
-		Longitude:   body.Longitude,
-		Timezone:    body.Timezone,
-		Country:     body.Country,
-		Admin1:      body.Admin1,
-		NotifyKind:  domain.WeatherNotifyMorningSummary,
-		NotifyHour:  notifyHour,
+		UserType:       domain.UserTypeTelegram,
+		UserID:         tgUserID,
+		LocationID:     body.LocationID,
+		DisplayName:    body.DisplayName,
+		Latitude:       body.Latitude,
+		Longitude:      body.Longitude,
+		Timezone:       body.Timezone,
+		Country:        body.Country,
+		Admin1:         body.Admin1,
+		NotifyKind:     notifyKind,
+		NotifyHour:     notifyHour,
+		ConditionValue: body.ConditionValue,
 		// GismeteoCityID stays nil — populated only by the curated map in the second increment.
+	}
+
+	// Validate the (kind, condition_value) pair. Validate() returns a plain error
+	// whose message is safe to surface directly to the user.
+	if valErr := record.Validate(); valErr != nil {
+		pub := internal.NewPublicError(valErr.Error())
+		http.Error(w, `{"error":"`+pub.Details()+`"}`, http.StatusBadRequest)
+		return
 	}
 
 	if err := h.meWeatherCityRepo.RetainWeatherUserCity(r.Context(), record); err != nil {

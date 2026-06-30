@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -13,12 +14,33 @@ const (
 	// WeatherNotifyMorningSummary delivers a daily morning forecast summary
 	// for the subscribed city, evaluated in the city's local timezone.
 	WeatherNotifyMorningSummary WeatherNotifyKind = "morning_summary"
+
+	// WeatherNotifyAlertHeat fires when the daily forecast high (TempMax) meets or
+	// exceeds the configured threshold (ConditionValue, °C). Evaluated against the
+	// Open-Meteo daily observation only; gismeteo is comparison-only.
+	WeatherNotifyAlertHeat WeatherNotifyKind = "alert_heat"
+
+	// WeatherNotifyAlertFrost fires when the daily forecast low (TempMin) meets or
+	// falls below the configured threshold (ConditionValue, °C).
+	WeatherNotifyAlertFrost WeatherNotifyKind = "alert_frost"
+
+	// WeatherNotifyAlertThunderstorm fires when the daily-dominant WMO weather code
+	// is in the thunderstorm band (95, 96, or 99). ConditionValue is empty — no
+	// numeric threshold applies. "Today is forecast stormy" semantics, not "storm
+	// at this instant."
+	WeatherNotifyAlertThunderstorm WeatherNotifyKind = "alert_thunderstorm"
 )
+
+// alertMinusSign is the U+2212 MINUS SIGN used in alert reason strings to format
+// negative temperatures, matching the notification package's visual style.
+const alertMinusSign = "−"
 
 // WeatherUserCity records a user's per-city weather subscription.
 // NotifyHour is the local-time hour (0–23) at which the daily summary fires, in Timezone.
 // LastNotifiedAt is zero when no notification has ever been sent for this city.
 // GismeteoCityID is nil until the curated gismeteo city map is consulted (second increment).
+// ConditionValue holds the alert threshold for heat/frost kinds (a decimal number in °C),
+// and is empty for morning_summary and thunderstorm (which need no numeric bound).
 type WeatherUserCity struct {
 	ID             string
 	UserType       UserType
@@ -33,9 +55,97 @@ type WeatherUserCity struct {
 	GismeteoCityID *int
 	NotifyKind     WeatherNotifyKind
 	NotifyHour     int // local 0–23
+	ConditionValue string
 	LastNotifiedAt time.Time
 	UpdatedAt      time.Time
 	CreatedAt      time.Time
+}
+
+// Validate reports whether ConditionValue is consistent with NotifyKind.
+// Returns a non-nil error with a human-readable message on mismatch so the
+// caller can surface it as a user-facing validation failure.
+// morning_summary ignores ConditionValue; thunderstorm accepts any value (empty
+// is canonical); heat and frost require a parseable float64.
+func (c *WeatherUserCity) Validate() error {
+	switch c.NotifyKind {
+	case WeatherNotifyMorningSummary:
+		return nil
+	case WeatherNotifyAlertHeat, WeatherNotifyAlertFrost:
+		if _, err := strconv.ParseFloat(c.ConditionValue, 64); err != nil {
+			return fmt.Errorf("condition_value must be a valid number for %s", string(c.NotifyKind))
+		}
+		return nil
+	case WeatherNotifyAlertThunderstorm:
+		return nil
+	default:
+		return fmt.Errorf("unknown notify_kind: %q", string(c.NotifyKind))
+	}
+}
+
+// AlertThreshold parses ConditionValue as a float64 threshold for alert_heat and
+// alert_frost. Returns an error for kinds that take no numeric threshold.
+func (c *WeatherUserCity) AlertThreshold() (float64, error) {
+	switch c.NotifyKind {
+	case WeatherNotifyAlertHeat, WeatherNotifyAlertFrost:
+		v, err := strconv.ParseFloat(c.ConditionValue, 64)
+		if err != nil {
+			return 0, fmt.Errorf("weather city %s: parse condition_value %q as threshold: %w", c.ID, c.ConditionValue, err)
+		}
+		return v, nil
+	default:
+		return 0, fmt.Errorf("weather city %s: %q does not have a numeric threshold", c.ID, c.NotifyKind)
+	}
+}
+
+// EvaluateAlert reports whether this city's alert condition is currently met by obs
+// and a short human reason string. The metric and comparison are implied by NotifyKind:
+//
+//   - alert_heat:  obs.TempMax  ≥ threshold (forecast daily high, °C, Open-Meteo)
+//   - alert_frost: obs.TempMin  ≤ threshold (forecast daily low,  °C, Open-Meteo)
+//   - alert_thunderstorm: obs.WeatherCode ≥ 95 (WMO thunderstorm band; "today is
+//     forecast stormy," not instantaneous — the daily-dominant code is used)
+//
+// A nil required field means the condition cannot be evaluated: fired=false, err=nil.
+// Anti-spam (cooldown) is the caller's responsibility, not this pure evaluator.
+// morning_summary and unknown kinds return an error; they are not alert kinds.
+func (c *WeatherUserCity) EvaluateAlert(obs WeatherObservation) (fired bool, reason string, err error) {
+	switch c.NotifyKind {
+	case WeatherNotifyAlertHeat:
+		t, err := c.AlertThreshold()
+		if err != nil {
+			return false, "", err
+		}
+		if obs.TempMax == nil || *obs.TempMax < t {
+			return false, "", nil
+		}
+		return true, fmt.Sprintf("High %s ≥ %s", formatAlertTemp(*obs.TempMax), formatAlertTemp(t)), nil
+	case WeatherNotifyAlertFrost:
+		t, err := c.AlertThreshold()
+		if err != nil {
+			return false, "", err
+		}
+		if obs.TempMin == nil || *obs.TempMin > t {
+			return false, "", nil
+		}
+		return true, fmt.Sprintf("Low %s ≤ %s", formatAlertTemp(*obs.TempMin), formatAlertTemp(t)), nil
+	case WeatherNotifyAlertThunderstorm:
+		if obs.WeatherCode == nil || *obs.WeatherCode < 95 {
+			return false, "", nil
+		}
+		text, _ := WMOWeatherCode(*obs.WeatherCode)
+		return true, text, nil
+	default:
+		return false, "", fmt.Errorf("weather city %s: not an alert kind: %q", c.ID, c.NotifyKind)
+	}
+}
+
+// formatAlertTemp formats a temperature as "+31.6°C" or "−5.2°C" using the
+// U+2212 MINUS SIGN for negative values, matching the notification package style.
+func formatAlertTemp(v float64) string {
+	if v >= 0 {
+		return fmt.Sprintf("+%.1f°C", v)
+	}
+	return fmt.Sprintf("%s%.1f°C", alertMinusSign, -v)
 }
 
 // IsMorningDue reports whether the daily morning summary should fire now,

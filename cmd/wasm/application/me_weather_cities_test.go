@@ -437,6 +437,196 @@ func TestMeWeatherCitiesPage_DeleteCity(t *testing.T) {
 	})
 }
 
+func TestMeWeatherCitiesPage_OpenAlertForm(t *testing.T) {
+	t.Parallel()
+
+	city1 := dto.WeatherCityRow{
+		ID: "c1", LocationID: "loc1", DisplayName: "Almaty",
+		Latitude: 43.25, Longitude: 76.94, Timezone: "Asia/Almaty",
+	}
+
+	makeLoadedPage := func(t *testing.T) *application.MeWeatherCitiesPage {
+		t.Helper()
+		f := &editFakeFetcher{
+			urlJSON: map[string][]byte{
+				"/api/me/weather/cities": citiesResponse([]dto.WeatherCityRow{city1}),
+			},
+		}
+		page := weatherPageWithFetcher(f)
+		require.NoError(t, page.LoadCities(t.Context()))
+		return page
+	}
+
+	t.Run("opens form with default kind alert_heat and empty value", func(t *testing.T) {
+		t.Parallel()
+		page := makeLoadedPage(t)
+		page.OpenAlertForm("loc1")
+
+		st := page.State()
+		assert.Equal(t, "loc1", st.AlertFormLocationID)
+		assert.Equal(t, "alert_heat", st.AlertFormKind)
+		assert.Empty(t, st.AlertFormValue)
+		assert.Nil(t, st.AlertSaveError)
+	})
+
+	t.Run("SetAlertFormKind updates kind", func(t *testing.T) {
+		t.Parallel()
+		page := makeLoadedPage(t)
+		page.OpenAlertForm("loc1")
+		page.SetAlertFormKind("alert_frost")
+		assert.Equal(t, "alert_frost", page.State().AlertFormKind)
+	})
+
+	t.Run("SetAlertFormValue updates value", func(t *testing.T) {
+		t.Parallel()
+		page := makeLoadedPage(t)
+		page.OpenAlertForm("loc1")
+		page.SetAlertFormValue("35.5")
+		assert.Equal(t, "35.5", page.State().AlertFormValue)
+	})
+
+	t.Run("CloseAlertForm clears all alert form state", func(t *testing.T) {
+		t.Parallel()
+		page := makeLoadedPage(t)
+		page.OpenAlertForm("loc1")
+		page.SetAlertFormKind("alert_thunderstorm")
+		page.CloseAlertForm()
+
+		st := page.State()
+		assert.Empty(t, st.AlertFormLocationID)
+		assert.Empty(t, st.AlertFormKind)
+		assert.Empty(t, st.AlertFormValue)
+		assert.Nil(t, st.AlertSaveError)
+	})
+}
+
+func TestMeWeatherCitiesPage_SavePendingAlert(t *testing.T) {
+	t.Parallel()
+
+	cityRow := dto.WeatherCityRow{
+		ID: "c1", LocationID: "loc1", DisplayName: "Almaty",
+		Latitude: 43.25, Longitude: 76.94, Timezone: "Asia/Almaty",
+		Country: "Kazakhstan", Admin1: "Almaty",
+		NotifyKind: "morning_summary",
+	}
+
+	makePageWithCity := func(t *testing.T, citiesAfterSave []dto.WeatherCityRow, postErr error) *application.MeWeatherCitiesPage {
+		t.Helper()
+		f := &weatherFakeFetcher{
+			getJSON: map[string][]byte{
+				"/api/me/weather/cities": citiesResponse([]dto.WeatherCityRow{cityRow}),
+			},
+		}
+		if citiesAfterSave != nil {
+			f.getJSON["/api/me/weather/cities"] = citiesResponse(citiesAfterSave)
+		}
+		if postErr != nil {
+			f.postErr = map[string]error{"/api/me/weather/cities": postErr}
+		}
+		page := application.NewMeWeatherCitiesPage(apiclient.New(f), "init-token")
+		require.NoError(t, page.LoadCities(t.Context()))
+		return page
+	}
+
+	t.Run("no form open is no-op", func(t *testing.T) {
+		t.Parallel()
+		page := makePageWithCity(t, nil, nil)
+		require.NoError(t, page.SavePendingAlert(t.Context()))
+		assert.Empty(t, page.State().AlertFormLocationID)
+	})
+
+	t.Run("base city not found in Cities list returns error", func(t *testing.T) {
+		t.Parallel()
+		f := &weatherFakeFetcher{
+			getJSON: map[string][]byte{
+				"/api/me/weather/cities": citiesResponse([]dto.WeatherCityRow{}),
+			},
+		}
+		page := application.NewMeWeatherCitiesPage(apiclient.New(f), "init-token")
+		require.NoError(t, page.LoadCities(t.Context()))
+		page.OpenAlertForm("loc-ghost")
+
+		err := page.SavePendingAlert(t.Context())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "loc-ghost")
+	})
+
+	t.Run("successful save closes form and reloads list", func(t *testing.T) {
+		t.Parallel()
+		savedRow := dto.WeatherCityRow{
+			ID: "c-alert", LocationID: "loc1", DisplayName: "Almaty",
+			Timezone: "Asia/Almaty", NotifyKind: "alert_heat", ConditionValue: "35",
+		}
+		f := &weatherFakeFetcher{
+			getJSON: map[string][]byte{
+				"/api/me/weather/cities": citiesResponse([]dto.WeatherCityRow{cityRow, savedRow}),
+			},
+		}
+		// First GET loads initial list; POST succeeds (no postErr); second GET after save.
+		initialFetcher := &weatherFakeFetcher{
+			getJSON: map[string][]byte{
+				"/api/me/weather/cities": citiesResponse([]dto.WeatherCityRow{cityRow}),
+			},
+		}
+		_ = f // reassigned below for the reload
+		page := application.NewMeWeatherCitiesPage(apiclient.New(initialFetcher), "init-token")
+		require.NoError(t, page.LoadCities(t.Context()))
+		// Swap fetcher so that post-save reload returns two rows.
+		initialFetcher.getJSON["/api/me/weather/cities"] = citiesResponse([]dto.WeatherCityRow{cityRow, savedRow})
+
+		page.OpenAlertForm("loc1")
+		page.SetAlertFormKind("alert_heat")
+		page.SetAlertFormValue("35")
+
+		require.NoError(t, page.SavePendingAlert(t.Context()))
+
+		st := page.State()
+		assert.Empty(t, st.AlertFormLocationID, "form must be closed on success")
+		assert.Nil(t, st.AlertSaveError)
+		assert.Len(t, st.Cities, 2, "list must be reloaded after save")
+	})
+
+	t.Run("POST error stores AlertSaveError and keeps form open", func(t *testing.T) {
+		t.Parallel()
+		f := &weatherFakeFetcher{
+			getJSON: map[string][]byte{
+				"/api/me/weather/cities": citiesResponse([]dto.WeatherCityRow{cityRow}),
+			},
+			postErr: map[string]error{"/api/me/weather/cities": errors.New("validation: bad kind")},
+		}
+		page := application.NewMeWeatherCitiesPage(apiclient.New(f), "init-token")
+		require.NoError(t, page.LoadCities(t.Context()))
+
+		page.OpenAlertForm("loc1")
+		page.SetAlertFormKind("alert_heat")
+		page.SetAlertFormValue("35")
+
+		err := page.SavePendingAlert(t.Context())
+		require.Error(t, err)
+
+		st := page.State()
+		assert.NotEmpty(t, st.AlertFormLocationID, "form must stay open on error")
+		assert.NotNil(t, st.AlertSaveError)
+	})
+
+	t.Run("POST 401 sets AuthFailure", func(t *testing.T) {
+		t.Parallel()
+		f := &weatherFakeFetcher{
+			getJSON: map[string][]byte{
+				"/api/me/weather/cities": citiesResponse([]dto.WeatherCityRow{cityRow}),
+			},
+			postErr: map[string]error{"/api/me/weather/cities": errors.New("http 401")},
+		}
+		page := application.NewMeWeatherCitiesPage(apiclient.New(f), "init-token")
+		require.NoError(t, page.LoadCities(t.Context()))
+
+		page.OpenAlertForm("loc1")
+		err := page.SavePendingAlert(t.Context())
+		require.Error(t, err)
+		assert.True(t, page.State().AuthFailure)
+	})
+}
+
 func TestMeWeatherCitiesPage_ClearSearch(t *testing.T) {
 	t.Parallel()
 

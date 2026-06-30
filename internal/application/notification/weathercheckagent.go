@@ -17,6 +17,24 @@ import (
 // backstop: the forecast_date equality check is the primary freshness guard.
 const weatherGismeteoMaxAge = 24 * time.Hour
 
+// weatherAlertCooldownForecast is the minimum gap between successive alerts for
+// forecast-based kinds (heat, frost, thunderstorm). ~20 h means the alert can
+// re-arm the next calendar day without firing twice within one notifier run cycle.
+// It must be strictly greater than the notifier's tick interval (typically minutes)
+// so the cooldown is what prevents per-tick spam, not luck.
+const weatherAlertCooldownForecast = 20 * time.Hour
+
+// weatherAlertCooldown returns the per-kind cooldown for alert kinds. All three
+// shipped forecast kinds share the same ~20 h window.
+func weatherAlertCooldown(kind domain.WeatherNotifyKind) time.Duration {
+	switch kind {
+	case domain.WeatherNotifyAlertHeat, domain.WeatherNotifyAlertFrost, domain.WeatherNotifyAlertThunderstorm:
+		return weatherAlertCooldownForecast
+	default:
+		return weatherAlertCooldownForecast // safe default for any future alert kind
+	}
+}
+
 // NewWeatherCheckAgent constructs a WeatherCheckAgent. All arguments are required.
 func NewWeatherCheckAgent(
 	cityRepo weatherCheckCityRepository,
@@ -143,9 +161,109 @@ func (a *WeatherCheckAgent) Run(ctx context.Context) error {
 		}
 	}
 
+	// Alert phase: evaluate heat, frost, and thunderstorm threshold kinds.
+	// Observations are cached per location_id for the duration of this phase so a
+	// city that has multiple alert kinds (or shares a location with another user's
+	// city) does not re-query the same row more than once per run.
+	obsCache := make(map[string]*domain.WeatherObservation) // location_id → obs
+	obsNotFound := make(map[string]bool)                    // location_id → known absent
+	var alertQueued, alertAttempted int
+
+	alertKinds := []domain.WeatherNotifyKind{
+		domain.WeatherNotifyAlertHeat,
+		domain.WeatherNotifyAlertFrost,
+		domain.WeatherNotifyAlertThunderstorm,
+	}
+
+	for _, kind := range alertKinds {
+		candidates, loadErr := a.cityRepo.ObtainDueWeatherUserCities(ctx, kind)
+		if loadErr != nil {
+			errs = append(errs, fmt.Errorf("weather alert: load cities for %s: %w", kind, loadErr))
+			continue
+		}
+
+		for _, city := range candidates {
+			obs := a.loadCachedObservation(ctx, city.LocationID, obsCache, obsNotFound)
+			if obs == nil {
+				// No observation yet; skip without advancing so the alert fires once
+				// data arrives (same behaviour as the morning-summary phase).
+				continue
+			}
+
+			fired, reason, evalErr := city.EvaluateAlert(*obs)
+			if evalErr != nil {
+				errs = append(errs, fmt.Errorf("weather alert city=%s: evaluate: %w", city.ID, evalErr))
+				continue
+			}
+			if !fired {
+				continue
+			}
+
+			// Cooldown gate: suppress if an alert was sent recently for this row.
+			cooldown := weatherAlertCooldown(city.NotifyKind)
+			if !city.LastNotifiedAt.IsZero() && now.Sub(city.LastNotifiedAt) < cooldown {
+				continue // condition still holds but we alerted recently
+			}
+
+			msg, renderErr := RenderWeatherAlert(city, reason, *obs)
+			if renderErr != nil {
+				errs = append(errs, fmt.Errorf("weather alert city=%s: render: %w", city.ID, renderErr))
+				continue
+			}
+
+			ev := &domain.RateUserEvent{
+				UserType: domain.UserTypeTelegram,
+				UserID:   city.UserID,
+				Message:  msg,
+				// SourceName empty → stored as NULL; same transport as morning summary.
+			}
+			alertAttempted++
+			if retainErr := a.eventRepo.RetainRateUserEvent(ctx, ev); retainErr != nil {
+				errs = append(errs, fmt.Errorf("weather alert city=%s: queue event: %w", city.ID, retainErr))
+				continue // do NOT advance; next run retries
+			}
+			alertQueued++
+
+			if advErr := a.cityRepo.AdvanceLastNotifiedAt(ctx, city.ID, now); advErr != nil {
+				errs = append(errs, fmt.Errorf("weather alert city=%s: advance last_notified_at: %w", city.ID, advErr))
+			}
+		}
+	}
+
 	// Proof-of-execution marker matching RateCheckAgent's pattern.
-	fmt.Fprintf(a.logger, "weather check: queued %d/%d events\n", totalQueued, totalAttempted)
+	fmt.Fprintf(a.logger, "weather check: queued %d/%d events (alerts: %d/%d)\n",
+		totalQueued, totalAttempted, alertQueued, alertAttempted)
 	return errors.Join(errs...)
+}
+
+// loadCachedObservation returns the latest Open-Meteo observation for locationID,
+// using obsCache to avoid redundant DB reads within a single Run call. When the
+// observation is absent (ErrNotFound) the result is recorded in obsNotFound and nil
+// is returned on all subsequent lookups for the same locationID. Any non-ErrNotFound
+// error is logged and nil is returned (gated by the same "skip without advance" rule
+// as ErrNotFound so the next run retries).
+func (a *WeatherCheckAgent) loadCachedObservation(
+	ctx context.Context,
+	locationID string,
+	obsCache map[string]*domain.WeatherObservation,
+	obsNotFound map[string]bool,
+) *domain.WeatherObservation {
+	if obsNotFound[locationID] {
+		return nil
+	}
+	if obs, ok := obsCache[locationID]; ok {
+		return obs
+	}
+	obs, err := a.obsRepo.ObtainLatestObservation(ctx, locationID, domain.ProviderOpenMeteo)
+	if err != nil {
+		if !errors.Is(err, internal.ErrNotFound) {
+			fmt.Fprintf(a.logger, "weather alert: location %s: load observation: %v\n", locationID, err)
+		}
+		obsNotFound[locationID] = true
+		return nil
+	}
+	obsCache[locationID] = obs
+	return obs
 }
 
 // loadFreshGismeteo attempts to load the latest gismeteo observation for locationID.
